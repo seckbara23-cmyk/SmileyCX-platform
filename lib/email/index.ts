@@ -1,0 +1,105 @@
+/**
+ * Email service layer.
+ *
+ * Provider: Resend (https://resend.com).
+ * All sending is server-side only — never import this in client components.
+ *
+ * Setup:
+ *   1. Create a Resend account and verify your sending domain.
+ *   2. Add RESEND_API_KEY to .env.local (and Vercel env vars).
+ *   3. Set EMAIL_FROM to your verified sender address (e.g. noreply@smileycx.com).
+ *
+ * In development without a real API key, emails are logged to the console
+ * instead of sent. Set EMAIL_DRY_RUN=true to force this behavior in any env.
+ */
+
+import { Resend } from 'resend'
+import { createLogger } from '@/lib/logger'
+import {
+  welcomeEmailHtml,
+  welcomeEmailText,
+  type WelcomeEmailData,
+} from './templates/welcome'
+import {
+  enrollmentEmailHtml,
+  enrollmentEmailText,
+  type EnrollmentEmailData,
+} from './templates/enrollment'
+
+const log = createLogger('email')
+
+const FROM = process.env.EMAIL_FROM ?? 'SmileyCX <noreply@smileycx.com>'
+const DRY_RUN =
+  process.env.EMAIL_DRY_RUN === 'true' || !process.env.RESEND_API_KEY
+
+function getResend(): Resend {
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY is not set')
+  }
+  return new Resend(process.env.RESEND_API_KEY)
+}
+
+interface SendResult {
+  success: boolean
+  error?:  string
+}
+
+async function sendEmail(params: {
+  to:      string
+  subject: string
+  html:    string
+  text:    string
+}): Promise<SendResult> {
+  if (DRY_RUN) {
+    log.info({ to: params.to, subject: params.subject }, '[DRY RUN] Email not sent')
+    return { success: true }
+  }
+
+  try {
+    const resend = getResend()
+    const { error } = await resend.emails.send({
+      from:    FROM,
+      to:      params.to,
+      subject: params.subject,
+      html:    params.html,
+      text:    params.text,
+    })
+
+    if (error) {
+      log.error({ error, to: params.to }, 'Resend error sending email')
+      return { success: false, error: error.message }
+    }
+
+    log.info({ to: params.to, subject: params.subject }, 'Email sent')
+    return { success: true }
+  } catch (err) {
+    log.error({ err, to: params.to }, 'Unexpected email send failure')
+    return { success: false, error: 'Unexpected error' }
+  }
+}
+
+// ── Public API ────────────────────────────────────────────────────────────────
+
+export async function sendWelcomeEmail(
+  to: string,
+  data: WelcomeEmailData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: 'Bienvenue sur SmileyCX !',
+    html:    welcomeEmailHtml(data),
+    text:    welcomeEmailText(data),
+  })
+}
+
+export async function sendEnrollmentEmail(
+  to: string,
+  data: EnrollmentEmailData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: `Inscription confirmée — ${data.courseTitle}`,
+    html:    enrollmentEmailHtml(data),
+    text:    enrollmentEmailText(data),
+  })
+}
