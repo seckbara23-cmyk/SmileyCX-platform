@@ -53,19 +53,55 @@ export async function POST(request: NextRequest) {
     })
 
     if (error || !data?.user) {
+      log.warn({ error: error?.message }, 'Admin login: Supabase auth failed')
       return NextResponse.redirect(`${origin}/admin/login?error=invalid`, { status: 303 })
     }
 
+    log.info({ userId: data.user.id, email: data.user.email }, 'Admin login: Supabase auth succeeded, fetching profile')
+
     // Verify super_admin role
-    const { data: profile } = await createAdminClient()
+    const { data: profile, error: profileErr } = await createAdminClient()
       .from('profiles')
-      .select('platform_role')
+      .select('id, platform_role, role')
       .eq('id', data.user.id)
       .single()
 
-    if (profile?.platform_role !== 'super_admin') {
-      return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
+    log.info(
+      { userId: data.user.id, profile, profileErr: profileErr?.message },
+      'Admin login: profile fetch result'
+    )
+
+    if (profileErr) {
+      // PGRST116 = "no rows returned" — profile row doesn't exist yet (admin
+      // account created in Supabase dashboard, not through the signup flow).
+      // Auto-create the profile with super_admin so the admin can log in.
+      if (profileErr.code === 'PGRST116') {
+        log.warn({ userId: data.user.id }, 'Admin login: no profile row — creating super_admin profile')
+        const { error: insertErr } = await createAdminClient()
+          .from('profiles')
+          .insert({ id: data.user.id, email: adminEmail, platform_role: 'super_admin' })
+        if (insertErr) {
+          log.error({ err: insertErr.message, userId: data.user.id }, 'Admin login: failed to create profile row')
+          return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
+        }
+        log.info({ userId: data.user.id }, 'Admin login: profile row created with super_admin — proceeding')
+      } else {
+        log.error({ err: profileErr.message, code: profileErr.code, userId: data.user.id }, 'Admin login: profile fetch error')
+        return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
+      }
+    } else {
+      // Profile exists — verify platform_role
+      const platformRole = (profile.platform_role as string | null)?.trim()
+      if (platformRole !== 'super_admin') {
+        log.error(
+          { userId: data.user.id, platformRole, raw: profile.platform_role },
+          'Admin login: platform_role is not super_admin — access denied'
+        )
+        return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
+      }
     }
+
+    log.info({ userId: data.user.id }, 'Admin login: access granted')
 
     // Set a simple HttpOnly cookie the middleware and admin layout read directly.
     // This bypasses @supabase/ssr session cookie issues entirely.

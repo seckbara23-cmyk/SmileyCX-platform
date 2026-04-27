@@ -65,15 +65,29 @@ export async function requireOrgMembership(
 export async function requirePlatformAdmin(): Promise<Profile> {
   const cookieStore = await cookies()
   const adminUserId = cookieStore.get('scx_admin')?.value
-  if (!adminUserId) redirect('/admin/login')
+  if (!adminUserId) {
+    console.warn('[requirePlatformAdmin] No scx_admin cookie — redirecting to login')
+    redirect('/admin/login')
+  }
 
-  const { data: profile } = await createAdminClient()
+  const { data: profile, error: profileErr } = await createAdminClient()
     .from('profiles')
     .select('*')
     .eq('id', adminUserId)
     .single()
 
-  if (!profile || profile.platform_role !== 'super_admin') {
+  if (profileErr) {
+    console.error('[requirePlatformAdmin] Profile fetch error:', profileErr.message, '| userId:', adminUserId)
+    redirect('/admin/login')
+  }
+
+  const platformRole = (profile?.platform_role as string | null)?.trim()
+  if (!profile || platformRole !== 'super_admin') {
+    console.error(
+      '[requirePlatformAdmin] Access denied — userId:', adminUserId,
+      '| platform_role:', JSON.stringify(profile?.platform_role),
+      '| trimmed:', JSON.stringify(platformRole)
+    )
     redirect('/admin/login')
   }
   return profile as Profile
