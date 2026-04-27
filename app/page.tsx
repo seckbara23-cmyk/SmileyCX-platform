@@ -210,23 +210,11 @@ export default async function HomePage() {
 
         {/* ── À propos ──────────────────────────────────────────────────── */}
         <section id="a-propos" className="cx-section bg-light">
-          <div className="cx-container max-w-4xl">
-            <div className="grid md:grid-cols-[280px_1fr] gap-10 lg:gap-16 items-center">
+          <div className="cx-container max-w-5xl">
+            <div className="flex flex-col md:flex-row gap-10 lg:gap-16 items-center">
 
-              {/* Photo */}
-              <div className="mx-auto md:mx-0">
-                <div className="relative w-56 h-56 md:w-full md:h-72 rounded-2xl overflow-hidden">
-                  <Image
-                    src="/images/Picture5.jpg"
-                    alt="Fondatrice SmileyCX Academy"
-                    fill
-                    className="object-cover"
-                  />
-                </div>
-              </div>
-
-              {/* Text */}
-              <div>
+              {/* Left: text */}
+              <div className="flex-1">
                 <span className="inline-block text-xs font-bold text-primary uppercase tracking-widest mb-3">
                   &Agrave; propos
                 </span>
@@ -253,6 +241,19 @@ export default async function HomePage() {
                   ))}
                 </div>
               </div>
+
+              {/* Right: photo */}
+              <div className="w-full md:w-[340px] lg:w-[400px] shrink-0">
+                <div className="relative w-full aspect-[4/3] rounded-2xl overflow-hidden shadow-md">
+                  <Image
+                    src="/images/Picture2.jpg"
+                    alt="Fondatrice SmileyCX Academy"
+                    fill
+                    className="object-cover"
+                  />
+                </div>
+              </div>
+
             </div>
           </div>
         </section>
