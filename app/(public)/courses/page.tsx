@@ -67,7 +67,7 @@ export default async function CoursesPage() {
     .from('courses')
     .select('id, slug, title, description, duration_hours, level, cover_url, modules(id)')
     .eq('is_published', true)
-    .order('created_at', { ascending: false })
+    .order('created_at', { ascending: true })
 
   const hasDbCourses = dbCourses && dbCourses.length > 0
 
