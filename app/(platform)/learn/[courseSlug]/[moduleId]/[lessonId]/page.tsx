@@ -264,7 +264,9 @@ export default function LessonPlayerPage() {
   const currentIndex = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
   const prevLesson   = currentIndex > 0                       ? allLessons[currentIndex - 1] : null
   const nextLesson   = currentIndex < allLessons.length - 1  ? allLessons[currentIndex + 1] : null
-  const isLastLesson = currentIndex === allLessons.length - 1
+  const isLastLesson         = currentIndex === allLessons.length - 1
+  const isLastLessonInModule = !!lesson && !!module &&
+    module.lessons[module.lessons.length - 1]?.id === lesson.id
 
   // ── Loading state ──────────────────────────────────────────────────────────
   if (loading) {
@@ -433,7 +435,11 @@ export default function LessonPlayerPage() {
 
             {/* ── Quiz ──────────────────────────────────────────────────── */}
             <div className="mt-10 pt-8 border-t border-white/10">
-              {quizLoading ? (
+              {!isLastLessonInModule ? (
+                <p className="text-sm text-white/40 italic">
+                  Le quiz de ce module sera disponible &agrave; la derni&egrave;re le&ccedil;on.
+                </p>
+              ) : quizLoading ? (
                 <div className="flex items-center gap-2 text-white/40 text-sm">
                   <Loader2 className="w-4 h-4 animate-spin" /> Chargement du quiz…
                 </div>
