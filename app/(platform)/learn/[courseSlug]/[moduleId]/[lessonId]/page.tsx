@@ -31,6 +31,21 @@ interface FlatLesson extends LessonRow {
   module: ModuleRow
 }
 
+interface QuizRow {
+  id:            string
+  title:         string
+  passing_score: number | null
+}
+
+interface QuizQuestionRow {
+  id:             string
+  question:       string
+  options:        string[]
+  correct_answer: number
+  explanation:    string | null
+  order_index:    number
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function LessonPlayerPage() {
   const params    = useParams()
@@ -51,6 +66,12 @@ export default function LessonPlayerPage() {
   const [loading,   setLoading]   = useState(true)
   const [ccEnabled, setCcEnabled] = useState(true)
   const videoRef = useRef<HTMLVideoElement>(null)
+
+  const [quiz,          setQuiz]          = useState<QuizRow | null>(null)
+  const [quizQuestions, setQuizQuestions] = useState<QuizQuestionRow[]>([])
+  const [quizAnswers,   setQuizAnswers]   = useState<Record<string, number>>({})
+  const [quizSubmitted, setQuizSubmitted] = useState(false)
+  const [quizLoading,   setQuizLoading]   = useState(false)
 
   function toggleCC() {
     const track = videoRef.current?.textTracks[0]
@@ -150,6 +171,33 @@ export default function LessonPlayerPage() {
     resolveLesson(sorted)
   }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Load quiz for the current module ──────────────────────────────────────
+  const loadQuiz = useCallback(async (modId: string) => {
+    setQuizLoading(true)
+    const { data: quizData } = await supabase
+      .from('quizzes')
+      .select('id, title, passing_score')
+      .eq('module_id', modId)
+      .maybeSingle()
+
+    if (!quizData) {
+      setQuiz(null)
+      setQuizQuestions([])
+      setQuizLoading(false)
+      return
+    }
+
+    setQuiz(quizData)
+    const { data: questions } = await supabase
+      .from('quiz_questions')
+      .select('id, question, options, correct_answer, explanation, order_index')
+      .eq('quiz_id', quizData.id)
+      .order('order_index', { ascending: true })
+
+    setQuizQuestions(questions ?? [])
+    setQuizLoading(false)
+  }, [supabase])
+
   // ── Load user progress ─────────────────────────────────────────────────────
   const loadUserProgress = useCallback(async (uid: string) => {
     const { data } = await supabase
@@ -175,6 +223,17 @@ export default function LessonPlayerPage() {
       Promise.all([loadCourse(user.id), loadUserProgress(user.id)]).finally(() => setLoading(false))
     })
   }, [supabase, router, loadCourse, loadCourseAnon, loadUserProgress])
+
+  // ── Load quiz when the active module changes ──────────────────────────────
+  useEffect(() => {
+    if (module) loadQuiz(module.id)
+  }, [module?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Reset quiz answers when the lesson changes ────────────────────────────
+  useEffect(() => {
+    setQuizAnswers({})
+    setQuizSubmitted(false)
+  }, [lesson?.id])
 
   // ── Sync completion state when lesson changes ──────────────────────────────
   useEffect(() => {
@@ -371,6 +430,84 @@ export default function LessonPlayerPage() {
                 dangerouslySetInnerHTML={{ __html: lesson.content.replace(/\n/g, '<br/>') }}
               />
             )}
+
+            {/* ── Quiz ──────────────────────────────────────────────────── */}
+            <div className="mt-10 pt-8 border-t border-white/10">
+              {quizLoading ? (
+                <div className="flex items-center gap-2 text-white/40 text-sm">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Chargement du quiz…
+                </div>
+              ) : !quiz || quizQuestions.length === 0 ? (
+                <p className="text-sm text-white/40 italic">Aucun quiz disponible pour cette leçon.</p>
+              ) : (
+                <div>
+                  <h2 className="text-lg font-bold text-white mb-6">{quiz.title}</h2>
+
+                  <div className="flex flex-col gap-8">
+                    {quizQuestions.map((q, qi) => (
+                      <div key={q.id}>
+                        <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
+                        <div className="flex flex-col gap-2">
+                          {(q.options as string[]).map((opt, oi) => {
+                            const isSelected   = quizAnswers[q.id] === oi
+                            const isCorrectOpt = quizSubmitted && oi === q.correct_answer
+                            const isWrongOpt   = quizSubmitted && isSelected && oi !== q.correct_answer
+                            return (
+                              <button
+                                key={oi}
+                                disabled={quizSubmitted}
+                                onClick={() => setQuizAnswers(a => ({ ...a, [q.id]: oi }))}
+                                className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border ${
+                                  isCorrectOpt
+                                    ? 'border-success/60 bg-success/10 text-success'
+                                    : isWrongOpt
+                                    ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                                    : isSelected
+                                    ? 'border-primary bg-primary/20 text-white'
+                                    : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
+                                }`}
+                              >
+                                {opt}
+                              </button>
+                            )
+                          })}
+                        </div>
+                        {quizSubmitted && q.explanation && (
+                          <p className="mt-3 text-xs text-white/50 italic">{q.explanation}</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  {!quizSubmitted ? (
+                    <button
+                      onClick={() => setQuizSubmitted(true)}
+                      disabled={Object.keys(quizAnswers).length < quizQuestions.length}
+                      className="mt-8 px-6 py-2.5 bg-primary text-white text-sm font-bold rounded-cx hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      V&eacute;rifier mes r&eacute;ponses
+                    </button>
+                  ) : (
+                    <div className="mt-8 p-5 rounded-xl bg-white/5 border border-white/10">
+                      <p className="text-sm font-bold text-white">
+                        Score&nbsp;: {quizQuestions.filter(q => quizAnswers[q.id] === q.correct_answer).length}&nbsp;/&nbsp;{quizQuestions.length}
+                      </p>
+                      {quiz.passing_score != null && (
+                        <p className="text-xs text-white/50 mt-1">
+                          Score minimum requis&nbsp;: {quiz.passing_score}&nbsp;%
+                        </p>
+                      )}
+                      <button
+                        onClick={() => { setQuizAnswers({}); setQuizSubmitted(false) }}
+                        className="mt-3 text-xs text-primary hover:underline"
+                      >
+                        Recommencer le quiz
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
 
             {/* Actions */}
             <div className="flex flex-wrap items-center gap-3 mt-10 pt-6 border-t border-white/10">
