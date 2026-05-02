@@ -31,23 +31,6 @@ interface FlatLesson extends LessonRow {
   module: ModuleRow
 }
 
-interface QuizRow {
-  id:            string
-  title:         string
-  passing_score: number | null
-}
-
-interface QuizQuestionRow {
-  id:             string
-  question:       string
-  options:        string[]
-  correct_answer: number
-  explanation:    string | null
-  order_index:    number
-}
-
-const OPTION_LABELS = ['A', 'B', 'C', 'D']
-
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function LessonPlayerPage() {
   const params    = useParams()
@@ -58,22 +41,21 @@ export default function LessonPlayerPage() {
   const moduleId   = params.moduleId   as string
   const lessonId   = params.lessonId   as string
 
-  const [modules,   setModules]   = useState<ModuleRow[]>([])
-  const [lesson,    setLesson]    = useState<LessonRow | null>(null)
-  const [module,    setModule]    = useState<ModuleRow | null>(null)
-  const [completed, setCompleted] = useState(false)
-  const [sideOpen,  setSideOpen]  = useState(false)
-  const [userId,    setUserId]    = useState<string | null>(null)
-  const [progress,  setProgress]  = useState<Record<string, boolean>>({})
-  const [loading,   setLoading]   = useState(true)
-  const [ccEnabled, setCcEnabled] = useState(true)
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const [modules,          setModules]          = useState<ModuleRow[]>([])
+  const [lesson,           setLesson]           = useState<LessonRow | null>(null)
+  const [module,           setModule]           = useState<ModuleRow | null>(null)
+  const [completed,        setCompleted]        = useState(false)
+  const [sideOpen,         setSideOpen]         = useState(false)
+  const [userId,           setUserId]           = useState<string | null>(null)
+  const [progress,         setProgress]         = useState<Record<string, boolean>>({})
+  const [loading,          setLoading]          = useState(true)
+  const [ccEnabled,        setCcEnabled]        = useState(true)
 
-  const [quiz,          setQuiz]          = useState<QuizRow | null>(null)
-  const [quizQuestions, setQuizQuestions] = useState<QuizQuestionRow[]>([])
-  const [quizAnswers,   setQuizAnswers]   = useState<Record<string, number>>({})
-  const [quizSubmitted, setQuizSubmitted] = useState(false)
-  const [quizLoading,   setQuizLoading]   = useState(false)
+  // ── Module validation state (from localStorage) ───────────────────────────
+  const [validatedModules, setValidatedModules] = useState<Set<string>>(new Set())
+  const [modulesWithQuiz,  setModulesWithQuiz]  = useState<Set<string>>(new Set())
+
+  const videoRef = useRef<HTMLVideoElement>(null)
 
   function toggleCC() {
     const track = videoRef.current?.textTracks[0]
@@ -101,7 +83,7 @@ export default function LessonPlayerPage() {
     if (sorted[0]?.lessons[0]) { setModule(sorted[0]); setLesson(sorted[0].lessons[0]) }
   }
 
-  // ── PILOT_MODE: load course anonymously (no auth / no enrollment) ──────────
+  // ── PILOT_MODE: load course anonymously ───────────────────────────────────
   const loadCourseAnon = useCallback(async () => {
     const { data: course } = await supabase
       .from('courses')
@@ -147,7 +129,6 @@ export default function LessonPlayerPage() {
       .single()
 
     if (!enrollment) {
-      // TEMP_FREE_ACCESS: Auto-enroll in free pilot mode instead of redirecting away.
       if (FREE_ACCESS_MODE) {
         const { error } = await enrollForFree(course.id)
         if (error) { router.push(`/courses/${courseSlug}`); return }
@@ -173,37 +154,6 @@ export default function LessonPlayerPage() {
     resolveLesson(sorted)
   }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Load quiz for the current module ──────────────────────────────────────
-  const loadQuiz = useCallback(async (modId: string) => {
-    setQuizLoading(true)
-    const { data: quizData, error: quizErr } = await supabase
-      .from('quizzes')
-      .select('id, title, passing_score')
-      .eq('module_id', modId)
-      .limit(1)
-      .maybeSingle()
-
-    if (quizErr) console.error('[quiz] fetch error:', quizErr.message, quizErr.code)
-
-    if (!quizData) {
-      setQuiz(null)
-      setQuizQuestions([])
-      setQuizLoading(false)
-      return
-    }
-
-    setQuiz(quizData)
-    const { data: questions, error: qErr } = await supabase
-      .from('quiz_questions')
-      .select('id, question, options, correct_answer, explanation, order_index')
-      .eq('quiz_id', quizData.id)
-      .order('order_index', { ascending: true })
-
-    if (qErr) console.error('[quiz_questions] fetch error:', qErr.message, qErr.code)
-    setQuizQuestions(questions ?? [])
-    setQuizLoading(false)
-  }, [supabase])
-
   // ── Load user progress ─────────────────────────────────────────────────────
   const loadUserProgress = useCallback(async (uid: string) => {
     const { data } = await supabase
@@ -219,7 +169,6 @@ export default function LessonPlayerPage() {
 
   useEffect(() => {
     if (PILOT_MODE) {
-      // Pilot: no auth required — load content anonymously
       loadCourseAnon().finally(() => setLoading(false))
       return
     }
@@ -230,16 +179,31 @@ export default function LessonPlayerPage() {
     })
   }, [supabase, router, loadCourse, loadCourseAnon, loadUserProgress])
 
-  // ── Load quiz when the active module changes ──────────────────────────────
+  // ── Load validated modules + quiz existence from localStorage + Supabase ──
   useEffect(() => {
-    if (module) loadQuiz(module.id)
-  }, [module?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (modules.length === 0) return
 
-  // ── Reset quiz answers when the lesson changes ────────────────────────────
-  useEffect(() => {
-    setQuizAnswers({})
-    setQuizSubmitted(false)
-  }, [lesson?.id])
+    // Read localStorage for which modules are already validated
+    const validated = new Set<string>()
+    modules.forEach(mod => {
+      try {
+        const s = localStorage.getItem(`quiz-${mod.id}`)
+        if (s && JSON.parse(s).passed) validated.add(mod.id)
+      } catch {}
+    })
+    setValidatedModules(validated)
+
+    // Fetch which modules actually have a quiz (batch query)
+    const modIds = modules.map(m => m.id)
+    supabase
+      .from('quizzes')
+      .select('module_id')
+      .in('module_id', modIds)
+      .then(({ data }) => {
+        const withQuiz = new Set<string>((data ?? []).map(q => q.module_id as string))
+        setModulesWithQuiz(withQuiz)
+      })
+  }, [modules]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync completion state when lesson changes ──────────────────────────────
   useEffect(() => {
@@ -268,22 +232,17 @@ export default function LessonPlayerPage() {
     m.lessons.map(l => ({ ...l, module: m }))
   )
   const currentIndex = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
-  const prevLesson   = currentIndex > 0                       ? allLessons[currentIndex - 1] : null
-  const nextLesson   = currentIndex < allLessons.length - 1  ? allLessons[currentIndex + 1] : null
+  const prevLesson   = currentIndex > 0                      ? allLessons[currentIndex - 1] : null
+  const nextLesson   = currentIndex < allLessons.length - 1 ? allLessons[currentIndex + 1] : null
   const isLastLesson         = currentIndex === allLessons.length - 1
   const isLastLessonInModule = !!lesson && !!module &&
     module.lessons[module.lessons.length - 1]?.id === lesson.id
 
-  // ── Quiz pass/fail derived values ──────────────────────────────────────────
-  const requiredScore   = Math.max(quiz?.passing_score ?? 80, 80)
-  const correctCount    = quizQuestions.filter(q => quizAnswers[q.id] === q.correct_answer).length
-  const scorePercent    = quizQuestions.length > 0
-    ? Math.round((correctCount / quizQuestions.length) * 100)
-    : 0
-  const quizPassed      = quizSubmitted && scorePercent >= requiredScore
-  const nextIsNewModule = !!nextLesson && nextLesson.module.id !== module?.id
-  const nextIsBlocked   = nextIsNewModule && isLastLessonInModule &&
-    !!quiz && quizQuestions.length > 0 && !quizPassed
+  // ── Next-module gating ────────────────────────────────────────────────────
+  const nextIsNewModule    = !!nextLesson && nextLesson.module.id !== module?.id
+  const currentModHasQuiz  = modulesWithQuiz.has(module?.id ?? '')
+  const currentModPassed   = validatedModules.has(module?.id ?? '')
+  const nextIsBlocked      = nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
 
   // ── Loading state ──────────────────────────────────────────────────────────
   if (loading) {
@@ -323,51 +282,63 @@ export default function LessonPlayerPage() {
         </div>
 
         <nav>
-          {modules.map((mod, mi) => (
-            <div key={mod.id}>
-              <div className="px-4 py-2.5 bg-white/5">
-                <p className="text-[11px] font-bold text-white/50 uppercase tracking-wider">
-                  {mi + 1}. {mod.title}
-                </p>
-              </div>
-              {mod.lessons.map(les => {
-                const isActive = les.id === lesson?.id
-                const isDone   = !!progress[les.id]
-                return (
+          {modules.map((mod, mi) => {
+            const isValidated = validatedModules.has(mod.id)
+            return (
+              <div key={mod.id}>
+                {/* Module header */}
+                <div className="px-4 py-2.5 bg-white/5 flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-bold text-white/50 uppercase tracking-wider truncate">
+                    {mi + 1}. {mod.title}
+                  </p>
+                  {isValidated && (
+                    <span className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-success">
+                      <CheckCircle className="w-3 h-3" /> Valid&eacute;
+                    </span>
+                  )}
+                </div>
+
+                {/* Lessons */}
+                {mod.lessons.map(les => {
+                  const isActive = les.id === lesson?.id
+                  const isDone   = !!progress[les.id]
+                  return (
+                    <Link
+                      key={les.id}
+                      href={`/learn/${courseSlug}/${mod.id}/${les.id}`}
+                      className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors border-l-2 ${
+                        isActive
+                          ? 'bg-primary/20 text-white border-primary'
+                          : 'text-white/60 border-transparent hover:bg-white/5 hover:text-white/80'
+                      }`}
+                    >
+                      {isDone
+                        ? <CheckCircle className="w-4 h-4 text-success shrink-0" />
+                        : <span className={`w-4 h-4 rounded-full border shrink-0 ${isActive ? 'border-primary' : 'border-white/20'}`} />
+                      }
+                      <span className="line-clamp-2 leading-tight">{les.title}</span>
+                    </Link>
+                  )
+                })}
+
+                {/* Quiz entry */}
+                {mod.lessons.length > 0 && (
                   <Link
-                    key={les.id}
-                    href={`/learn/${courseSlug}/${mod.id}/${les.id}`}
+                    href={`/learn/${courseSlug}/${mod.id}/quiz`}
                     className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors border-l-2 ${
-                      isActive
-                        ? 'bg-primary/20 text-white border-primary'
-                        : 'text-white/60 border-transparent hover:bg-white/5 hover:text-white/80'
+                      module?.id === mod.id && !lesson
+                        ? 'bg-secondary/20 text-secondary border-secondary'
+                        : 'text-white/40 border-transparent hover:bg-white/5 hover:text-white/60'
                     }`}
                   >
-                    {isDone
-                      ? <CheckCircle className="w-4 h-4 text-success shrink-0" />
-                      : <span className={`w-4 h-4 rounded-full border shrink-0 ${isActive ? 'border-primary' : 'border-white/20'}`} />
-                    }
-                    <span className="line-clamp-2 leading-tight">{les.title}</span>
+                    <ClipboardList className="w-4 h-4 shrink-0" />
+                    <span className="italic">Quiz</span>
+                    {isValidated && <CheckCircle className="w-3.5 h-3.5 text-success ml-auto shrink-0" />}
                   </Link>
-                )
-              })}
-
-              {/* Quiz entry at the bottom of each module */}
-              {mod.lessons.length > 0 && (
-                <a
-                  href={`/learn/${courseSlug}/${mod.id}/${mod.lessons[mod.lessons.length - 1].id}#quiz-section`}
-                  className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors border-l-2 ${
-                    isLastLessonInModule && mod.id === module?.id
-                      ? 'bg-secondary/20 text-secondary border-secondary'
-                      : 'text-white/40 border-transparent hover:bg-white/5 hover:text-white/60'
-                  }`}
-                >
-                  <ClipboardList className="w-4 h-4 shrink-0" />
-                  <span className="italic">Quiz</span>
-                </a>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            )
+          })}
         </nav>
       </aside>
 
@@ -465,108 +436,9 @@ export default function LessonPlayerPage() {
               />
             )}
 
-            {/* ── Quiz ──────────────────────────────────────────────────── */}
-            <div id="quiz-section" className="mt-10 pt-8 border-t border-white/10">
-              {!isLastLessonInModule ? (
-                <p className="text-sm text-white/40 italic">
-                  Le quiz de ce module sera disponible &agrave; la derni&egrave;re le&ccedil;on.
-                </p>
-              ) : quizLoading ? (
-                <div className="flex items-center gap-2 text-white/40 text-sm">
-                  <Loader2 className="w-4 h-4 animate-spin" /> Chargement du quiz…
-                </div>
-              ) : !quiz || quizQuestions.length === 0 ? (
-                <p className="text-sm text-white/40 italic">Aucun quiz disponible pour cette le&ccedil;on.</p>
-              ) : (
-                <div>
-                  <h2 className="text-lg font-bold text-white mb-4">{quiz.title}</h2>
-
-                  {/* Instructions */}
-                  <div className="mb-7 p-4 rounded-xl bg-white/5 border border-white/10 text-sm text-white/70">
-                    <p className="font-semibold text-white/90 mb-2">Instructions</p>
-                    <ul className="space-y-1.5">
-                      <li>• S&eacute;lectionnez une seule r&eacute;ponse par question</li>
-                      <li>• Cliquez sur &laquo;&nbsp;V&eacute;rifier mes r&eacute;ponses&nbsp;&raquo; pour voir votre score</li>
-                      <li>• Vous devez obtenir au moins {requiredScore}&nbsp;% pour valider ce module</li>
-                      <li>• Vous pouvez recommencer le quiz autant de fois que n&eacute;cessaire</li>
-                    </ul>
-                  </div>
-
-                  <div className="flex flex-col gap-8">
-                    {quizQuestions.map((q, qi) => (
-                      <div key={q.id}>
-                        <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
-                        <div className="flex flex-col gap-2">
-                          {(q.options as string[]).map((opt, oi) => {
-                            const isSelected   = quizAnswers[q.id] === oi
-                            const isCorrectOpt = quizSubmitted && oi === q.correct_answer
-                            const isWrongOpt   = quizSubmitted && isSelected && oi !== q.correct_answer
-                            return (
-                              <button
-                                key={oi}
-                                disabled={quizSubmitted}
-                                onClick={() => setQuizAnswers(a => ({ ...a, [q.id]: oi }))}
-                                className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border ${
-                                  isCorrectOpt
-                                    ? 'border-success/60 bg-success/10 text-success'
-                                    : isWrongOpt
-                                    ? 'border-red-500/60 bg-red-500/10 text-red-400'
-                                    : isSelected
-                                    ? 'border-primary bg-primary/20 text-white'
-                                    : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
-                                }`}
-                              >
-                                <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
-                              </button>
-                            )
-                          })}
-                        </div>
-                        {quizSubmitted && q.explanation && (
-                          <p className="mt-3 text-xs text-white/50 italic">{q.explanation}</p>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {!quizSubmitted ? (
-                    <button
-                      onClick={() => setQuizSubmitted(true)}
-                      disabled={Object.keys(quizAnswers).length < quizQuestions.length}
-                      className="mt-8 px-6 py-2.5 bg-primary text-white text-sm font-bold rounded-cx hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      V&eacute;rifier mes r&eacute;ponses
-                    </button>
-                  ) : (
-                    <div className="mt-8 p-5 rounded-xl bg-white/5 border border-white/10">
-                      <p className="text-sm font-bold text-white">
-                        Score&nbsp;: {correctCount}&nbsp;/&nbsp;{quizQuestions.length} ({scorePercent}&nbsp;%)
-                      </p>
-                      {quizPassed ? (
-                        <p className="mt-2 text-sm font-semibold text-success flex items-center gap-1.5">
-                          <CheckCircle className="w-4 h-4 shrink-0" />
-                          Bravo&nbsp;! Vous avez valid&eacute; ce module.
-                        </p>
-                      ) : (
-                        <p className="mt-2 text-sm text-red-400">
-                          Vous devez obtenir au moins {requiredScore}&nbsp;% pour passer au module suivant.
-                        </p>
-                      )}
-                      <button
-                        onClick={() => { setQuizAnswers({}); setQuizSubmitted(false) }}
-                        className="mt-3 text-xs text-primary hover:underline"
-                      >
-                        Recommencer le quiz
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Actions */}
+            {/* ── Actions ───────────────────────────────────────────────── */}
             <div className="flex flex-wrap items-center gap-3 mt-10 pt-6 border-t border-white/10">
               {PILOT_MODE ? (
-                // Pilot: no auth — progress tracking unavailable
                 <p className="text-sm text-white/40 italic">
                   Le suivi de progression et les certificats seront disponibles après le lancement complet.
                 </p>
@@ -595,9 +467,19 @@ export default function LessonPlayerPage() {
                   )}
                 </>
               )}
+
+              {/* "Passer au quiz" CTA on the last lesson of a module */}
+              {isLastLessonInModule && (
+                <Link
+                  href={`/learn/${courseSlug}/${module?.id}/quiz`}
+                  className="flex items-center gap-2 px-5 py-2.5 bg-secondary text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm"
+                >
+                  <ClipboardList className="w-4 h-4" /> Passer au quiz
+                </Link>
+              )}
             </div>
 
-            {/* Navigation */}
+            {/* ── Navigation ────────────────────────────────────────────── */}
             <div className="flex justify-between mt-8">
               {prevLesson ? (
                 <Link
