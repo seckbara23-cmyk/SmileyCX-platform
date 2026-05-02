@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { CheckCircle, ChevronLeft, ChevronRight, List, Award, Loader2, Captions } from 'lucide-react'
+import { CheckCircle, ChevronLeft, ChevronRight, List, Award, Loader2, Captions, ClipboardList } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { enrollForFree } from '@/app/actions/enrollment'
@@ -45,6 +45,8 @@ interface QuizQuestionRow {
   explanation:    string | null
   order_index:    number
 }
+
+const OPTION_LABELS = ['A', 'B', 'C', 'D']
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function LessonPlayerPage() {
@@ -272,6 +274,17 @@ export default function LessonPlayerPage() {
   const isLastLessonInModule = !!lesson && !!module &&
     module.lessons[module.lessons.length - 1]?.id === lesson.id
 
+  // ── Quiz pass/fail derived values ──────────────────────────────────────────
+  const requiredScore   = Math.max(quiz?.passing_score ?? 80, 80)
+  const correctCount    = quizQuestions.filter(q => quizAnswers[q.id] === q.correct_answer).length
+  const scorePercent    = quizQuestions.length > 0
+    ? Math.round((correctCount / quizQuestions.length) * 100)
+    : 0
+  const quizPassed      = quizSubmitted && scorePercent >= requiredScore
+  const nextIsNewModule = !!nextLesson && nextLesson.module.id !== module?.id
+  const nextIsBlocked   = nextIsNewModule && isLastLessonInModule &&
+    !!quiz && quizQuestions.length > 0 && !quizPassed
+
   // ── Loading state ──────────────────────────────────────────────────────────
   if (loading) {
     return (
@@ -338,6 +351,21 @@ export default function LessonPlayerPage() {
                   </Link>
                 )
               })}
+
+              {/* Quiz entry at the bottom of each module */}
+              {mod.lessons.length > 0 && (
+                <a
+                  href={`/learn/${courseSlug}/${mod.id}/${mod.lessons[mod.lessons.length - 1].id}#quiz-section`}
+                  className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors border-l-2 ${
+                    isLastLessonInModule && mod.id === module?.id
+                      ? 'bg-secondary/20 text-secondary border-secondary'
+                      : 'text-white/40 border-transparent hover:bg-white/5 hover:text-white/60'
+                  }`}
+                >
+                  <ClipboardList className="w-4 h-4 shrink-0" />
+                  <span className="italic">Quiz</span>
+                </a>
+              )}
             </div>
           ))}
         </nav>
@@ -438,7 +466,7 @@ export default function LessonPlayerPage() {
             )}
 
             {/* ── Quiz ──────────────────────────────────────────────────── */}
-            <div className="mt-10 pt-8 border-t border-white/10">
+            <div id="quiz-section" className="mt-10 pt-8 border-t border-white/10">
               {!isLastLessonInModule ? (
                 <p className="text-sm text-white/40 italic">
                   Le quiz de ce module sera disponible &agrave; la derni&egrave;re le&ccedil;on.
@@ -448,10 +476,21 @@ export default function LessonPlayerPage() {
                   <Loader2 className="w-4 h-4 animate-spin" /> Chargement du quiz…
                 </div>
               ) : !quiz || quizQuestions.length === 0 ? (
-                <p className="text-sm text-white/40 italic">Aucun quiz disponible pour cette leçon.</p>
+                <p className="text-sm text-white/40 italic">Aucun quiz disponible pour cette le&ccedil;on.</p>
               ) : (
                 <div>
-                  <h2 className="text-lg font-bold text-white mb-6">{quiz.title}</h2>
+                  <h2 className="text-lg font-bold text-white mb-4">{quiz.title}</h2>
+
+                  {/* Instructions */}
+                  <div className="mb-7 p-4 rounded-xl bg-white/5 border border-white/10 text-sm text-white/70">
+                    <p className="font-semibold text-white/90 mb-2">Instructions</p>
+                    <ul className="space-y-1.5">
+                      <li>• S&eacute;lectionnez une seule r&eacute;ponse par question</li>
+                      <li>• Cliquez sur &laquo;&nbsp;V&eacute;rifier mes r&eacute;ponses&nbsp;&raquo; pour voir votre score</li>
+                      <li>• Vous devez obtenir au moins {requiredScore}&nbsp;% pour valider ce module</li>
+                      <li>• Vous pouvez recommencer le quiz autant de fois que n&eacute;cessaire</li>
+                    </ul>
+                  </div>
 
                   <div className="flex flex-col gap-8">
                     {quizQuestions.map((q, qi) => (
@@ -477,7 +516,7 @@ export default function LessonPlayerPage() {
                                     : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
                                 }`}
                               >
-                                {opt}
+                                <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
                               </button>
                             )
                           })}
@@ -500,11 +539,16 @@ export default function LessonPlayerPage() {
                   ) : (
                     <div className="mt-8 p-5 rounded-xl bg-white/5 border border-white/10">
                       <p className="text-sm font-bold text-white">
-                        Score&nbsp;: {quizQuestions.filter(q => quizAnswers[q.id] === q.correct_answer).length}&nbsp;/&nbsp;{quizQuestions.length}
+                        Score&nbsp;: {correctCount}&nbsp;/&nbsp;{quizQuestions.length} ({scorePercent}&nbsp;%)
                       </p>
-                      {quiz.passing_score != null && (
-                        <p className="text-xs text-white/50 mt-1">
-                          Score minimum requis&nbsp;: {quiz.passing_score}&nbsp;%
+                      {quizPassed ? (
+                        <p className="mt-2 text-sm font-semibold text-success flex items-center gap-1.5">
+                          <CheckCircle className="w-4 h-4 shrink-0" />
+                          Bravo&nbsp;! Vous avez valid&eacute; ce module.
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-sm text-red-400">
+                          Vous devez obtenir au moins {requiredScore}&nbsp;% pour passer au module suivant.
                         </p>
                       )}
                       <button
@@ -565,12 +609,18 @@ export default function LessonPlayerPage() {
               ) : <div />}
 
               {nextLesson && (
-                <Link
-                  href={`/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white text-sm font-semibold rounded-cx hover:opacity-90 transition-opacity"
-                >
-                  Leçon suivante <ChevronRight className="w-4 h-4" />
-                </Link>
+                nextIsBlocked ? (
+                  <span className="flex items-center gap-2 px-4 py-2.5 bg-white/5 text-white/25 text-sm font-semibold rounded-cx cursor-not-allowed select-none">
+                    Le&ccedil;on suivante <ChevronRight className="w-4 h-4" />
+                  </span>
+                ) : (
+                  <Link
+                    href={`/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white text-sm font-semibold rounded-cx hover:opacity-90 transition-opacity"
+                  >
+                    Le&ccedil;on suivante <ChevronRight className="w-4 h-4" />
+                  </Link>
+                )
               )}
             </div>
           </div>
