@@ -39,7 +39,7 @@ export default function HomePage() {
                 </p>
                 <a
                   href="#formations"
-                  className="inline-flex items-center gap-2 px-7 py-3.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
+                  className="inline-flex items-center gap-2 px-7 py-3.5 bg-[#131140] text-white font-bold rounded-cx hover:bg-[#1c1a5e] transition-all hover:-translate-y-0.5 shadow-btn text-base"
                 >
                   D&eacute;couvrir nos formations <ArrowRight className="w-5 h-5" />
                 </a>
