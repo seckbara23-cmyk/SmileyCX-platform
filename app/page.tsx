@@ -46,7 +46,7 @@ export default function HomePage() {
               </div>
 
               {/* Right: image */}
-              <div className="hidden lg:flex justify-end">
+              <div className="flex justify-end">
                 <div className="relative w-full max-w-[520px] aspect-[4/3] rounded-3xl overflow-hidden shadow-xl">
                   <Image
                     src="/images/Picture7.jpg"

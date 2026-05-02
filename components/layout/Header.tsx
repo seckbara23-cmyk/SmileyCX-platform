@@ -121,9 +121,9 @@ export default function Header() {
                   href={`/#${link.id}`}
                   onClick={(e) => handleNavClick(e, link.id)}
                   className={cn(
-                    'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors duration-200 cursor-pointer',
+                    'px-3 py-1.5 rounded-lg text-sm font-bold transition-colors duration-200 cursor-pointer',
                     isHome && activeSection === link.id
-                      ? 'text-primary bg-primary/8 font-semibold'
+                      ? 'text-primary bg-primary/8'
                       : 'text-dark hover:text-primary hover:bg-primary/5'
                   )}
                 >
@@ -235,9 +235,9 @@ export default function Header() {
               href={`/#${link.id}`}
               onClick={(e) => handleNavClick(e, link.id)}
               className={cn(
-                'px-4 py-3 rounded-cx text-sm font-medium transition-colors cursor-pointer',
+                'px-4 py-3 rounded-cx text-sm font-bold transition-colors cursor-pointer',
                 isHome && activeSection === link.id
-                  ? 'text-primary bg-primary/8 font-semibold'
+                  ? 'text-primary bg-primary/8'
                   : 'text-dark hover:bg-light'
               )}
             >
