@@ -174,11 +174,14 @@ export default function LessonPlayerPage() {
   // ── Load quiz for the current module ──────────────────────────────────────
   const loadQuiz = useCallback(async (modId: string) => {
     setQuizLoading(true)
-    const { data: quizData } = await supabase
+    const { data: quizData, error: quizErr } = await supabase
       .from('quizzes')
       .select('id, title, passing_score')
       .eq('module_id', modId)
+      .limit(1)
       .maybeSingle()
+
+    if (quizErr) console.error('[quiz] fetch error:', quizErr.message, quizErr.code)
 
     if (!quizData) {
       setQuiz(null)
@@ -188,12 +191,13 @@ export default function LessonPlayerPage() {
     }
 
     setQuiz(quizData)
-    const { data: questions } = await supabase
+    const { data: questions, error: qErr } = await supabase
       .from('quiz_questions')
       .select('id, question, options, correct_answer, explanation, order_index')
       .eq('quiz_id', quizData.id)
       .order('order_index', { ascending: true })
 
+    if (qErr) console.error('[quiz_questions] fetch error:', qErr.message, qErr.code)
     setQuizQuestions(questions ?? [])
     setQuizLoading(false)
   }, [supabase])
