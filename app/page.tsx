@@ -98,52 +98,68 @@ export default function HomePage() {
             {/* Mode cards */}
             <div className="grid sm:grid-cols-2 gap-6 max-w-3xl mx-auto">
 
-              <div className="cx-card p-8 flex flex-col gap-4 border-t-4 border-primary">
-                <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center">
-                  <Monitor className="w-6 h-6 text-primary" />
+              {/* Formation en ligne */}
+              <div className="cx-card border-t-4 border-primary p-8 flex flex-col hover:shadow-md transition-shadow">
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-5">
+                  <div className="w-12 h-12 rounded-xl bg-primary/10 flex items-center justify-center shrink-0">
+                    <Monitor className="w-6 h-6 text-primary" />
+                  </div>
+                  <h3 className="text-lg font-bold text-dark">Formation en ligne</h3>
                 </div>
-                <div>
-                  <h3 className="text-lg font-bold text-dark mb-1">Formation en ligne</h3>
-                  <p className="text-cx-gray text-sm leading-relaxed">
+                {/* Body */}
+                <div className="flex-1">
+                  <p className="text-cx-gray text-sm leading-relaxed mb-4">
                     Modules pratiques accessibles &agrave; votre rythme, &agrave; tout moment.
                   </p>
+                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                    <ul className="flex-1 space-y-3 text-sm text-dark">
+                      {['Accès immédiat', 'Vidéos + ressources PDF', 'Mobile & desktop'].map(f => (
+                        <li key={f} className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-success shrink-0" /> {f}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="relative w-full h-36 sm:w-28 sm:h-28 shrink-0 rounded-xl overflow-hidden">
+                      <Image src="/images/screenImg.jpg" alt="Formation en ligne" fill className="object-cover" />
+                    </div>
+                  </div>
                 </div>
-                <ul className="flex flex-col gap-2 text-sm text-dark mt-2">
-                  {['Accès immédiat', 'Vidéos + ressources PDF', 'Mobile & desktop'].map(f => (
-                    <li key={f} className="flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4 text-success shrink-0" /> {f}
-                    </li>
-                  ))}
-                </ul>
-                <a
-                  href="/courses"
-                  className="mt-2 text-sm font-semibold text-primary hover:underline flex items-center gap-1"
-                >
+                {/* Footer */}
+                <a href="/courses" className="mt-6 text-sm font-semibold text-primary hover:underline inline-flex items-center gap-1">
                   Voir les formations <ArrowRight className="w-4 h-4" />
                 </a>
               </div>
 
-              <div className="cx-card p-8 flex flex-col gap-4 border-t-4 border-secondary">
-                <div className="w-12 h-12 rounded-xl bg-secondary/10 flex items-center justify-center">
-                  <MapPin className="w-6 h-6 text-secondary" />
+              {/* Formation en présentiel */}
+              <div className="cx-card border-t-4 border-secondary p-8 flex flex-col hover:shadow-md transition-shadow">
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-5">
+                  <div className="w-12 h-12 rounded-xl bg-secondary/10 flex items-center justify-center shrink-0">
+                    <MapPin className="w-6 h-6 text-secondary" />
+                  </div>
+                  <h3 className="text-lg font-bold text-dark">Formation en pr&eacute;sentiel</h3>
                 </div>
-                <div>
-                  <h3 className="text-lg font-bold text-dark mb-1">Formation en pr&eacute;sentiel</h3>
-                  <p className="text-cx-gray text-sm leading-relaxed">
+                {/* Body */}
+                <div className="flex-1">
+                  <p className="text-cx-gray text-sm leading-relaxed mb-4">
                     Ateliers interactifs pour &eacute;quipes et professionnels.
                   </p>
+                  <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+                    <ul className="flex-1 space-y-3 text-sm text-dark">
+                      {['Dakar et région', 'Groupes et équipes', 'Programme sur mesure'].map(f => (
+                        <li key={f} className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-success shrink-0" /> {f}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="relative w-full h-36 sm:w-28 sm:h-28 shrink-0 rounded-xl overflow-hidden">
+                      <Image src="/images/Picture6.jpg" alt="Formation en présentiel" fill className="object-cover" />
+                    </div>
+                  </div>
                 </div>
-                <ul className="flex flex-col gap-2 text-sm text-dark mt-2">
-                  {['Dakar et région', 'Groupes et équipes', 'Programme sur mesure'].map(f => (
-                    <li key={f} className="flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4 text-success shrink-0" /> {f}
-                    </li>
-                  ))}
-                </ul>
-                <a
-                  href="#contact"
-                  className="mt-2 text-sm font-semibold text-secondary hover:underline flex items-center gap-1"
-                >
+                {/* Footer */}
+                <a href="#contact" className="mt-6 text-sm font-semibold text-secondary hover:underline inline-flex items-center gap-1">
                   Demander un atelier <ArrowRight className="w-4 h-4" />
                 </a>
               </div>
