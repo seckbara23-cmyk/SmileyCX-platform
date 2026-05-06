@@ -45,7 +45,7 @@ export default async function CertificatePage({ params }: Props) {
   // Verify actual completion — all lessons must be completed
   const { data: modules } = await supabase
     .from('modules')
-    .select('lessons(id)')
+    .select('id, lessons(id)')
     .eq('course_id', course.id)
 
   const allLessonIds: string[] = (modules ?? []).flatMap(
@@ -66,11 +66,43 @@ export default async function CertificatePage({ params }: Props) {
     .eq('is_completed', true)
     .in('lesson_id', allLessonIds)
 
-  const isComplete = (completedCount ?? 0) >= totalLessons
-
-  if (!isComplete) {
-    // Not all lessons completed — redirect to the course detail page
+  if ((completedCount ?? 0) < totalLessons) {
     redirect(`/courses/${courseSlug}`)
+  }
+
+  // Verify all module quizzes passed — uses quiz_attempts (server-side records only).
+  // Skipped in PILOT_MODE since quiz attempts are not persisted for anonymous users.
+  if (!PILOT_MODE) {
+    const moduleIds = (modules ?? []).map(m => (m as { id: string }).id).filter(Boolean)
+
+    if (moduleIds.length > 0) {
+      const { data: quizModulesData } = await supabase
+        .from('quizzes')
+        .select('module_id')
+        .in('module_id', moduleIds)
+        .not('module_id', 'is', null)
+
+      const quizModuleIds = Array.from(new Set(
+        (quizModulesData ?? []).map(q => q.module_id as string).filter(Boolean)
+      ))
+
+      if (quizModuleIds.length > 0) {
+        const { data: passedAttempts } = await supabase
+          .from('quiz_attempts')
+          .select('module_id')
+          .eq('user_id', user.id)
+          .eq('passed', true)
+          .in('module_id', quizModuleIds)
+
+        const passedIds = new Set(
+          (passedAttempts ?? []).map(a => a.module_id as string).filter(Boolean)
+        )
+
+        if (!quizModuleIds.every(id => passedIds.has(id))) {
+          redirect(`/courses/${courseSlug}`)
+        }
+      }
+    }
   }
 
   // Look up or create certificate (only after verifying completion)

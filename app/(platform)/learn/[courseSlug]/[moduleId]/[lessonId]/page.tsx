@@ -179,30 +179,40 @@ export default function LessonPlayerPage() {
     })
   }, [supabase, router, loadCourse, loadCourseAnon, loadUserProgress])
 
-  // ── Load validated modules + quiz existence from localStorage + Supabase ──
+  // ── Load validated modules + quiz existence ───────────────────────────────
+  // For authenticated users, DB quiz_attempts is the source of truth.
+  // In PILOT_MODE, gating is disabled entirely — all modules are accessible.
   useEffect(() => {
     if (modules.length === 0) return
-
-    // Read localStorage for which modules are already validated
-    const validated = new Set<string>()
-    modules.forEach(mod => {
-      try {
-        const s = localStorage.getItem(`quiz-${mod.id}`)
-        if (s && JSON.parse(s).passed) validated.add(mod.id)
-      } catch {}
-    })
-    setValidatedModules(validated)
-
-    // Fetch which modules actually have a quiz (batch query)
     const modIds = modules.map(m => m.id)
+
+    // Always fetch which modules have a quiz (for sidebar icon display).
     supabase
       .from('quizzes')
       .select('module_id')
       .in('module_id', modIds)
       .then(({ data }) => {
-        const withQuiz = new Set<string>((data ?? []).map(q => q.module_id as string))
-        setModulesWithQuiz(withQuiz)
+        setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string)))
       })
+
+    // In PILOT_MODE there is no user account or enrollment — skip gating.
+    if (PILOT_MODE) return
+
+    // Authenticated path: use quiz_attempts from the DB.
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!user) return
+      supabase
+        .from('quiz_attempts')
+        .select('module_id')
+        .eq('user_id', user.id)
+        .eq('passed', true)
+        .in('module_id', modIds)
+        .then(({ data: attempts }) => {
+          setValidatedModules(
+            new Set((attempts ?? []).map(a => a.module_id as string))
+          )
+        })
+    })
   }, [modules]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync completion state when lesson changes ──────────────────────────────
@@ -239,10 +249,11 @@ export default function LessonPlayerPage() {
     module.lessons[module.lessons.length - 1]?.id === lesson.id
 
   // ── Next-module gating ────────────────────────────────────────────────────
+  // PILOT_MODE: anonymous access — no accounts, no quiz records, no gating.
   const nextIsNewModule    = !!nextLesson && nextLesson.module.id !== module?.id
   const currentModHasQuiz  = modulesWithQuiz.has(module?.id ?? '')
   const currentModPassed   = validatedModules.has(module?.id ?? '')
-  const nextIsBlocked      = nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
+  const nextIsBlocked      = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
 
   // ── Loading state ──────────────────────────────────────────────────────────
   if (loading) {

@@ -1,22 +1,22 @@
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { rateLimit, getClientIp } from '@/lib/rate-limit'
+import { rateLimitDb, getClientIp } from '@/lib/rate-limit'
 import { createLogger } from '@/lib/logger'
 import { NextRequest, NextResponse } from 'next/server'
 
 const log = createLogger('api/admin/login')
 
-// 5 attempts per 15-minute window per IP
+// 5 attempts per 15-minute window (applied per IP and per username independently)
 const RATE_LIMIT = { limit: 5, windowMs: 15 * 60 * 1000 }
 
 export async function POST(request: NextRequest) {
   const origin = new URL(request.url).origin
 
-  // ── Rate limiting ────────────────────────────────────────────────────────────
+  // ── Rate limiting by IP (Supabase-backed — safe on Vercel serverless) ────────
   const ip = getClientIp(request)
-  const rl = rateLimit(`admin-login:${ip}`, RATE_LIMIT)
-  if (!rl.success) {
-    const retryAfterSec = Math.ceil((rl.resetAt - Date.now()) / 1000)
+  const rlIp = await rateLimitDb(`admin-login:ip:${ip}`, RATE_LIMIT)
+  if (!rlIp.success) {
+    const retryAfterSec = Math.ceil((rlIp.resetAt - Date.now()) / 1000)
     return NextResponse.redirect(`${origin}/admin/login?error=too_many_attempts`, {
       status: 303,
       headers: { 'Retry-After': String(retryAfterSec) },
@@ -38,7 +38,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.redirect(`${origin}/admin/login?error=invalid`, { status: 303 })
     }
 
+    // Also rate-limit by username to prevent distributed IP attacks targeting one account.
+    const rlUser = await rateLimitDb(`admin-login:user:${username.toLowerCase()}`, RATE_LIMIT)
+    if (!rlUser.success) {
+      const retryAfterSec = Math.ceil((rlUser.resetAt - Date.now()) / 1000)
+      return NextResponse.redirect(`${origin}/admin/login?error=too_many_attempts`, {
+        status: 303,
+        headers: { 'Retry-After': String(retryAfterSec) },
+      })
+    }
+
     if (username.toLowerCase() !== adminUsername.trim().toLowerCase()) {
+      // Return the same generic error regardless of whether username is wrong or
+      // password is wrong — never reveal which field failed.
       return NextResponse.redirect(`${origin}/admin/login?error=invalid`, { status: 303 })
     }
 
@@ -57,54 +69,30 @@ export async function POST(request: NextRequest) {
       return NextResponse.redirect(`${origin}/admin/login?error=invalid`, { status: 303 })
     }
 
-    log.info({ userId: data.user.id, email: data.user.email }, 'Admin login: Supabase auth succeeded, fetching profile')
+    log.info({ userId: data.user.id }, 'Admin login: auth passed, verifying profile')
 
-    // Verify super_admin role
+    // Profile must already exist with platform_role = 'super_admin'.
+    // Auto-creation is intentionally removed — a missing profile means the
+    // account was not set up through the proper admin provisioning flow.
     const { data: profile, error: profileErr } = await createAdminClient()
       .from('profiles')
-      .select('id, platform_role, role')
+      .select('id, platform_role')
       .eq('id', data.user.id)
       .single()
 
-    log.info(
-      { userId: data.user.id, profile, profileErr: profileErr?.message },
-      'Admin login: profile fetch result'
-    )
+    if (profileErr || !profile) {
+      log.warn({ userId: data.user.id }, 'Admin login: profile not found — access denied')
+      return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
+    }
 
-    if (profileErr) {
-      // PGRST116 = "no rows returned" — profile row doesn't exist yet (admin
-      // account created in Supabase dashboard, not through the signup flow).
-      // Auto-create the profile with super_admin so the admin can log in.
-      if (profileErr.code === 'PGRST116') {
-        log.warn({ userId: data.user.id }, 'Admin login: no profile row — creating super_admin profile')
-        const { error: insertErr } = await createAdminClient()
-          .from('profiles')
-          .insert({ id: data.user.id, email: adminEmail, platform_role: 'super_admin' })
-        if (insertErr) {
-          log.error({ err: insertErr.message, userId: data.user.id }, 'Admin login: failed to create profile row')
-          return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
-        }
-        log.info({ userId: data.user.id }, 'Admin login: profile row created with super_admin — proceeding')
-      } else {
-        log.error({ err: profileErr.message, code: profileErr.code, userId: data.user.id }, 'Admin login: profile fetch error')
-        return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
-      }
-    } else {
-      // Profile exists — verify platform_role
-      const platformRole = (profile.platform_role as string | null)?.trim()
-      if (platformRole !== 'super_admin') {
-        log.error(
-          { userId: data.user.id, platformRole, raw: profile.platform_role },
-          'Admin login: platform_role is not super_admin — access denied'
-        )
-        return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
-      }
+    const platformRole = (profile.platform_role as string | null)?.trim()
+    if (platformRole !== 'super_admin') {
+      log.warn({ userId: data.user.id }, 'Admin login: insufficient role — access denied')
+      return NextResponse.redirect(`${origin}/admin/login?error=forbidden`, { status: 303 })
     }
 
     log.info({ userId: data.user.id }, 'Admin login: access granted')
 
-    // Set a simple HttpOnly cookie the middleware and admin layout read directly.
-    // This bypasses @supabase/ssr session cookie issues entirely.
     const response = NextResponse.redirect(`${origin}/admin`, { status: 303 })
     response.cookies.set('scx_admin', data.user.id, {
       httpOnly: true,

@@ -2,8 +2,8 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Check, Loader2, Shield } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
-import { generateReference, formatPrice } from '@/lib/utils/cn'
+import { createPaymentRecord } from '@/app/actions/payment'
+import { PAYMENTS_ENABLED } from '@/lib/pilot'
 import { Input } from '@/components/ui/Input'
 import type { PaymentMethod, Course, Profile } from '@/types'
 
@@ -36,15 +36,24 @@ const METHODS: { id: PaymentMethod; label: string; icon: string; color: string; 
   },
 ]
 
-export default function PaymentMethodSelector({ course, profile }: Props) {
-  const router  = useRouter()
-  const supabase = createClient()
+export default function PaymentMethodSelector({ course, profile: _profile }: Props) {
+  const router = useRouter()
 
   const [method,  setMethod]  = useState<PaymentMethod | null>(null)
   const [phone,   setPhone]   = useState('')
   const [card,    setCard]    = useState({ number: '', expiry: '', cvv: '', name: '' })
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
+
+  // Hard guard — the checkout page already blocks this component when payments
+  // are disabled, but we add a second check here for defence in depth.
+  if (!PAYMENTS_ENABLED) {
+    return (
+      <p className="text-sm text-cx-gray italic">
+        Le paiement n&apos;est pas disponible pendant la phase pilote.
+      </p>
+    )
+  }
 
   async function handlePay() {
     if (!method) { setError('Sélectionnez un mode de paiement'); return }
@@ -59,37 +68,25 @@ export default function PaymentMethodSelector({ course, profile }: Props) {
     setError('')
     setLoading(true)
 
-    const reference = generateReference('SCX')
+    const metadata: Record<string, string> = method === 'card'
+      ? { cardholder: card.name }   // never store raw card data
+      : { phone }
 
-    // Create the payment record as pending immediately.
-    const { data: payment, error: payErr } = await supabase
-      .from('payments')
-      .insert({
-        user_id:   profile.id,
-        course_id: course.id,
-        amount:    course.price,
-        currency:  course.currency,
-        method,
-        status:    'pending',
-        reference,
-        provider_reference: reference,
-        metadata:  method === 'card'
-          ? { cardholder: card.name }                    // never store raw card data
-          : { phone },
-      })
-      .select()
-      .single()
+    // Payment record is created server-side — amount is read from the DB,
+    // not from the client, so the price cannot be tampered with.
+    const result = await createPaymentRecord({
+      courseId: course.id,
+      method,
+      metadata,
+    })
 
-    if (payErr) {
-      setError("Erreur lors de l'initialisation du paiement. Réessayez.")
+    if (result.error) {
+      setError(result.error)
       setLoading(false)
       return
     }
 
-    // TODO: replace this client-side flow with a real payment gateway redirect.
-    // The current checkout flow keeps the payment pending until the backend
-    // confirms it via webhook or status callback.
-    router.push(`/checkout/confirm?payment=${payment.id}`)
+    router.push(`/checkout/confirm?payment=${result.paymentId}`)
   }
 
   return (
@@ -202,7 +199,7 @@ export default function PaymentMethodSelector({ course, profile }: Props) {
             Traitement en cours…
           </>
         ) : (
-          `Payer ${formatPrice(course.price, course.currency)}`
+          `Payer`
         )}
       </button>
 

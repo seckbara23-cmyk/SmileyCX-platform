@@ -4,6 +4,9 @@ import Link from 'next/link'
 import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Award } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
+import { submitQuizAnswers } from '@/app/actions/quiz'
+import { PILOT_MODE } from '@/lib/pilot'
+import type { QuizSubmitResult } from '@/app/actions/quiz'
 
 const OPTION_LABELS = ['A', 'B', 'C', 'D']
 const MIN_PASS      = 80
@@ -14,13 +17,13 @@ interface QuizRow {
   title:         string
   passing_score: number | null
 }
+// correct_answer is intentionally omitted — it is returned by the server
+// action after submission, never fetched directly by the client.
 interface QuestionRow {
-  id:             string
-  question:       string
-  options:        string[]
-  correct_answer: number
-  explanation:    string | null
-  order_index:    number
+  id:          string
+  question:    string
+  options:     string[]
+  order_index: number
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -30,20 +33,23 @@ export default function ModuleQuizPage() {
   const supabase = createClient()
 
   const courseSlug = params.courseSlug as string
-  const moduleId   = params.moduleId   as string  // may be UUID or slug
+  const moduleId   = params.moduleId   as string
 
-  const [loading,       setLoading]       = useState(true)
-  const [moduleTitle,   setModuleTitle]   = useState('')
-  const [resolvedModId, setResolvedModId] = useState('')
-  const [lastLessonId,  setLastLessonId]  = useState<string | null>(null)
-  const [quiz,          setQuiz]          = useState<QuizRow | null>(null)
-  const [questions,     setQuestions]     = useState<QuestionRow[]>([])
-  const [nextModFirst,  setNextModFirst]  = useState<{ modId: string; lessonId: string } | null>(null)
-  const [isLastModule,  setIsLastModule]  = useState(false)
+  const [loading,          setLoading]          = useState(true)
+  const [moduleTitle,      setModuleTitle]       = useState('')
+  const [resolvedModId,    setResolvedModId]     = useState('')
+  const [lastLessonId,     setLastLessonId]      = useState<string | null>(null)
+  const [quiz,             setQuiz]              = useState<QuizRow | null>(null)
+  const [questions,        setQuestions]         = useState<QuestionRow[]>([])
+  const [nextModFirst,     setNextModFirst]      = useState<{ modId: string; lessonId: string } | null>(null)
+  const [isLastModule,     setIsLastModule]      = useState(false)
 
-  const [answers,       setAnswers]       = useState<Record<string, number>>({})
-  const [submitted,     setSubmitted]     = useState(false)
-  const [alreadyPassed, setAlreadyPassed] = useState(false)
+  const [answers,          setAnswers]           = useState<Record<string, number>>({})
+  const [submitted,        setSubmitted]         = useState(false)
+  const [submitting,       setSubmitting]        = useState(false)
+  const [submitError,      setSubmitError]       = useState('')
+  const [submissionResult, setSubmissionResult]  = useState<QuizSubmitResult | null>(null)
+  const [alreadyPassed,    setAlreadyPassed]     = useState(false)
 
   // ── Fetch all data ────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
@@ -65,7 +71,7 @@ export default function ModuleQuizPage() {
 
     type LessonMeta = { id: string; order_index: number }
 
-    const curIdx    = rawMods.findIndex(m => m.id === moduleId || m.slug === moduleId)
+    const curIdx = rawMods.findIndex(m => m.id === moduleId || m.slug === moduleId)
     if (curIdx < 0) { setLoading(false); return }
 
     const curMod     = rawMods[curIdx]
@@ -74,24 +80,37 @@ export default function ModuleQuizPage() {
     setModuleTitle(curMod.title)
     setIsLastModule(curIdx === rawMods.length - 1)
 
-    // Last lesson of current module (back-link target)
     const curLessons = [...(curMod.lessons as LessonMeta[])].sort((a, b) => a.order_index - b.order_index)
     setLastLessonId(curLessons[curLessons.length - 1]?.id ?? null)
 
-    // First lesson of next module (CTA target)
     const nextMod = rawMods[curIdx + 1]
     if (nextMod) {
       const nextLessons = [...(nextMod.lessons as LessonMeta[])].sort((a, b) => a.order_index - b.order_index)
       if (nextLessons[0]) setNextModFirst({ modId: nextMod.id, lessonId: nextLessons[0].id })
     }
 
-    // Restore persisted pass state
+    // ── Check pass state: DB first (source of truth), localStorage as fallback ─
+    if (!PILOT_MODE) {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: attempt } = await supabase
+          .from('quiz_attempts')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('module_id', resolvedId)
+          .eq('passed', true)
+          .limit(1)
+          .maybeSingle()
+        if (attempt) setAlreadyPassed(true)
+      }
+    }
+    // localStorage is kept as UI cache for PILOT_MODE / offline fallback.
     try {
       const s = localStorage.getItem(`quiz-${resolvedId}`)
       if (s && JSON.parse(s).passed) setAlreadyPassed(true)
     } catch {}
 
-    // Fetch quiz
+    // Fetch quiz metadata (without correct_answer — never sent to the client)
     const { data: quizData, error: quizErr } = await supabase
       .from('quizzes')
       .select('id, title, passing_score')
@@ -104,9 +123,11 @@ export default function ModuleQuizPage() {
     if (quizData) {
       setQuiz(quizData)
 
+      // Fetch questions WITHOUT correct_answer — the correct answers are
+      // returned by the server action only after the user submits.
       const { data: qs, error: qsErr } = await supabase
         .from('quiz_questions')
-        .select('id, question, options, correct_answer, explanation, order_index')
+        .select('id, question, options, order_index')
         .eq('quiz_id', quizData.id)
         .order('order_index', { ascending: true })
 
@@ -120,28 +141,56 @@ export default function ModuleQuizPage() {
   useEffect(() => { loadData() }, [loadData])
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const requiredScore = Math.max(quiz?.passing_score ?? MIN_PASS, MIN_PASS)
-  const correctCount  = questions.filter(q => answers[q.id] === q.correct_answer).length
-  const scorePercent  = questions.length > 0
-    ? Math.round((correctCount / questions.length) * 100)
-    : 0
-  const quizPassed = submitted && scorePercent >= requiredScore
-  const isPassed   = quizPassed || alreadyPassed
+  const requiredScore  = Math.max(quiz?.passing_score ?? MIN_PASS, MIN_PASS)
+  const scorePercent   = submissionResult?.score   ?? 0
+  const correctCount   = submissionResult?.correctCount ?? 0
+  const totalQuestions = questions.length
+  const quizPassed     = submissionResult?.passed  ?? false
+  const isPassed       = quizPassed || alreadyPassed
 
-  // ── Submit ────────────────────────────────────────────────────────────────
-  function handleSubmit() {
-    setSubmitted(true)
-    const score  = questions.length > 0
-      ? Math.round((questions.filter(q => answers[q.id] === q.correct_answer).length / questions.length) * 100)
-      : 0
-    const passed = score >= requiredScore
+  // ── Submit — scoring is done entirely server-side ─────────────────────────
+  async function handleSubmit() {
+    if (submitting || !quiz) return
+    setSubmitting(true)
+    setSubmitError('')
+
     try {
-      localStorage.setItem(`quiz-${resolvedModId}`, JSON.stringify({ passed, score }))
-    } catch {}
-    if (passed) setAlreadyPassed(true)
+      const result = await submitQuizAnswers({
+        quizId:   quiz.id,
+        moduleId: resolvedModId,
+        answers,
+      })
+
+      if (result.error) {
+        setSubmitError(result.error)
+        return
+      }
+
+      setSubmissionResult(result)
+      setSubmitted(true)
+
+      // Write to localStorage as a UI convenience cache (not a security gate).
+      try {
+        localStorage.setItem(
+          `quiz-${resolvedModId}`,
+          JSON.stringify({ passed: result.passed, score: result.score })
+        )
+      } catch {}
+
+      if (result.passed) setAlreadyPassed(true)
+    } catch {
+      setSubmitError('Une erreur est survenue. Veuillez réessayer.')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
-  function handleRetry() { setAnswers({}); setSubmitted(false) }
+  function handleRetry() {
+    setAnswers({})
+    setSubmitted(false)
+    setSubmissionResult(null)
+    setSubmitError('')
+  }
 
   // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
@@ -223,7 +272,7 @@ export default function ModuleQuizPage() {
               Quiz &mdash; {quiz.title}
             </h1>
 
-            {/* Instructions (only before submission) */}
+            {/* Instructions */}
             {!submitted && (
               <div className="mb-8 p-4 rounded-xl bg-white/5 border border-white/10 text-sm text-white/70">
                 <p className="font-semibold text-white/90 mb-2">Instructions</p>
@@ -244,8 +293,10 @@ export default function ModuleQuizPage() {
                   <div className="flex flex-col gap-2">
                     {(q.options as string[]).map((opt, oi) => {
                       const isSelected   = answers[q.id] === oi
-                      const isCorrectOpt = submitted && oi === q.correct_answer
-                      const isWrongOpt   = submitted && isSelected && oi !== q.correct_answer
+                      // After submission, use server-returned correct answers for highlighting.
+                      const serverCorrect = submissionResult?.correctAnswers?.[q.id]
+                      const isCorrectOpt  = submitted && oi === serverCorrect
+                      const isWrongOpt    = submitted && isSelected && oi !== serverCorrect
                       return (
                         <button
                           key={oi}
@@ -266,8 +317,10 @@ export default function ModuleQuizPage() {
                       )
                     })}
                   </div>
-                  {submitted && q.explanation && (
-                    <p className="mt-3 text-xs text-white/50 italic">{q.explanation}</p>
+                  {submitted && submissionResult?.explanations?.[q.id] && (
+                    <p className="mt-3 text-xs text-white/50 italic">
+                      {submissionResult.explanations[q.id]}
+                    </p>
                   )}
                 </div>
               ))}
@@ -275,17 +328,23 @@ export default function ModuleQuizPage() {
 
             {/* Submit / result */}
             {!submitted ? (
-              <button
-                onClick={handleSubmit}
-                disabled={Object.keys(answers).length < questions.length}
-                className="mt-10 px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                V&eacute;rifier mes r&eacute;ponses
-              </button>
+              <div className="mt-10 flex flex-col gap-3">
+                {submitError && (
+                  <p className="text-sm text-red-400">{submitError}</p>
+                )}
+                <button
+                  onClick={handleSubmit}
+                  disabled={submitting || Object.keys(answers).length < questions.length}
+                  className="px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 w-fit"
+                >
+                  {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {submitting ? 'Vérification…' : 'Vérifier mes réponses'}
+                </button>
+              </div>
             ) : (
               <div className="mt-10 p-6 rounded-2xl bg-white/5 border border-white/10">
                 <p className="text-base font-bold text-white">
-                  Score&nbsp;: {correctCount}&nbsp;/&nbsp;{questions.length}&nbsp;
+                  Score&nbsp;: {correctCount}&nbsp;/&nbsp;{totalQuestions}&nbsp;
                   <span className="text-white/50 font-normal">({scorePercent}&nbsp;%)</span>
                 </p>
 

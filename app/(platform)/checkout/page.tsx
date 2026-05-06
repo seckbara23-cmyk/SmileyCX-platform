@@ -3,7 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector'
 import { formatPrice } from '@/lib/utils/cn'
 import { FLAGSHIP_COURSE } from '@/data/seed'
-import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
+import { FREE_ACCESS_MODE, PILOT_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
 import { enrollForFree } from '@/app/actions/enrollment'
 import type { Metadata } from 'next'
 
@@ -85,7 +85,33 @@ export default async function CheckoutPage({ searchParams }: Props) {
   }
   // ── End TEMP_FREE_ACCESS ───────────────────────────────────────────────────
 
-  // Below is the payment UI — only reached when FREE_ACCESS_MODE is false
+  // ── PAYMENTS_ENABLED guard — shows pilot message when gateways not active ──
+  if (!PAYMENTS_ENABLED) {
+    return (
+      <div className="cx-section">
+        <div className="cx-container max-w-2xl text-center py-16">
+          <div className="w-16 h-16 rounded-full bg-primary/10 flex items-center justify-center mx-auto mb-6">
+            <span className="text-3xl">🎓</span>
+          </div>
+          <h1 className="text-2xl font-extrabold text-dark mb-3">
+            Accès gratuit en cours
+          </h1>
+          <p className="text-cx-gray mb-8 max-w-md mx-auto">
+            La plateforme est en phase pilote. L&apos;accès aux formations est entièrement
+            gratuit et ne nécessite aucun paiement.
+          </p>
+          <a
+            href="/dashboard"
+            className="inline-block px-6 py-3 bg-primary text-white font-bold rounded-cx hover:opacity-90 transition-opacity"
+          >
+            Accéder à ma formation →
+          </a>
+        </div>
+      </div>
+    )
+  }
+
+  // Below is the payment UI — only reached when PAYMENTS_ENABLED is true
   return (
     <div className="cx-section">
       <div className="cx-container max-w-4xl">

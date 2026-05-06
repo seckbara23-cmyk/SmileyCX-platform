@@ -25,3 +25,15 @@ export const FREE_ACCESS_MODE =
  */
 export const PILOT_MODE =
   process.env.NEXT_PUBLIC_PILOT_MODE === 'true'
+
+/**
+ * PAYMENTS_ENABLED: Payment gateway flag.
+ *
+ * When false (default during pilot), the checkout page bypasses all payment UI
+ * and the createPaymentRecord server action refuses to create records.
+ *
+ * Set NEXT_PUBLIC_PAYMENTS_ENABLED=true only after payment gateways are
+ * fully integrated, tested, and webhook handlers are deployed.
+ */
+export const PAYMENTS_ENABLED =
+  process.env.NEXT_PUBLIC_PAYMENTS_ENABLED === 'true'
