@@ -11,7 +11,7 @@ export const metadata: Metadata = { title: 'Admin — Modifier un quiz' }
 type RawLesson = { id: string; title: string; order_index: number }
 type RawModule = { id: string; title: string; order_index: number; lessons: RawLesson[] }
 
-function toOptions(opts: unknown): [string, string, string, string] {
+function toMCOptions(opts: unknown): [string, string, string, string] {
   const arr = Array.isArray(opts) ? opts : []
   return [String(arr[0] ?? ''), String(arr[1] ?? ''), String(arr[2] ?? ''), String(arr[3] ?? '')]
 }
@@ -30,7 +30,7 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
 
   const { data: rawQuestions } = await supabase
     .from('quiz_questions')
-    .select('id, question, options, correct_answer, explanation, order_index')
+    .select('id, question, question_type, options, correct_answer, drag_match_answers, explanation, order_index')
     .eq('quiz_id', params.id)
     .order('order_index')
 
@@ -40,7 +40,6 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
     .eq('is_published', true)
     .order('title')
 
-  // Resolve which course owns this quiz's module/lesson
   const mod = quiz.modules as unknown as { id: string; course_id: string } | null
   const les = quiz.lessons as unknown as { id: string; module_id: string } | null
 
@@ -57,14 +56,37 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
     }
   }
 
-  const questions = (rawQuestions ?? []).map(q => ({
-    id:             q.id,
-    question:       q.question,
-    options:        toOptions(q.options),
-    correct_answer: q.correct_answer as number,
-    explanation:    (q.explanation as string | null) ?? '',
-    order_index:    q.order_index,
-  }))
+  const questions = (rawQuestions ?? []).map(q => {
+    const qType = (q.question_type as string | null) ?? 'multiple_choice'
+
+    if (qType === 'drag_match') {
+      const opts = (q.options ?? {}) as { categories?: { id: string; label: string }[]; items?: { id: string; label: string }[] }
+      const dmAnswers = (q.drag_match_answers ?? {}) as Record<string, string>
+      return {
+        id:            q.id,
+        order_index:   q.order_index,
+        question_type: 'drag_match' as const,
+        question:      q.question,
+        explanation:   (q.explanation as string | null) ?? '',
+        dm_categories: opts.categories ?? [],
+        dm_items:      (opts.items ?? []).map(item => ({
+          id:                item.id,
+          label:             item.label,
+          correctCategoryId: dmAnswers[item.id] ?? '',
+        })),
+      }
+    }
+
+    return {
+      id:             q.id,
+      order_index:    q.order_index,
+      question_type:  'multiple_choice' as const,
+      question:       q.question,
+      options:        toMCOptions(q.options),
+      correct_answer: (q.correct_answer as number | null) ?? 0,
+      explanation:    (q.explanation as string | null) ?? '',
+    }
+  })
 
   const courses = (rawCourses ?? []).map(c => ({
     id:      c.id,

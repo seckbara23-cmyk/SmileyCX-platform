@@ -1,12 +1,4 @@
 'use server'
-/**
- * Quiz server actions.
- *
- * submitQuizAnswers — scores a quiz submission entirely server-side.
- *   The client sends only the selected option indices; correct answers are
- *   never sent to the browser. The result is persisted to quiz_attempts
- *   for authenticated users and returned to the client for UI display.
- */
 
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
@@ -16,21 +8,24 @@ import { createLogger } from '@/lib/logger'
 
 const log = createLogger('actions/quiz')
 
+const MCAnswerSchema = z.number().int().min(0).max(3)
+const DMAnswerSchema = z.record(z.string().uuid(), z.string().uuid())
+
 const SubmitSchema = z.object({
   quizId:   UuidSchema,
   moduleId: UuidSchema,
-  // answers: { questionId → selected option index (0–3) }
-  answers:  z.record(UuidSchema, z.number().int().min(0).max(3)),
+  answers:  z.record(UuidSchema, z.union([MCAnswerSchema, DMAnswerSchema])),
 })
 
 export interface QuizSubmitResult {
-  error?:          string
-  passed?:         boolean
-  score?:          number        // percentage 0–100
-  correctCount?:   number        // number of correct answers (for display)
-  totalQuestions?: number
-  correctAnswers?: Record<string, number>        // returned after submission for UI highlighting
-  explanations?:   Record<string, string | null>
+  error?:              string
+  passed?:             boolean
+  score?:              number
+  correctCount?:       number
+  totalQuestions?:     number
+  correctAnswers?:     Record<string, number>               // MC: questionId → correct option index
+  dragMatchAnswers?:   Record<string, Record<string, string>> // DM: questionId → {itemId: categoryId}
+  explanations?:       Record<string, string | null>
 }
 
 const MIN_PASS = 80
@@ -38,7 +33,7 @@ const MIN_PASS = 80
 export async function submitQuizAnswers(input: {
   quizId:   string
   moduleId: string
-  answers:  Record<string, number>
+  answers:  Record<string, number | Record<string, string>>
 }): Promise<QuizSubmitResult> {
   const parsed = SubmitSchema.safeParse(input)
   if (!parsed.success) {
@@ -47,19 +42,15 @@ export async function submitQuizAnswers(input: {
 
   const { quizId, moduleId, answers } = parsed.data
 
-  // Get current user — may be null in PILOT_MODE (anonymous access).
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
 
-  // Use admin client to fetch correct answers — bypasses RLS so the anon
-  // branch of PILOT_MODE quiz_questions policy never exposes correct_answer
-  // to the browser.
   const admin = createAdminClient()
 
   const [{ data: questions, error: qErr }, { data: quiz }] = await Promise.all([
     admin
       .from('quiz_questions')
-      .select('id, correct_answer, explanation')
+      .select('id, question_type, correct_answer, drag_match_answers, explanation')
       .eq('quiz_id', quizId),
     admin
       .from('quizzes')
@@ -77,13 +68,34 @@ export async function submitQuizAnswers(input: {
 
   // ── Server-side scoring ────────────────────────────────────────────────────
   let correctCount = 0
-  const correctAnswers: Record<string, number> = {}
-  const explanations: Record<string, string | null> = {}
+  const correctAnswers:   Record<string, number>               = {}
+  const dragMatchAnswers: Record<string, Record<string, string>> = {}
+  const explanations:     Record<string, string | null>        = {}
 
   for (const q of questions) {
-    correctAnswers[q.id] = q.correct_answer
-    explanations[q.id]   = q.explanation
-    if (answers[q.id] === q.correct_answer) correctCount++
+    explanations[q.id] = q.explanation as string | null
+
+    if (q.question_type === 'drag_match') {
+      const dmCorrect = q.drag_match_answers as Record<string, string> | null
+      if (!dmCorrect) continue
+
+      dragMatchAnswers[q.id] = dmCorrect
+
+      const userAnswer = answers[q.id]
+      if (typeof userAnswer !== 'object' || userAnswer === null) continue
+
+      const placements = userAnswer as Record<string, string>
+      const allCorrect = Object.entries(dmCorrect).every(
+        ([itemId, correctCatId]) => placements[itemId] === correctCatId
+      )
+      if (allCorrect) correctCount++
+    } else {
+      correctAnswers[q.id] = q.correct_answer as number
+      const userAnswer = answers[q.id]
+      if (typeof userAnswer === 'number' && userAnswer === q.correct_answer) {
+        correctCount++
+      }
+    }
   }
 
   const totalQuestions = questions.length
@@ -105,12 +117,11 @@ export async function submitQuizAnswers(input: {
       })
 
     if (insertErr) {
-      // Log but don't fail the user experience — they still get their result.
       log.error({ userId: user.id, quizId, error: insertErr.message }, 'Failed to persist quiz attempt')
     } else {
       log.info({ userId: user.id, quizId, moduleId, score, passed }, 'Quiz attempt saved')
     }
   }
 
-  return { passed, score, correctCount, totalQuestions, correctAnswers, explanations }
+  return { passed, score, correctCount, totalQuestions, correctAnswers, dragMatchAnswers, explanations }
 }

@@ -9,29 +9,52 @@ interface Lesson { id: string; title: string; order_index: number }
 interface Module { id: string; title: string; order_index: number; lessons: Lesson[] }
 interface Course { id: string; title: string; modules: Module[] }
 
+type QuestionType = 'multiple_choice' | 'drag_match'
+
+interface DragMatchCategory { id: string; label: string }
+interface DragMatchItem    { id: string; label: string; correctCategoryId: string }
+
 interface QuestionDraft {
-  id?: string
-  question: string
-  options: [string, string, string, string]
-  correct_answer: number
-  explanation: string
-  order_index: number
+  id?:           string
+  order_index?:  number
+  question_type: QuestionType
+  question:      string
+  explanation:   string
+  // MC only
+  options?:        [string, string, string, string]
+  correct_answer?: number
+  // DM only
+  dm_categories?: DragMatchCategory[]
+  dm_items?:      DragMatchItem[]
 }
 
 interface Props {
-  quizId: string
-  initialTitle: string
-  initialCourseId: string
-  initialModuleId: string
-  initialLessonId: string
+  quizId:           string
+  initialTitle:     string
+  initialCourseId:  string
+  initialModuleId:  string
+  initialLessonId:  string
   initialQuestions: QuestionDraft[]
-  courses: Course[]
+  courses:          Course[]
 }
 
 const LETTERS = ['A', 'B', 'C', 'D']
 
-function blankQuestion(order: number): QuestionDraft {
-  return { question: '', options: ['', '', '', ''], correct_answer: 0, explanation: '', order_index: order }
+function blankMCQuestion(order: number): QuestionDraft {
+  return { question_type: 'multiple_choice', question: '', options: ['', '', '', ''], correct_answer: 0, explanation: '', order_index: order }
+}
+
+function blankDMQuestion(order: number): QuestionDraft {
+  const catId1 = crypto.randomUUID()
+  const catId2 = crypto.randomUUID()
+  return {
+    question_type: 'drag_match', question: '', explanation: '', order_index: order,
+    dm_categories: [{ id: catId1, label: '' }, { id: catId2, label: '' }],
+    dm_items: [
+      { id: crypto.randomUUID(), label: '', correctCategoryId: catId1 },
+      { id: crypto.randomUUID(), label: '', correctCategoryId: catId2 },
+    ],
+  }
 }
 
 export default function EditQuizForm({
@@ -44,19 +67,19 @@ export default function EditQuizForm({
   courses,
 }: Props) {
   const [isPending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-  const titleRef = useRef<HTMLInputElement>(null)
+  const [error,     setError]        = useState<string | null>(null)
+  const titleRef                     = useRef<HTMLInputElement>(null)
 
-  const [courseId, setCourseId] = useState(initialCourseId)
-  const [moduleId, setModuleId] = useState(initialModuleId)
-  const [lessonId, setLessonId] = useState(initialLessonId)
-  const [questions, setQuestions] = useState<QuestionDraft[]>(initialQuestions)
-  const [deletedIds, setDeletedIds] = useState<string[]>([])
+  const [courseId,    setCourseId]    = useState(initialCourseId)
+  const [moduleId,    setModuleId]    = useState(initialModuleId)
+  const [lessonId,    setLessonId]    = useState(initialLessonId)
+  const [questions,   setQuestions]   = useState<QuestionDraft[]>(initialQuestions)
+  const [deletedIds,  setDeletedIds]  = useState<string[]>([])
 
-  const selectedCourse = courses.find(c => c.id === courseId)
-  const modules = (selectedCourse?.modules ?? []).slice().sort((a, b) => a.order_index - b.order_index)
-  const selectedModule = modules.find(m => m.id === moduleId)
-  const lessons = (selectedModule?.lessons ?? []).slice().sort((a, b) => a.order_index - b.order_index)
+  const selectedCourse  = courses.find(c => c.id === courseId)
+  const modules         = (selectedCourse?.modules ?? []).slice().sort((a, b) => a.order_index - b.order_index)
+  const selectedModule  = modules.find(m => m.id === moduleId)
+  const lessons         = (selectedModule?.lessons ?? []).slice().sort((a, b) => a.order_index - b.order_index)
 
   function handleCourseChange(id: string) { setCourseId(id); setModuleId(''); setLessonId('') }
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
@@ -67,16 +90,73 @@ export default function EditQuizForm({
     setQuestions(prev => prev.filter((_, idx) => idx !== i))
   }
 
-  function updateQuestion(i: number, patch: Partial<QuestionDraft>) {
+  function updateQuestion(i: number, patch: Record<string, unknown>) {
     setQuestions(prev => prev.map((q, idx) => idx === i ? { ...q, ...patch } : q))
   }
 
-  function updateOption(qi: number, oi: number, val: string) {
+  function changeQuestionType(i: number, type: QuestionType) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== i) return q
+      if (type === 'multiple_choice') {
+        return { id: q.id, order_index: q.order_index, question_type: 'multiple_choice', question: q.question, explanation: q.explanation, options: ['', '', '', ''] as [string, string, string, string], correct_answer: 0 }
+      }
+      const catId1 = crypto.randomUUID()
+      const catId2 = crypto.randomUUID()
+      return { id: q.id, order_index: q.order_index, question_type: 'drag_match', question: q.question, explanation: q.explanation, dm_categories: [{ id: catId1, label: '' }, { id: catId2, label: '' }], dm_items: [{ id: crypto.randomUUID(), label: '', correctCategoryId: catId1 }, { id: crypto.randomUUID(), label: '', correctCategoryId: catId2 }] }
+    }))
+  }
+
+  function updateMCOption(qi: number, oi: number, val: string) {
     setQuestions(prev => prev.map((q, idx) => {
       if (idx !== qi) return q
-      const options = [...q.options] as [string, string, string, string]
+      const options = [...(q.options ?? ['', '', '', ''])] as [string, string, string, string]
       options[oi] = val
       return { ...q, options }
+    }))
+  }
+
+  function addDMCategory(qi: number) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: crypto.randomUUID(), label: '' }] }
+    }))
+  }
+
+  function updateDMCategory(qi: number, ci: number, label: string) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      const dm_categories = (q.dm_categories ?? []).map((c, i) => i === ci ? { ...c, label } : c)
+      return { ...q, dm_categories }
+    }))
+  }
+
+  function removeDMCategory(qi: number, catId: string) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      return { ...q, dm_categories: (q.dm_categories ?? []).filter(c => c.id !== catId) }
+    }))
+  }
+
+  function addDMItem(qi: number) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      const firstCatId = (q.dm_categories ?? [])[0]?.id ?? ''
+      return { ...q, dm_items: [...(q.dm_items ?? []), { id: crypto.randomUUID(), label: '', correctCategoryId: firstCatId }] }
+    }))
+  }
+
+  function updateDMItem(qi: number, ii: number, patch: Partial<DragMatchItem>) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      const dm_items = (q.dm_items ?? []).map((item, i) => i === ii ? { ...item, ...patch } : item)
+      return { ...q, dm_items }
+    }))
+  }
+
+  function removeDMItem(qi: number, ii: number) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      return { ...q, dm_items: (q.dm_items ?? []).filter((_, i) => i !== ii) }
     }))
   }
 
@@ -176,19 +256,33 @@ export default function EditQuizForm({
 
         {questions.map((q, qi) => (
           <div key={q.id ?? `new-${qi}`} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
+            {/* Header */}
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-gray-800">Question {qi + 1}</h3>
               {questions.length > 1 && (
-                <button
-                  type="button"
-                  onClick={() => removeQuestion(qi)}
-                  className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors"
-                >
+                <button type="button" onClick={() => removeQuestion(qi)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
               )}
             </div>
 
+            {/* Question type selector */}
+            <div className="flex gap-2">
+              {(['multiple_choice', 'drag_match'] as QuestionType[]).map(type => (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => changeQuestionType(qi, type)}
+                  className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
+                    q.question_type === type ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
+                  }`}
+                >
+                  {type === 'multiple_choice' ? 'Choix multiple' : 'Glisser-Déposer'}
+                </button>
+              ))}
+            </div>
+
+            {/* Question text */}
             <div className="flex flex-col gap-1.5">
               <label htmlFor={`eq-text-${qi}`} className="text-xs font-semibold text-gray-600">
                 Texte <span className="text-red-500">*</span>
@@ -203,33 +297,112 @@ export default function EditQuizForm({
               />
             </div>
 
-            <div className="grid sm:grid-cols-2 gap-3">
-              {q.options.map((opt, oi) => (
-                <div key={oi} className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => updateQuestion(qi, { correct_answer: oi })}
-                    title={q.correct_answer === oi ? 'Bonne réponse sélectionnée' : 'Marquer comme bonne réponse'}
-                    className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold shrink-0 transition-all ${
-                      q.correct_answer === oi
-                        ? 'border-green-500 bg-green-500 text-white'
-                        : 'border-gray-300 text-gray-400 hover:border-primary hover:text-primary'
-                    }`}
-                  >
-                    {LETTERS[oi]}
-                  </button>
-                  <input
-                    type="text"
-                    value={opt}
-                    onChange={e => updateOption(qi, oi, e.target.value)}
-                    placeholder={`Option ${LETTERS[oi]}`}
-                    className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                  />
+            {/* ── Multiple choice fields ─────────────────────────────────── */}
+            {q.question_type === 'multiple_choice' && (
+              <>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  {(q.options ?? ['', '', '', '']).map((opt, oi) => (
+                    <div key={oi} className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => updateQuestion(qi, { correct_answer: oi })}
+                        title={q.correct_answer === oi ? 'Bonne réponse' : 'Marquer comme bonne réponse'}
+                        className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold shrink-0 transition-all ${
+                          q.correct_answer === oi ? 'border-green-500 bg-green-500 text-white' : 'border-gray-300 text-gray-400 hover:border-primary hover:text-primary'
+                        }`}
+                      >
+                        {LETTERS[oi]}
+                      </button>
+                      <input
+                        type="text"
+                        value={opt}
+                        onChange={e => updateMCOption(qi, oi, e.target.value)}
+                        placeholder={`Option ${LETTERS[oi]}`}
+                        className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                      />
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-            <p className="text-xs text-gray-400">Cliquez sur A/B/C/D pour sélectionner la bonne réponse (cercle vert).</p>
+                <p className="text-xs text-gray-400">Cliquez sur A/B/C/D pour sélectionner la bonne réponse (cercle vert).</p>
+              </>
+            )}
 
+            {/* ── Drag-match fields ──────────────────────────────────────── */}
+            {q.question_type === 'drag_match' && (
+              <div className="space-y-4">
+                {/* Categories */}
+                <div>
+                  <p className="text-xs font-semibold text-gray-600 mb-2">
+                    Catégories <span className="text-red-500">*</span>{' '}
+                    <span className="text-gray-400 font-normal">(min. 2)</span>
+                  </p>
+                  <div className="space-y-2">
+                    {(q.dm_categories ?? []).map((cat, ci) => (
+                      <div key={cat.id} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={cat.label}
+                          onChange={e => updateDMCategory(qi, ci, e.target.value)}
+                          placeholder={`Catégorie ${ci + 1}`}
+                          className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                        />
+                        {(q.dm_categories ?? []).length > 2 && (
+                          <button type="button" onClick={() => removeDMCategory(qi, cat.id)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => addDMCategory(qi)} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors">
+                    <Plus className="w-3.5 h-3.5" /> Ajouter une catégorie
+                  </button>
+                </div>
+
+                {/* Items */}
+                <div>
+                  <p className="text-xs font-semibold text-gray-600 mb-2">
+                    Éléments à placer <span className="text-red-500">*</span>{' '}
+                    <span className="text-gray-400 font-normal">(min. 2)</span>
+                  </p>
+                  <div className="space-y-2">
+                    {(q.dm_items ?? []).map((item, ii) => (
+                      <div key={item.id} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={item.label}
+                          onChange={e => updateDMItem(qi, ii, { label: e.target.value })}
+                          placeholder={`Élément ${ii + 1}`}
+                          className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                        />
+                        <select
+                          value={item.correctCategoryId}
+                          onChange={e => updateDMItem(qi, ii, { correctCategoryId: e.target.value })}
+                          className="w-40 px-2 py-2 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                        >
+                          <option value="">— Catégorie correcte —</option>
+                          {(q.dm_categories ?? []).map(cat => (
+                            <option key={cat.id} value={cat.id}>
+                              {cat.label || `Catégorie (sans titre)`}
+                            </option>
+                          ))}
+                        </select>
+                        {(q.dm_items ?? []).length > 2 && (
+                          <button type="button" onClick={() => removeDMItem(qi, ii)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => addDMItem(qi)} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors">
+                    <Plus className="w-3.5 h-3.5" /> Ajouter un élément
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Explanation (both types) */}
             <div className="flex flex-col gap-1.5">
               <label htmlFor={`eq-expl-${qi}`} className="text-xs font-semibold text-gray-600">
                 Explication <span className="text-gray-400 font-normal">(optionnel)</span>
@@ -246,13 +419,23 @@ export default function EditQuizForm({
           </div>
         ))}
 
-        <button
-          type="button"
-          onClick={() => setQuestions(prev => [...prev, blankQuestion(prev.length)])}
-          className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-gray-200 text-sm font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
-        >
-          <Plus className="w-4 h-4" /> Ajouter une question
-        </button>
+        {/* Add question buttons */}
+        <div className="flex gap-3">
+          <button
+            type="button"
+            onClick={() => setQuestions(prev => [...prev, blankMCQuestion(prev.length)])}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-gray-200 text-sm font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Choix multiple
+          </button>
+          <button
+            type="button"
+            onClick={() => setQuestions(prev => [...prev, blankDMQuestion(prev.length)])}
+            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-gray-200 text-sm font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
+          >
+            <Plus className="w-4 h-4" /> Glisser-Déposer
+          </button>
+        </div>
       </div>
 
       {error && (

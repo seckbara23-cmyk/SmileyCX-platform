@@ -7,6 +7,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { submitQuizAnswers } from '@/app/actions/quiz'
 import { PILOT_MODE } from '@/lib/pilot'
 import type { QuizSubmitResult } from '@/app/actions/quiz'
+import DragMatchQuestion, { type DragMatchOptions } from '@/components/quiz/DragMatchQuestion'
 
 const OPTION_LABELS = ['A', 'B', 'C', 'D']
 const MIN_PASS      = 80
@@ -17,13 +18,24 @@ interface QuizRow {
   title:         string
   passing_score: number | null
 }
-// correct_answer is intentionally omitted — it is returned by the server
-// action after submission, never fetched directly by the client.
 interface QuestionRow {
-  id:          string
-  question:    string
-  options:     string[]
-  order_index: number
+  id:            string
+  question:      string
+  options:       unknown
+  order_index:   number
+  question_type: string
+}
+
+type AnswerMap = Record<string, number | Record<string, string>>
+
+function isQuestionAnswered(q: QuestionRow, answers: AnswerMap): boolean {
+  if (q.question_type === 'drag_match') {
+    const opts = q.options as DragMatchOptions
+    const placed = answers[q.id] as Record<string, string> | undefined
+    if (!placed) return false
+    return opts.items.every(item => item.id in placed)
+  }
+  return q.id in answers
 }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
@@ -44,7 +56,7 @@ export default function ModuleQuizPage() {
   const [nextModFirst,     setNextModFirst]      = useState<{ modId: string; lessonId: string } | null>(null)
   const [isLastModule,     setIsLastModule]      = useState(false)
 
-  const [answers,          setAnswers]           = useState<Record<string, number>>({})
+  const [answers,          setAnswers]           = useState<AnswerMap>({})
   const [submitted,        setSubmitted]         = useState(false)
   const [submitting,       setSubmitting]        = useState(false)
   const [submitError,      setSubmitError]       = useState('')
@@ -104,13 +116,11 @@ export default function ModuleQuizPage() {
         if (attempt) setAlreadyPassed(true)
       }
     }
-    // localStorage is kept as UI cache for PILOT_MODE / offline fallback.
     try {
       const s = localStorage.getItem(`quiz-${resolvedId}`)
       if (s && JSON.parse(s).passed) setAlreadyPassed(true)
     } catch {}
 
-    // Fetch quiz metadata (without correct_answer — never sent to the client)
     const { data: quizData, error: quizErr } = await supabase
       .from('quizzes')
       .select('id, title, passing_score')
@@ -123,16 +133,17 @@ export default function ModuleQuizPage() {
     if (quizData) {
       setQuiz(quizData)
 
-      // Fetch questions WITHOUT correct_answer — the correct answers are
-      // returned by the server action only after the user submits.
       const { data: qs, error: qsErr } = await supabase
         .from('quiz_questions')
-        .select('id, question, options, order_index')
+        .select('id, question, options, order_index, question_type')
         .eq('quiz_id', quizData.id)
         .order('order_index', { ascending: true })
 
       if (qsErr) console.error('[quiz_questions]', qsErr.message, qsErr.code)
-      setQuestions(qs ?? [])
+      setQuestions((qs ?? []).map(q => ({
+        ...q,
+        question_type: (q as { question_type?: string }).question_type ?? 'multiple_choice',
+      })))
     }
 
     setLoading(false)
@@ -147,8 +158,9 @@ export default function ModuleQuizPage() {
   const totalQuestions = questions.length
   const quizPassed     = submissionResult?.passed  ?? false
   const isPassed       = quizPassed || alreadyPassed
+  const allAnswered    = questions.every(q => isQuestionAnswered(q, answers))
 
-  // ── Submit — scoring is done entirely server-side ─────────────────────────
+  // ── Submit ────────────────────────────────────────────────────────────────
   async function handleSubmit() {
     if (submitting || !quiz) return
     setSubmitting(true)
@@ -169,7 +181,6 @@ export default function ModuleQuizPage() {
       setSubmissionResult(result)
       setSubmitted(true)
 
-      // Write to localStorage as a UI convenience cache (not a security gate).
       try {
         localStorage.setItem(
           `quiz-${resolvedModId}`,
@@ -277,7 +288,7 @@ export default function ModuleQuizPage() {
               <div className="mb-8 p-4 rounded-xl bg-white/5 border border-white/10 text-sm text-white/70">
                 <p className="font-semibold text-white/90 mb-2">Instructions</p>
                 <ul className="space-y-1.5">
-                  <li>• S&eacute;lectionnez une seule r&eacute;ponse par question</li>
+                  <li>• R&eacute;pondez &agrave; toutes les questions</li>
                   <li>• Cliquez sur &laquo;&nbsp;V&eacute;rifier mes r&eacute;ponses&nbsp;&raquo; pour voir votre score</li>
                   <li>• Vous devez obtenir au moins {requiredScore}&nbsp;% pour valider ce module</li>
                   <li>• Vous pouvez recommencer le quiz autant de fois que n&eacute;cessaire</li>
@@ -290,34 +301,50 @@ export default function ModuleQuizPage() {
               {questions.map((q, qi) => (
                 <div key={q.id}>
                   <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
-                  <div className="flex flex-col gap-2">
-                    {(q.options as string[]).map((opt, oi) => {
-                      const isSelected   = answers[q.id] === oi
-                      // After submission, use server-returned correct answers for highlighting.
-                      const serverCorrect = submissionResult?.correctAnswers?.[q.id]
-                      const isCorrectOpt  = submitted && oi === serverCorrect
-                      const isWrongOpt    = submitted && isSelected && oi !== serverCorrect
-                      return (
-                        <button
-                          key={oi}
-                          disabled={submitted}
-                          onClick={() => setAnswers(a => ({ ...a, [q.id]: oi }))}
-                          className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border ${
-                            isCorrectOpt
-                              ? 'border-success/60 bg-success/10 text-success'
-                              : isWrongOpt
-                              ? 'border-red-500/60 bg-red-500/10 text-red-400'
-                              : isSelected
-                              ? 'border-primary bg-primary/20 text-white'
-                              : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
-                          }`}
-                        >
-                          <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
-                        </button>
-                      )
-                    })}
-                  </div>
-                  {submitted && submissionResult?.explanations?.[q.id] && (
+
+                  {q.question_type === 'drag_match' ? (
+                    <DragMatchQuestion
+                      questionId={q.id}
+                      options={q.options as DragMatchOptions}
+                      placements={(answers[q.id] as Record<string, string>) ?? {}}
+                      onPlacementsChange={p =>
+                        setAnswers(a => ({ ...a, [q.id]: p }))
+                      }
+                      submitted={submitted}
+                      correctPlacements={submissionResult?.dragMatchAnswers?.[q.id]}
+                      explanation={submissionResult?.explanations?.[q.id]}
+                    />
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {(q.options as string[]).map((opt, oi) => {
+                        const isSelected    = answers[q.id] === oi
+                        const serverCorrect = submissionResult?.correctAnswers?.[q.id]
+                        const isCorrectOpt  = submitted && oi === serverCorrect
+                        const isWrongOpt    = submitted && isSelected && oi !== serverCorrect
+                        return (
+                          <button
+                            key={oi}
+                            disabled={submitted}
+                            onClick={() => setAnswers(a => ({ ...a, [q.id]: oi }))}
+                            className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border ${
+                              isCorrectOpt
+                                ? 'border-success/60 bg-success/10 text-success'
+                                : isWrongOpt
+                                ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                                : isSelected
+                                ? 'border-primary bg-primary/20 text-white'
+                                : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
+                            }`}
+                          >
+                            <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
+                          </button>
+                        )
+                      })}
+                    </div>
+                  )}
+
+                  {/* MC explanation (DM explanation is rendered inside the component) */}
+                  {submitted && q.question_type !== 'drag_match' && submissionResult?.explanations?.[q.id] && (
                     <p className="mt-3 text-xs text-white/50 italic">
                       {submissionResult.explanations[q.id]}
                     </p>
@@ -334,7 +361,7 @@ export default function ModuleQuizPage() {
                 )}
                 <button
                   onClick={handleSubmit}
-                  disabled={submitting || Object.keys(answers).length < questions.length}
+                  disabled={submitting || !allAnswered}
                   className="px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 w-fit"
                 >
                   {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
