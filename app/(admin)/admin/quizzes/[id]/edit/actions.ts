@@ -4,6 +4,7 @@ import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createLogger } from '@/lib/logger'
 import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 
 const log = createLogger('admin/quiz-edit')
 
@@ -72,7 +73,21 @@ export async function updateQuiz(formData: FormData) {
   if (!quizId)                return { error: 'ID du quiz manquant.' }
   if (!title)                 return { error: 'Le titre est obligatoire.' }
   if (!moduleId && !lessonId) return { error: 'Sélectionnez un module ou une leçon.' }
-  if (moduleId  && lessonId)  return { error: 'Sélectionnez soit un module soit une leçon, pas les deux.' }
+
+  // When only a lesson is selected, resolve its parent module_id so the quiz
+  // is always addressable via module_id (the learner quiz page queries by module_id).
+  let resolvedModuleId = moduleId
+  if (!moduleId && lessonId) {
+    const supabaseEarly = createAdminClient()
+    const { data: lessonRow } = await supabaseEarly
+      .from('lessons')
+      .select('module_id')
+      .eq('id', lessonId)
+      .single()
+    if (!lessonRow?.module_id) return { error: 'Leçon introuvable ou sans module associé.' }
+    resolvedModuleId = lessonRow.module_id
+    log.info({ quizId, lessonId, resolvedModuleId }, 'Resolved module_id from lesson')
+  }
 
   let questions:  QuestionUpdate[]
   let deletedIds: string[]
@@ -112,7 +127,7 @@ export async function updateQuiz(formData: FormData) {
   // Update quiz metadata
   const { error: quizErr } = await supabase
     .from('quizzes')
-    .update({ title, module_id: moduleId, lesson_id: lessonId })
+    .update({ title, module_id: resolvedModuleId, lesson_id: lessonId })
     .eq('id', quizId)
 
   if (quizErr) {
@@ -155,6 +170,9 @@ export async function updateQuiz(formData: FormData) {
     }
   }
 
-  log.info({ quizId, updated: questions.filter(q => q.id).length, inserted: newQuestions.length, deleted: deletedIds.length }, 'Quiz updated')
+  log.info({ quizId, updated: questions.filter(q => q.id).length, inserted: newQuestions.length, deleted: deletedIds.length, moduleId: resolvedModuleId }, 'Quiz updated')
+  revalidatePath('/admin/quizzes')
+  revalidatePath(`/admin/quizzes/${quizId}`)
+  revalidatePath('/learn', 'layout')
   redirect(`/admin/quizzes/${quizId}`)
 }
