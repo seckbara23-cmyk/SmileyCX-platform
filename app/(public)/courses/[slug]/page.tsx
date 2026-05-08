@@ -158,8 +158,17 @@ export default async function CourseDetailPage({ params }: Props) {
               </Link>
             </div>
 
-            {/* Right: cover image */}
-            {coverImage ? (
+            {/* Right: intro video or cover image */}
+            {introVideoUrl ? (
+              <div className="rounded-2xl overflow-hidden shadow-md bg-black" style={{ aspectRatio: '16/9' }}>
+                <video
+                  src={introVideoUrl}
+                  controls
+                  className="w-full h-full"
+                  preload="metadata"
+                />
+              </div>
+            ) : coverImage ? (
               <div className="relative rounded-2xl overflow-hidden aspect-[4/3] shadow-md">
                 <Image src={coverImage} alt={title} fill className="object-cover" priority />
               </div>
@@ -259,33 +268,6 @@ export default async function CourseDetailPage({ params }: Props) {
             </div>
           </div>
         </div>
-
-      {/* ── Intro video ─────────────────────────────────────────── */}
-      {introVideoUrl && (
-        <div className="cx-section">
-          <div className="cx-container max-w-3xl">
-            <h2 className="text-2xl font-extrabold text-dark mb-6">Présentation de la formation</h2>
-            <div className="rounded-2xl overflow-hidden bg-black shadow-lg" style={{ aspectRatio: '16/9' }}>
-              {/\.(mp4|webm|mov|ogg)(\?|$)/i.test(introVideoUrl) || introVideoUrl.startsWith('/') ? (
-                <video
-                  src={introVideoUrl}
-                  controls
-                  className="w-full h-full"
-                  preload="metadata"
-                />
-              ) : (
-                <iframe
-                  src={introVideoUrl}
-                  className="w-full h-full"
-                  allowFullScreen
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  title={`Présentation — ${title}`}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Curriculum ───────────────────────────────────────────── */}
       <div className="cx-section">
