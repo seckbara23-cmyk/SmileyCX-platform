@@ -11,9 +11,13 @@ export const metadata: Metadata = { title: 'Admin — Modifier un quiz' }
 type RawLesson = { id: string; title: string; order_index: number }
 type RawModule = { id: string; title: string; order_index: number; lessons: RawLesson[] }
 
-function toMCOptions(opts: unknown): [string, string, string, string] {
-  const arr = Array.isArray(opts) ? opts : []
-  return [String(arr[0] ?? ''), String(arr[1] ?? ''), String(arr[2] ?? ''), String(arr[3] ?? '')]
+function toMCOptions(opts: unknown): string[] {
+  if (!Array.isArray(opts)) return ['', '', '', '']
+  const arr = opts as unknown[]
+  if (arr.length === 4) return arr.map(v => String(v ?? ''))
+  const out = ['', '', '', '']
+  arr.forEach((v, i) => { if (i < 4) out[i] = String(v ?? '') })
+  return out
 }
 
 export default async function AdminEditQuizPage({ params }: { params: { id: string } }) {
@@ -30,7 +34,7 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
 
   const { data: rawQuestions } = await supabase
     .from('quiz_questions')
-    .select('id, question, question_type, options, correct_answer, drag_match_answers, explanation, order_index')
+    .select('id, question, question_type, options, correct_answer, drag_match_answers, explanation, order_index, question_image_url')
     .eq('quiz_id', params.id)
     .order('order_index')
 
@@ -74,6 +78,43 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
           label:             item.label,
           correctCategoryId: dmAnswers[item.id] ?? '',
         })),
+      }
+    }
+
+    if (qType === 'multiple_answer') {
+      const dma = (q.drag_match_answers ?? {}) as { correct_indices?: number[] }
+      return {
+        id:              q.id,
+        order_index:     q.order_index,
+        question_type:   'multiple_answer' as const,
+        question:        q.question,
+        options:         toMCOptions(q.options),
+        correct_indices: dma.correct_indices ?? [],
+        explanation:     (q.explanation as string | null) ?? '',
+      }
+    }
+
+    if (qType === 'true_false') {
+      return {
+        id:             q.id,
+        order_index:    q.order_index,
+        question_type:  'true_false' as const,
+        question:       q.question,
+        correct_answer: (q.correct_answer as number | null) ?? 0,
+        explanation:    (q.explanation as string | null) ?? '',
+      }
+    }
+
+    if (qType === 'visual_choice') {
+      return {
+        id:                  q.id,
+        order_index:         q.order_index,
+        question_type:       'visual_choice' as const,
+        question:            q.question,
+        options:             toMCOptions(q.options),
+        correct_answer:      (q.correct_answer as number | null) ?? 0,
+        question_image_url:  (q as Record<string, unknown>).question_image_url as string ?? '',
+        explanation:         (q.explanation as string | null) ?? '',
       }
     }
 

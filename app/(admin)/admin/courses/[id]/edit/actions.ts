@@ -17,7 +17,8 @@ export async function updateCourse(formData: FormData) {
   const is_free     = formData.get('is_free') === 'on'
   const is_published = formData.get('is_published') === 'on'
 
-  const cover_url = (formData.get('cover_url') as string | null)?.trim() || undefined
+  const cover_url       = (formData.get('cover_url')       as string | null)?.trim() || undefined
+  const intro_video_url = (formData.get('intro_video_url') as string | null)?.trim() || null
 
   const { error } = await supabase
     .from('courses')
@@ -29,6 +30,7 @@ export async function updateCourse(formData: FormData) {
       duration_hours: duration,
       is_free,
       is_published,
+      intro_video_url,
       ...(cover_url !== undefined ? { cover_url } : {}),
       updated_at:     new Date().toISOString(),
     })

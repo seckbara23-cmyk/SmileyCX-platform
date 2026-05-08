@@ -15,7 +15,22 @@ type QuestionPayload =
   | {
       question_type:  'multiple_choice' | undefined
       question:       string
-      options:        [string, string, string, string]
+      options:        string[]
+      correct_answer: number
+      explanation:    string
+      order_index:    number
+    }
+  | {
+      question_type:   'multiple_answer'
+      question:        string
+      options:         string[]
+      correct_indices: number[]
+      explanation:     string
+      order_index:     number
+    }
+  | {
+      question_type:  'true_false'
+      question:       string
       correct_answer: number
       explanation:    string
       order_index:    number
@@ -28,12 +43,27 @@ type QuestionPayload =
       explanation:   string
       order_index:   number
     }
+  | {
+      question_type:      'visual_choice'
+      question:           string
+      options:            string[]
+      correct_answer:     number
+      question_image_url: string
+      explanation:        string
+      order_index:        number
+    }
 
 function buildRow(quizId: string, q: QuestionPayload, fallbackIndex: number) {
+  const base = {
+    quiz_id:     quizId,
+    question:    q.question.trim(),
+    explanation: q.explanation?.trim() || null,
+    order_index: q.order_index ?? fallbackIndex,
+  }
+
   if (q.question_type === 'drag_match') {
     return {
-      quiz_id:            quizId,
-      question:           q.question.trim(),
+      ...base,
       question_type:      'drag_match' as const,
       options:            {
         categories: q.dm_categories.map(c    => ({ id: c.id, label: c.label.trim() })),
@@ -43,19 +73,51 @@ function buildRow(quizId: string, q: QuestionPayload, fallbackIndex: number) {
       drag_match_answers: Object.fromEntries(
         q.dm_items.map(item => [item.id, item.correctCategoryId])
       ),
-      explanation:        q.explanation?.trim() || null,
-      order_index:        q.order_index ?? fallbackIndex,
+      question_image_url: null,
     }
   }
+
+  if (q.question_type === 'multiple_answer') {
+    return {
+      ...base,
+      question_type:      'multiple_answer' as const,
+      options:            q.options,
+      correct_answer:     null,
+      drag_match_answers: { correct_indices: q.correct_indices },
+      question_image_url: null,
+    }
+  }
+
+  if (q.question_type === 'true_false') {
+    return {
+      ...base,
+      question_type:      'true_false' as const,
+      options:            ['Vrai', 'Faux'],
+      correct_answer:     q.correct_answer,
+      drag_match_answers: null,
+      question_image_url: null,
+    }
+  }
+
+  if (q.question_type === 'visual_choice') {
+    return {
+      ...base,
+      question_type:      'visual_choice' as const,
+      options:            q.options,
+      correct_answer:     q.correct_answer,
+      drag_match_answers: null,
+      question_image_url: q.question_image_url?.trim() || null,
+    }
+  }
+
+  // multiple_choice (default)
   return {
-    quiz_id:            quizId,
-    question:           q.question.trim(),
+    ...base,
     question_type:      'multiple_choice' as const,
     options:            q.options,
     correct_answer:     q.correct_answer,
     drag_match_answers: null,
-    explanation:        q.explanation?.trim() || null,
-    order_index:        q.order_index ?? fallbackIndex,
+    question_image_url: null,
   }
 }
 
@@ -70,8 +132,6 @@ export async function createQuiz(formData: FormData) {
   if (!title)                 return { error: 'Le titre est obligatoire.' }
   if (!moduleId && !lessonId) return { error: 'Sélectionnez un module ou une leçon.' }
 
-  // When only a lesson is selected, resolve its parent module_id so the quiz
-  // is always addressable via module_id (the learner quiz page queries by module_id).
   let resolvedModuleId = moduleId
   if (!moduleId && lessonId) {
     const supabaseEarly = createAdminClient()
@@ -110,8 +170,16 @@ export async function createQuiz(formData: FormData) {
         return { error: `Question ${i + 1} : tous les labels d'éléments sont obligatoires.` }
       if (q.dm_items.some(item => !item.correctCategoryId))
         return { error: `Question ${i + 1} : chaque élément doit avoir une catégorie correcte.` }
+    } else if (q.question_type === 'multiple_answer') {
+      if (!q.options || q.options.some(o => !o.trim()))
+        return { error: `Question ${i + 1} : toutes les options sont obligatoires.` }
+      if (!q.correct_indices || q.correct_indices.length === 0)
+        return { error: `Question ${i + 1} : sélectionnez au moins une bonne réponse.` }
+    } else if (q.question_type === 'true_false') {
+      // no option validation needed — options are fixed ['Vrai','Faux']
     } else {
-      if (q.options.some(o => !o.trim()))
+      // multiple_choice / visual_choice
+      if (!q.options || q.options.some(o => !o.trim()))
         return { error: `Question ${i + 1} : toutes les réponses sont obligatoires.` }
     }
   }

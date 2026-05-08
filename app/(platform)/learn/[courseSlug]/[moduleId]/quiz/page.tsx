@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Award } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
@@ -12,21 +13,22 @@ import DragMatchQuestion, { type DragMatchOptions } from '@/components/quiz/Drag
 const OPTION_LABELS = ['A', 'B', 'C', 'D']
 const MIN_PASS      = 80
 
-// ── Types ─────────────────────────────────────────────────────────────────────
 interface QuizRow {
   id:            string
   title:         string
   passing_score: number | null
 }
 interface QuestionRow {
-  id:            string
-  question:      string
-  options:       unknown
-  order_index:   number
-  question_type: string
+  id:                 string
+  question:           string
+  options:            unknown
+  order_index:        number
+  question_type:      string
+  question_image_url: string | null
 }
 
-type AnswerMap = Record<string, number | Record<string, string>>
+// Answers: MC/TF/VC → number; MA → number[]; DM → Record<string,string>
+type AnswerMap = Record<string, number | number[] | Record<string, string>>
 
 function isQuestionAnswered(q: QuestionRow, answers: AnswerMap): boolean {
   if (q.question_type === 'drag_match') {
@@ -35,10 +37,13 @@ function isQuestionAnswered(q: QuestionRow, answers: AnswerMap): boolean {
     if (!placed) return false
     return opts.items.every(item => item.id in placed)
   }
+  if (q.question_type === 'multiple_answer') {
+    const sel = answers[q.id] as number[] | undefined
+    return Array.isArray(sel) && sel.length > 0
+  }
   return q.id in answers
 }
 
-// ── Page ──────────────────────────────────────────────────────────────────────
 export default function ModuleQuizPage() {
   const params   = useParams()
   const router   = useRouter()
@@ -63,7 +68,6 @@ export default function ModuleQuizPage() {
   const [submissionResult, setSubmissionResult]  = useState<QuizSubmitResult | null>(null)
   const [alreadyPassed,    setAlreadyPassed]     = useState(false)
 
-  // ── Fetch all data ────────────────────────────────────────────────────────
   const loadData = useCallback(async () => {
     const { data: course } = await supabase
       .from('courses')
@@ -101,7 +105,6 @@ export default function ModuleQuizPage() {
       if (nextLessons[0]) setNextModFirst({ modId: nextMod.id, lessonId: nextLessons[0].id })
     }
 
-    // ── Check pass state: DB first (source of truth), localStorage as fallback ─
     if (!PILOT_MODE) {
       const { data: { user } } = await supabase.auth.getUser()
       if (user) {
@@ -135,14 +138,15 @@ export default function ModuleQuizPage() {
 
       const { data: qs, error: qsErr } = await supabase
         .from('quiz_questions')
-        .select('id, question, options, order_index, question_type')
+        .select('id, question, options, order_index, question_type, question_image_url')
         .eq('quiz_id', quizData.id)
         .order('order_index', { ascending: true })
 
       if (qsErr) console.error('[quiz_questions]', qsErr.message, qsErr.code)
       setQuestions((qs ?? []).map(q => ({
         ...q,
-        question_type: (q as { question_type?: string }).question_type ?? 'multiple_choice',
+        question_type:      (q as { question_type?: string }).question_type ?? 'multiple_choice',
+        question_image_url: (q as { question_image_url?: string | null }).question_image_url ?? null,
       })))
     }
 
@@ -151,7 +155,6 @@ export default function ModuleQuizPage() {
 
   useEffect(() => { loadData() }, [loadData])
 
-  // ── Derived ───────────────────────────────────────────────────────────────
   const requiredScore  = Math.max(quiz?.passing_score ?? MIN_PASS, MIN_PASS)
   const scorePercent   = submissionResult?.score   ?? 0
   const correctCount   = submissionResult?.correctCount ?? 0
@@ -160,7 +163,6 @@ export default function ModuleQuizPage() {
   const isPassed       = quizPassed || alreadyPassed
   const allAnswered    = questions.every(q => isQuestionAnswered(q, answers))
 
-  // ── Submit ────────────────────────────────────────────────────────────────
   async function handleSubmit() {
     if (submitting || !quiz) return
     setSubmitting(true)
@@ -203,7 +205,6 @@ export default function ModuleQuizPage() {
     setSubmitError('')
   }
 
-  // ── Loading ───────────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-3">
@@ -220,70 +221,52 @@ export default function ModuleQuizPage() {
   return (
     <div className="min-h-[calc(100vh-72px)] bg-[#0f1117]">
 
-      {/* ── Top bar ──────────────────────────────────────────────────────── */}
       <div className="sticky top-0 z-10 flex items-center gap-3 px-6 py-3 bg-[#1a1d27] border-b border-white/10">
-        <Link
-          href={backHref}
-          className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/80 transition-colors shrink-0"
-        >
+        <Link href={backHref} className="flex items-center gap-1.5 text-xs text-white/50 hover:text-white/80 transition-colors shrink-0">
           <ChevronLeft className="w-4 h-4" /> Le&ccedil;ons
         </Link>
         <span className="text-white/20 select-none">·</span>
         <span className="text-xs text-white/50 truncate">{moduleTitle}</span>
       </div>
 
-      {/* ── Content ──────────────────────────────────────────────────────── */}
       <div className="max-w-2xl mx-auto px-4 py-10">
 
-        {/* Already-passed banner */}
         {alreadyPassed && !submitted && (
           <div className="mb-8 flex flex-wrap items-center gap-4 p-4 rounded-xl bg-success/10 border border-success/30">
             <div className="flex items-center gap-3 flex-1 min-w-0">
               <Award className="w-5 h-5 text-success shrink-0" />
               <div>
                 <p className="text-sm font-semibold text-success">Module d&eacute;j&agrave; valid&eacute;</p>
-                <p className="text-xs text-white/50 mt-0.5">
-                  Vous pouvez repasser le quiz ci-dessous si vous le souhaitez.
-                </p>
+                <p className="text-xs text-white/50 mt-0.5">Vous pouvez repasser le quiz ci-dessous si vous le souhaitez.</p>
               </div>
             </div>
             {nextModFirst && (
-              <Link
-                href={`/learn/${courseSlug}/${nextModFirst.modId}/${nextModFirst.lessonId}`}
-                className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-success text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity"
-              >
+              <Link href={`/learn/${courseSlug}/${nextModFirst.modId}/${nextModFirst.lessonId}`}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-success text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity">
                 Module suivant <ChevronRight className="w-3.5 h-3.5" />
               </Link>
             )}
             {isLastModule && (
-              <Link
-                href={`/courses/${courseSlug}`}
-                className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-secondary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity"
-              >
+              <Link href={`/courses/${courseSlug}`}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-secondary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity">
                 Voir le cours <ChevronRight className="w-3.5 h-3.5" />
               </Link>
             )}
           </div>
         )}
 
-        {/* No quiz */}
         {!quiz || questions.length === 0 ? (
           <div className="text-center py-20">
             <p className="text-white/40 text-sm italic mb-6">Aucun quiz disponible pour ce module.</p>
-            <Link
-              href={backHref}
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/10 text-white text-sm rounded-lg hover:bg-white/15 transition-colors"
-            >
+            <Link href={backHref}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-white/10 text-white text-sm rounded-lg hover:bg-white/15 transition-colors">
               <ChevronLeft className="w-4 h-4" /> Retour aux le&ccedil;ons
             </Link>
           </div>
         ) : (
           <div>
-            <h1 className="text-2xl font-extrabold text-white mb-6">
-              Quiz &mdash; {quiz.title}
-            </h1>
+            <h1 className="text-2xl font-extrabold text-white mb-6">Quiz &mdash; {quiz.title}</h1>
 
-            {/* Instructions */}
             {!submitted && (
               <div className="mb-8 p-4 rounded-xl bg-white/5 border border-white/10 text-sm text-white/70">
                 <p className="font-semibold text-white/90 mb-2">Instructions</p>
@@ -296,74 +279,186 @@ export default function ModuleQuizPage() {
               </div>
             )}
 
-            {/* Questions */}
             <div className="flex flex-col gap-8">
-              {questions.map((q, qi) => (
-                <div key={q.id}>
-                  <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
+              {questions.map((q, qi) => {
+                const qType = q.question_type
 
-                  {q.question_type === 'drag_match' ? (
-                    <DragMatchQuestion
-                      questionId={q.id}
-                      options={q.options as DragMatchOptions}
-                      placements={(answers[q.id] as Record<string, string>) ?? {}}
-                      onPlacementsChange={p =>
-                        setAnswers(a => ({ ...a, [q.id]: p }))
-                      }
-                      submitted={submitted}
-                      correctPlacements={submissionResult?.dragMatchAnswers?.[q.id]}
-                      explanation={submissionResult?.explanations?.[q.id]}
-                    />
-                  ) : (
+                // ── Drag & Match ─────────────────────────────────────────────
+                if (qType === 'drag_match') {
+                  return (
+                    <div key={q.id}>
+                      <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
+                      <DragMatchQuestion
+                        questionId={q.id}
+                        options={q.options as DragMatchOptions}
+                        placements={(answers[q.id] as Record<string, string>) ?? {}}
+                        onPlacementsChange={p => setAnswers(a => ({ ...a, [q.id]: p }))}
+                        submitted={submitted}
+                        correctPlacements={submissionResult?.dragMatchAnswers?.[q.id]}
+                        explanation={submissionResult?.explanations?.[q.id]}
+                      />
+                    </div>
+                  )
+                }
+
+                // ── Multiple Answer (checkboxes) ──────────────────────────────
+                if (qType === 'multiple_answer') {
+                  const opts     = q.options as string[]
+                  const selected = (answers[q.id] as number[]) ?? []
+                  const maCorrect = submissionResult?.multipleAnswerCorrect?.[q.id]
+                  return (
+                    <div key={q.id}>
+                      <p className="text-sm font-semibold text-white mb-1">{qi + 1}. {q.question}</p>
+                      <p className="text-xs text-white/40 mb-3 italic">Plusieurs réponses possibles</p>
+                      <div className="flex flex-col gap-2">
+                        {opts.map((opt, oi) => {
+                          const isSelected    = selected.includes(oi)
+                          const isCorrectOpt  = submitted && maCorrect?.includes(oi)
+                          const isWrongOpt    = submitted && isSelected && !maCorrect?.includes(oi)
+                          return (
+                            <button key={oi} disabled={submitted}
+                              onClick={() => {
+                                const curr = (answers[q.id] as number[]) ?? []
+                                const next = curr.includes(oi) ? curr.filter(x => x !== oi) : [...curr, oi]
+                                setAnswers(a => ({ ...a, [q.id]: next }))
+                              }}
+                              className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border flex items-center gap-3 ${
+                                isCorrectOpt ? 'border-success/60 bg-success/10 text-success'
+                                : isWrongOpt ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                                : isSelected ? 'border-primary bg-primary/20 text-white'
+                                : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
+                              }`}>
+                              <span className={`w-4 h-4 rounded border-2 shrink-0 flex items-center justify-center ${
+                                isSelected ? 'bg-primary border-primary' : 'border-white/30'
+                              }`}>
+                                {isSelected && <CheckCircle className="w-2.5 h-2.5 text-white" />}
+                              </span>
+                              <span className="font-semibold mr-1">{OPTION_LABELS[oi]}.</span>{opt}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {submitted && submissionResult?.explanations?.[q.id] && (
+                        <p className="mt-3 text-xs text-white/50 italic">{submissionResult.explanations[q.id]}</p>
+                      )}
+                    </div>
+                  )
+                }
+
+                // ── True / False ──────────────────────────────────────────────
+                if (qType === 'true_false') {
+                  const serverCorrect = submissionResult?.correctAnswers?.[q.id]
+                  return (
+                    <div key={q.id}>
+                      <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
+                      <div className="flex gap-3">
+                        {['Vrai', 'Faux'].map((label, oi) => {
+                          const isSelected   = answers[q.id] === oi
+                          const isCorrectOpt = submitted && oi === serverCorrect
+                          const isWrongOpt   = submitted && isSelected && oi !== serverCorrect
+                          return (
+                            <button key={oi} disabled={submitted}
+                              onClick={() => setAnswers(a => ({ ...a, [q.id]: oi }))}
+                              className={`flex-1 py-3 rounded-xl text-sm font-bold transition-colors border-2 ${
+                                isCorrectOpt ? 'border-success/60 bg-success/10 text-success'
+                                : isWrongOpt ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                                : isSelected ? 'border-primary bg-primary/20 text-white'
+                                : 'border-white/10 bg-white/5 text-white/60 hover:border-white/30 hover:text-white disabled:cursor-default'
+                              }`}>
+                              {label}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {submitted && submissionResult?.explanations?.[q.id] && (
+                        <p className="mt-3 text-xs text-white/50 italic">{submissionResult.explanations[q.id]}</p>
+                      )}
+                    </div>
+                  )
+                }
+
+                // ── Visual Choice (image + options) ───────────────────────────
+                if (qType === 'visual_choice') {
+                  const opts          = q.options as string[]
+                  const serverCorrect = submissionResult?.correctAnswers?.[q.id]
+                  return (
+                    <div key={q.id}>
+                      <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
+                      {q.question_image_url && (
+                        <div className="mb-4 rounded-xl overflow-hidden border border-white/10">
+                          <Image
+                            src={q.question_image_url}
+                            alt={`Question ${qi + 1}`}
+                            width={600}
+                            height={300}
+                            className="w-full h-48 object-cover"
+                          />
+                        </div>
+                      )}
+                      <div className="flex flex-col gap-2">
+                        {opts.map((opt, oi) => {
+                          const isSelected   = answers[q.id] === oi
+                          const isCorrectOpt = submitted && oi === serverCorrect
+                          const isWrongOpt   = submitted && isSelected && oi !== serverCorrect
+                          return (
+                            <button key={oi} disabled={submitted}
+                              onClick={() => setAnswers(a => ({ ...a, [q.id]: oi }))}
+                              className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border ${
+                                isCorrectOpt ? 'border-success/60 bg-success/10 text-success'
+                                : isWrongOpt ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                                : isSelected ? 'border-primary bg-primary/20 text-white'
+                                : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
+                              }`}>
+                              <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
+                            </button>
+                          )
+                        })}
+                      </div>
+                      {submitted && submissionResult?.explanations?.[q.id] && (
+                        <p className="mt-3 text-xs text-white/50 italic">{submissionResult.explanations[q.id]}</p>
+                      )}
+                    </div>
+                  )
+                }
+
+                // ── Multiple Choice (default) ─────────────────────────────────
+                const opts          = q.options as string[]
+                const serverCorrect = submissionResult?.correctAnswers?.[q.id]
+                return (
+                  <div key={q.id}>
+                    <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
                     <div className="flex flex-col gap-2">
-                      {(q.options as string[]).map((opt, oi) => {
-                        const isSelected    = answers[q.id] === oi
-                        const serverCorrect = submissionResult?.correctAnswers?.[q.id]
-                        const isCorrectOpt  = submitted && oi === serverCorrect
-                        const isWrongOpt    = submitted && isSelected && oi !== serverCorrect
+                      {opts.map((opt, oi) => {
+                        const isSelected   = answers[q.id] === oi
+                        const isCorrectOpt = submitted && oi === serverCorrect
+                        const isWrongOpt   = submitted && isSelected && oi !== serverCorrect
                         return (
-                          <button
-                            key={oi}
-                            disabled={submitted}
+                          <button key={oi} disabled={submitted}
                             onClick={() => setAnswers(a => ({ ...a, [q.id]: oi }))}
                             className={`text-left px-4 py-2.5 rounded-lg text-sm transition-colors border ${
-                              isCorrectOpt
-                                ? 'border-success/60 bg-success/10 text-success'
-                                : isWrongOpt
-                                ? 'border-red-500/60 bg-red-500/10 text-red-400'
-                                : isSelected
-                                ? 'border-primary bg-primary/20 text-white'
-                                : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
-                            }`}
-                          >
+                              isCorrectOpt ? 'border-success/60 bg-success/10 text-success'
+                              : isWrongOpt ? 'border-red-500/60 bg-red-500/10 text-red-400'
+                              : isSelected ? 'border-primary bg-primary/20 text-white'
+                              : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
+                            }`}>
                             <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
                           </button>
                         )
                       })}
                     </div>
-                  )}
-
-                  {/* MC explanation (DM explanation is rendered inside the component) */}
-                  {submitted && q.question_type !== 'drag_match' && submissionResult?.explanations?.[q.id] && (
-                    <p className="mt-3 text-xs text-white/50 italic">
-                      {submissionResult.explanations[q.id]}
-                    </p>
-                  )}
-                </div>
-              ))}
+                    {submitted && submissionResult?.explanations?.[q.id] && (
+                      <p className="mt-3 text-xs text-white/50 italic">{submissionResult.explanations[q.id]}</p>
+                    )}
+                  </div>
+                )
+              })}
             </div>
 
-            {/* Submit / result */}
             {!submitted ? (
               <div className="mt-10 flex flex-col gap-3">
-                {submitError && (
-                  <p className="text-sm text-red-400">{submitError}</p>
-                )}
-                <button
-                  onClick={handleSubmit}
-                  disabled={submitting || !allAnswered}
-                  className="px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 w-fit"
-                >
+                {submitError && <p className="text-sm text-red-400">{submitError}</p>}
+                <button onClick={handleSubmit} disabled={submitting || !allAnswered}
+                  className="px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 w-fit">
                   {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
                   {submitting ? 'Vérification…' : 'Vérifier mes réponses'}
                 </button>
@@ -378,9 +473,7 @@ export default function ModuleQuizPage() {
                 {quizPassed ? (
                   <div className="flex items-center gap-2 mt-3 text-success">
                     <Award className="w-5 h-5 shrink-0" />
-                    <p className="text-sm font-semibold">
-                      Bravo&nbsp;! Vous avez valid&eacute; ce module.
-                    </p>
+                    <p className="text-sm font-semibold">Bravo&nbsp;! Vous avez valid&eacute; ce module.</p>
                   </div>
                 ) : (
                   <p className="mt-3 text-sm text-red-400">
@@ -390,25 +483,18 @@ export default function ModuleQuizPage() {
 
                 <div className="flex flex-wrap items-center gap-3 mt-5">
                   {isPassed && nextModFirst && (
-                    <Link
-                      href={`/learn/${courseSlug}/${nextModFirst.modId}/${nextModFirst.lessonId}`}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-success text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity"
-                    >
+                    <Link href={`/learn/${courseSlug}/${nextModFirst.modId}/${nextModFirst.lessonId}`}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-success text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity">
                       Passer au module suivant <ChevronRight className="w-4 h-4" />
                     </Link>
                   )}
                   {isPassed && isLastModule && (
-                    <Link
-                      href={`/courses/${courseSlug}`}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-secondary text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity"
-                    >
+                    <Link href={`/courses/${courseSlug}`}
+                      className="flex items-center gap-2 px-5 py-2.5 bg-secondary text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity">
                       Terminer le cours <CheckCircle className="w-4 h-4" />
                     </Link>
                   )}
-                  <button
-                    onClick={handleRetry}
-                    className="text-sm text-primary hover:underline"
-                  >
+                  <button onClick={handleRetry} className="text-sm text-primary hover:underline">
                     Recommencer le quiz
                   </button>
                 </div>

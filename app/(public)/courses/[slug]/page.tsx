@@ -102,8 +102,9 @@ export default async function CourseDetailPage({ params }: Props) {
   const description = dbCourse?.description ?? FLAGSHIP_COURSE.description
   const level = dbCourse?.level ?? FLAGSHIP_COURSE.level
   const durationHours = dbCourse?.duration_hours ?? FLAGSHIP_COURSE.duration_hours
-  const meta = COURSE_META[slug]
-  const coverImage = dbCourse?.cover_url ?? meta?.image ?? null
+  const meta           = COURSE_META[slug]
+  const coverImage     = dbCourse?.cover_url ?? meta?.image ?? null
+  const introVideoUrl  = (dbCourse as Record<string, unknown> | null)?.intro_video_url as string | null ?? null
 
   const learnHref = PILOT_MODE
     ? `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
@@ -258,6 +259,33 @@ export default async function CourseDetailPage({ params }: Props) {
             </div>
           </div>
         </div>
+
+      {/* ── Intro video ─────────────────────────────────────────── */}
+      {introVideoUrl && (
+        <div className="cx-section">
+          <div className="cx-container max-w-3xl">
+            <h2 className="text-2xl font-extrabold text-dark mb-6">Présentation de la formation</h2>
+            <div className="rounded-2xl overflow-hidden bg-black shadow-lg" style={{ aspectRatio: '16/9' }}>
+              {/\.(mp4|webm|mov|ogg)(\?|$)/i.test(introVideoUrl) || introVideoUrl.startsWith('/') ? (
+                <video
+                  src={introVideoUrl}
+                  controls
+                  className="w-full h-full"
+                  preload="metadata"
+                />
+              ) : (
+                <iframe
+                  src={introVideoUrl}
+                  className="w-full h-full"
+                  allowFullScreen
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  title={`Présentation — ${title}`}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Curriculum ───────────────────────────────────────────── */}
       <div className="cx-section">

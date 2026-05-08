@@ -29,7 +29,7 @@ export default async function AdminQuizDetailPage({
 
   const { data: questions, error: qErr } = await supabase
     .from('quiz_questions')
-    .select('id, question, question_type, options, correct_answer, drag_match_answers, explanation, order_index')
+    .select('id, question, question_type, options, correct_answer, drag_match_answers, explanation, order_index, question_image_url')
     .eq('quiz_id', params.id)
     .order('order_index')
 
@@ -143,7 +143,106 @@ export default async function AdminQuizDetailPage({
             )
           }
 
-          // ── Multiple-choice question ────────────────────────────────────
+          // ── True / False ──────────────────────────────────────────────
+          if (qType === 'true_false') {
+            const correctAnswer = q.correct_answer as number | null
+            return (
+              <div key={q.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-medium text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">Vrai / Faux</span>
+                </div>
+                <p className="text-sm font-semibold text-gray-800 mb-3">
+                  <span className="text-gray-300 mr-2">{idx + 1}.</span>{q.question}
+                </p>
+                <div className="flex gap-3">
+                  {['Vrai', 'Faux'].map((label, i) => (
+                    <div key={i} className={`flex-1 text-center py-2 rounded-xl text-sm font-semibold border-2 ${
+                      i === correctAnswer ? 'border-green-500 bg-green-50 text-green-700' : 'border-gray-200 text-gray-400'
+                    }`}>{label}</div>
+                  ))}
+                </div>
+                {q.explanation && (
+                  <p className="mt-3 text-xs text-gray-400 border-t border-gray-50 pt-3">
+                    <span className="font-semibold">Explication :</span> {q.explanation as string}
+                  </p>
+                )}
+              </div>
+            )
+          }
+
+          // ── Multiple Answer ────────────────────────────────────────────
+          if (qType === 'multiple_answer') {
+            const options = Array.isArray(q.options) ? (q.options as string[]) : []
+            const dma = (q.drag_match_answers ?? {}) as { correct_indices?: number[] }
+            const correctIndices = dma.correct_indices ?? []
+            return (
+              <div key={q.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full">Plusieurs réponses</span>
+                </div>
+                <p className="text-sm font-semibold text-gray-800 mb-3">
+                  <span className="text-gray-300 mr-2">{idx + 1}.</span>{q.question}
+                </p>
+                <ul className="space-y-1.5">
+                  {options.map((opt, i) => (
+                    <li key={i} className={`flex items-center gap-2 text-sm px-3 py-2 rounded-xl ${
+                      correctIndices.includes(i) ? 'bg-green-50 text-green-700 font-medium' : 'bg-gray-50 text-gray-600'
+                    }`}>
+                      <span className={`w-5 h-5 rounded border-2 flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                        correctIndices.includes(i) ? 'border-green-500 text-green-600' : 'border-gray-300 text-gray-400'
+                      }`}>{String.fromCharCode(65 + i)}</span>
+                      {opt}
+                    </li>
+                  ))}
+                </ul>
+                {q.explanation && (
+                  <p className="mt-3 text-xs text-gray-400 border-t border-gray-50 pt-3">
+                    <span className="font-semibold">Explication :</span> {q.explanation as string}
+                  </p>
+                )}
+              </div>
+            )
+          }
+
+          // ── Visual Choice ──────────────────────────────────────────────
+          if (qType === 'visual_choice') {
+            const options = Array.isArray(q.options) ? (q.options as string[]) : []
+            const correctAnswer = q.correct_answer as number | null
+            const imgUrl = (q as Record<string, unknown>).question_image_url as string | null
+            return (
+              <div key={q.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <span className="text-xs font-medium text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">Choix visuel</span>
+                </div>
+                <p className="text-sm font-semibold text-gray-800 mb-3">
+                  <span className="text-gray-300 mr-2">{idx + 1}.</span>{q.question}
+                </p>
+                {imgUrl && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={imgUrl} alt="question" className="h-40 w-auto rounded-xl object-contain mb-3 border border-gray-100" />
+                )}
+                <ul className="space-y-1.5">
+                  {options.map((opt, i) => (
+                    <li key={i} className={`flex items-center gap-2 text-sm px-3 py-2 rounded-xl ${
+                      i === correctAnswer ? 'bg-green-50 text-green-700 font-medium' : 'bg-gray-50 text-gray-600'
+                    }`}>
+                      <span className={`w-5 h-5 rounded-full border-2 flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                        i === correctAnswer ? 'border-green-500 text-green-600' : 'border-gray-300 text-gray-400'
+                      }`}>{String.fromCharCode(65 + i)}</span>
+                      {opt}
+                    </li>
+                  ))}
+                </ul>
+                {q.explanation && (
+                  <p className="mt-3 text-xs text-gray-400 border-t border-gray-50 pt-3">
+                    <span className="font-semibold">Explication :</span> {q.explanation as string}
+                  </p>
+                )}
+              </div>
+            )
+          }
+
+          // ── Multiple Choice (default) ──────────────────────────────────
           const options = Array.isArray(q.options) ? (q.options as string[]) : []
           const correctAnswer = q.correct_answer as number | null
 

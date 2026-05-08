@@ -105,6 +105,21 @@ export default async function AdminEditCoursePage({ params }: Props) {
           </div>
 
           <div className="sm:col-span-2 flex flex-col gap-1.5">
+            <label htmlFor="course-video" className="text-sm font-semibold text-gray-700">
+              Vidéo de présentation <span className="text-xs text-gray-400 font-normal">(URL — optionnel)</span>
+            </label>
+            <input
+              id="course-video"
+              type="url"
+              name="intro_video_url"
+              placeholder="https://… ou /videos/formation1.mp4"
+              defaultValue={(course as Record<string, unknown>).intro_video_url as string ?? ''}
+              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+            />
+            <p className="text-xs text-gray-400">Vidéo affichée en haut de la page de la formation avant les modules.</p>
+          </div>
+
+          <div className="sm:col-span-2 flex flex-col gap-1.5">
             <label htmlFor="course-description" className="text-sm font-semibold text-gray-700">Description <span className="text-red-500">*</span></label>
             <textarea
               id="course-description"

@@ -9,27 +9,43 @@ interface Lesson { id: string; title: string; order_index: number }
 interface Module { id: string; title: string; order_index: number; lessons: Lesson[] }
 interface Course { id: string; title: string; modules: Module[] }
 
-type QuestionType = 'multiple_choice' | 'drag_match'
+type QuestionType = 'multiple_choice' | 'multiple_answer' | 'true_false' | 'drag_match' | 'visual_choice'
 
 interface DragMatchCategory { id: string; label: string }
 interface DragMatchItem    { id: string; label: string; correctCategoryId: string }
 
 interface QuestionDraft {
-  question_type: QuestionType
-  question:      string
-  explanation:   string
-  // MC only
-  options?:        [string, string, string, string]
-  correct_answer?: number
-  // DM only
-  dm_categories?: DragMatchCategory[]
-  dm_items?:      DragMatchItem[]
+  question_type:       QuestionType
+  question:            string
+  explanation:         string
+  options?:            string[]
+  correct_answer?:     number
+  correct_indices?:    number[]
+  question_image_url?: string
+  dm_categories?:      DragMatchCategory[]
+  dm_items?:           DragMatchItem[]
+}
+
+const TYPE_LABELS: Record<QuestionType, string> = {
+  multiple_choice: 'Choix multiple',
+  multiple_answer: 'Plusieurs réponses',
+  true_false:      'Vrai / Faux',
+  drag_match:      'Glisser-Déposer',
+  visual_choice:   'Choix visuel',
 }
 
 const LETTERS = ['A', 'B', 'C', 'D']
 
 function blankMCQuestion(): QuestionDraft {
   return { question_type: 'multiple_choice', question: '', options: ['', '', '', ''], correct_answer: 0, explanation: '' }
+}
+
+function blankMAQuestion(): QuestionDraft {
+  return { question_type: 'multiple_answer', question: '', options: ['', '', '', ''], correct_indices: [], explanation: '' }
+}
+
+function blankTFQuestion(): QuestionDraft {
+  return { question_type: 'true_false', question: '', correct_answer: 0, explanation: '' }
 }
 
 function blankDMQuestion(): QuestionDraft {
@@ -45,19 +61,31 @@ function blankDMQuestion(): QuestionDraft {
   }
 }
 
+function blankVCQuestion(): QuestionDraft {
+  return { question_type: 'visual_choice', question: '', options: ['', '', '', ''], correct_answer: 0, question_image_url: '', explanation: '' }
+}
+
+function blankForType(t: QuestionType): QuestionDraft {
+  if (t === 'multiple_answer') return blankMAQuestion()
+  if (t === 'true_false')      return blankTFQuestion()
+  if (t === 'drag_match')      return blankDMQuestion()
+  if (t === 'visual_choice')   return blankVCQuestion()
+  return blankMCQuestion()
+}
+
 export default function NewQuizForm({ courses }: { courses: Course[] }) {
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const titleRef = useRef<HTMLInputElement>(null)
 
-  const [courseId,   setCourseId]   = useState('')
-  const [moduleId,   setModuleId]   = useState('')
-  const [lessonId,   setLessonId]   = useState('')
-  const [questions,  setQuestions]  = useState<QuestionDraft[]>([blankMCQuestion()])
+  const [courseId,  setCourseId]  = useState('')
+  const [moduleId,  setModuleId]  = useState('')
+  const [lessonId,  setLessonId]  = useState('')
+  const [questions, setQuestions] = useState<QuestionDraft[]>([blankMCQuestion()])
 
-  const selectedCourse = courses.find(c => c.id === courseId)
+  const selectedCourse  = courses.find(c => c.id === courseId)
   const modules  = (selectedCourse?.modules ?? []).slice().sort((a, b) => a.order_index - b.order_index)
-  const selectedModule = modules.find(m => m.id === moduleId)
+  const selectedModule  = modules.find(m => m.id === moduleId)
   const lessons  = (selectedModule?.lessons ?? []).slice().sort((a, b) => a.order_index - b.order_index)
 
   function handleCourseChange(id: string) { setCourseId(id); setModuleId(''); setLessonId('') }
@@ -74,21 +102,28 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   function changeQuestionType(i: number, type: QuestionType) {
     setQuestions(prev => prev.map((q, idx) => {
       if (idx !== i) return q
-      if (type === 'multiple_choice') {
-        return { question_type: 'multiple_choice', question: q.question, explanation: q.explanation, options: ['', '', '', ''] as [string, string, string, string], correct_answer: 0 }
-      }
-      const catId1 = crypto.randomUUID()
-      const catId2 = crypto.randomUUID()
-      return { question_type: 'drag_match', question: q.question, explanation: q.explanation, dm_categories: [{ id: catId1, label: '' }, { id: catId2, label: '' }], dm_items: [{ id: crypto.randomUUID(), label: '', correctCategoryId: catId1 }, { id: crypto.randomUUID(), label: '', correctCategoryId: catId2 }] }
+      const draft = blankForType(type)
+      draft.question    = q.question
+      draft.explanation = q.explanation
+      return draft
     }))
   }
 
-  function updateMCOption(qi: number, oi: number, val: string) {
+  function updateOption(qi: number, oi: number, val: string) {
     setQuestions(prev => prev.map((q, idx) => {
       if (idx !== qi) return q
-      const options = [...(q.options ?? ['', '', '', ''])] as [string, string, string, string]
+      const options = [...(q.options ?? ['', '', '', ''])]
       options[oi] = val
       return { ...q, options }
+    }))
+  }
+
+  function toggleMACorrect(qi: number, oi: number) {
+    setQuestions(prev => prev.map((q, idx) => {
+      if (idx !== qi) return q
+      const curr = q.correct_indices ?? []
+      const next = curr.includes(oi) ? curr.filter(x => x !== oi) : [...curr, oi]
+      return { ...q, correct_indices: next }
     }))
   }
 
@@ -231,7 +266,6 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
 
         {questions.map((q, qi) => (
           <div key={qi} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
-            {/* Header */}
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-gray-800">Question {qi + 1}</h3>
               {questions.length > 1 && (
@@ -241,9 +275,9 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
               )}
             </div>
 
-            {/* Question type selector */}
-            <div className="flex gap-2">
-              {(['multiple_choice', 'drag_match'] as QuestionType[]).map(type => (
+            {/* Type selector */}
+            <div className="flex flex-wrap gap-2">
+              {(Object.keys(TYPE_LABELS) as QuestionType[]).map(type => (
                 <button
                   key={type}
                   type="button"
@@ -252,7 +286,7 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                     q.question_type === type ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                   }`}
                 >
-                  {type === 'multiple_choice' ? 'Choix multiple' : 'Glisser-Déposer'}
+                  {TYPE_LABELS[type]}
                 </button>
               ))}
             </div>
@@ -272,40 +306,93 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
               />
             </div>
 
-            {/* ── Multiple choice fields ─────────────────────────────────── */}
-            {q.question_type === 'multiple_choice' && (
+            {/* ── Visual choice image ───────────────────────────────────── */}
+            {q.question_type === 'visual_choice' && (
+              <div className="flex flex-col gap-1.5">
+                <label htmlFor={`q-img-${qi}`} className="text-xs font-semibold text-gray-600">
+                  URL de l&apos;image
+                </label>
+                <input
+                  id={`q-img-${qi}`}
+                  type="url"
+                  value={q.question_image_url ?? ''}
+                  onChange={e => updateQuestion(qi, { question_image_url: e.target.value })}
+                  placeholder="https://…/image.jpg"
+                  className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                />
+                {q.question_image_url && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={q.question_image_url} alt="preview" className="mt-1 h-32 w-auto rounded-lg object-contain border border-gray-100" />
+                )}
+              </div>
+            )}
+
+            {/* ── Multiple choice / Multiple answer / Visual choice options ── */}
+            {(q.question_type === 'multiple_choice' || q.question_type === 'multiple_answer' || q.question_type === 'visual_choice') && (
               <>
                 <div className="grid sm:grid-cols-2 gap-3">
-                  {(q.options ?? ['', '', '', '']).map((opt, oi) => (
-                    <div key={oi} className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => updateQuestion(qi, { correct_answer: oi })}
-                        title={q.correct_answer === oi ? 'Bonne réponse' : 'Marquer comme bonne réponse'}
-                        className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold shrink-0 transition-all ${
-                          q.correct_answer === oi ? 'border-green-500 bg-green-500 text-white' : 'border-gray-300 text-gray-400 hover:border-primary hover:text-primary'
-                        }`}
-                      >
-                        {LETTERS[oi]}
-                      </button>
-                      <input
-                        type="text"
-                        value={opt}
-                        onChange={e => updateMCOption(qi, oi, e.target.value)}
-                        placeholder={`Option ${LETTERS[oi]}`}
-                        className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
-                      />
-                    </div>
-                  ))}
+                  {(q.options ?? ['', '', '', '']).map((opt, oi) => {
+                    const isCorrectMC = q.question_type !== 'multiple_answer' && q.correct_answer === oi
+                    const isCorrectMA = q.question_type === 'multiple_answer' && (q.correct_indices ?? []).includes(oi)
+                    const isCorrect   = isCorrectMC || isCorrectMA
+                    return (
+                      <div key={oi} className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            q.question_type === 'multiple_answer'
+                              ? toggleMACorrect(qi, oi)
+                              : updateQuestion(qi, { correct_answer: oi })
+                          }
+                          title={isCorrect ? 'Bonne réponse' : 'Marquer comme bonne réponse'}
+                          className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold shrink-0 transition-all ${
+                            isCorrect ? 'border-green-500 bg-green-500 text-white' : 'border-gray-300 text-gray-400 hover:border-primary hover:text-primary'
+                          }`}
+                        >
+                          {LETTERS[oi]}
+                        </button>
+                        <input
+                          type="text"
+                          value={opt}
+                          onChange={e => updateOption(qi, oi, e.target.value)}
+                          placeholder={`Option ${LETTERS[oi]}`}
+                          className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+                        />
+                      </div>
+                    )
+                  })}
                 </div>
-                <p className="text-xs text-gray-400">Cliquez sur A/B/C/D pour sélectionner la bonne réponse (cercle vert).</p>
+                <p className="text-xs text-gray-400">
+                  {q.question_type === 'multiple_answer'
+                    ? 'Cliquez sur A/B/C/D pour marquer les bonnes réponses (plusieurs possibles).'
+                    : 'Cliquez sur A/B/C/D pour sélectionner la bonne réponse (cercle vert).'}
+                </p>
               </>
+            )}
+
+            {/* ── True / False ──────────────────────────────────────────── */}
+            {q.question_type === 'true_false' && (
+              <div className="flex gap-3">
+                {['Vrai', 'Faux'].map((label, oi) => (
+                  <button
+                    key={oi}
+                    type="button"
+                    onClick={() => updateQuestion(qi, { correct_answer: oi })}
+                    className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all ${
+                      q.correct_answer === oi
+                        ? 'border-green-500 bg-green-50 text-green-700'
+                        : 'border-gray-200 text-gray-500 hover:border-primary hover:text-primary'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             )}
 
             {/* ── Drag-match fields ──────────────────────────────────────── */}
             {q.question_type === 'drag_match' && (
               <div className="space-y-4">
-                {/* Categories */}
                 <div>
                   <p className="text-xs font-semibold text-gray-600 mb-2">
                     Catégories <span className="text-red-500">*</span>{' '}
@@ -334,7 +421,6 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                   </button>
                 </div>
 
-                {/* Items */}
                 <div>
                   <p className="text-xs font-semibold text-gray-600 mb-2">
                     Éléments à placer <span className="text-red-500">*</span>{' '}
@@ -377,7 +463,7 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
               </div>
             )}
 
-            {/* Explanation (both types) */}
+            {/* Explanation */}
             <div className="flex flex-col gap-1.5">
               <label htmlFor={`q-expl-${qi}`} className="text-xs font-semibold text-gray-600">
                 Explication <span className="text-gray-400 font-normal">(optionnel)</span>
@@ -395,21 +481,17 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
         ))}
 
         {/* Add question buttons */}
-        <div className="flex gap-3">
-          <button
-            type="button"
-            onClick={() => setQuestions(prev => [...prev, blankMCQuestion()])}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-gray-200 text-sm font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Choix multiple
-          </button>
-          <button
-            type="button"
-            onClick={() => setQuestions(prev => [...prev, blankDMQuestion()])}
-            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-gray-200 text-sm font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
-          >
-            <Plus className="w-4 h-4" /> Glisser-Déposer
-          </button>
+        <div className="flex flex-wrap gap-2">
+          {(Object.keys(TYPE_LABELS) as QuestionType[]).map(type => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => setQuestions(prev => [...prev, blankForType(type)])}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-gray-200 text-xs font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> {TYPE_LABELS[type]}
+            </button>
+          ))}
         </div>
       </div>
 
