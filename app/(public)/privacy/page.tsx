@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Confidentialité — SmileyCX Academy',
+  title: 'Politique de confidentialité',
+  description: 'Politique de confidentialité de SmileyCX Academy — comment nous traitons vos données personnelles.',
 }
 
 export default function PrivacyPage() {

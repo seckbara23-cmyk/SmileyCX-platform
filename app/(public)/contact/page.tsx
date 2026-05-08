@@ -3,8 +3,8 @@ import ContactForm from './ContactForm'
 import { Mail, Phone, MapPin } from 'lucide-react'
 
 export const metadata: Metadata = {
-  title: 'Contact — SmileyCX Academy',
-  description: 'Contactez SmileyCX Academy pour une formation en ligne ou en présentiel.',
+  title: 'Contact',
+  description: 'Contactez SmileyCX Academy pour toute question sur nos formations en expérience client.',
 }
 
 interface Props { searchParams: Promise<{ service?: string }> }

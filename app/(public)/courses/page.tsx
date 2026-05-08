@@ -5,8 +5,8 @@ import { ArrowRight, Clock, CheckCircle, MapPin, GraduationCap, Layers } from 'l
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Nos formations — SmileyCX Academy',
-  description: 'Formations en expérience client en ligne et en présentiel, adaptées au contexte local.',
+  title: 'Nos formations',
+  description: 'Formations pratiques en expérience client, service client et relation client adaptées au contexte africain.',
 }
 
 const STATIC_COURSES = [

@@ -30,7 +30,33 @@ interface Props { params: Promise<{ slug: string }> }
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params
-  return { title: slug.replace(/-/g, ' ') }
+  const supabase = await createClient()
+
+  const { data: course } = await supabase
+    .from('courses')
+    .select('title, description, cover_url')
+    .eq('slug', slug)
+    .eq('is_published', true)
+    .maybeSingle()
+
+  const title       = course?.title       ?? (slug === FLAGSHIP_COURSE.slug ? FLAGSHIP_COURSE.title       : slug.replace(/-/g, ' '))
+  const description = course?.description ?? (slug === FLAGSHIP_COURSE.slug ? FLAGSHIP_COURSE.description : undefined)
+  const image       = course?.cover_url   ?? null
+
+  return {
+    title,
+    description: description ?? undefined,
+    openGraph: {
+      title,
+      description: description ?? undefined,
+      ...(image ? { images: [{ url: image }] } : {}),
+    },
+    twitter: {
+      card:  image ? 'summary_large_image' : 'summary',
+      title,
+      description: description ?? undefined,
+    },
+  }
 }
 
 export default async function CourseDetailPage({ params }: Props) {

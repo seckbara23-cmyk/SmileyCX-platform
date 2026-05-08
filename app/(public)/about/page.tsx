@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'À propos — SmileyCX Academy',
+  title: 'À propos',
+  description: 'Découvrez SmileyCX Academy, la plateforme de formations en expérience client adaptée au contexte sénégalais et africain.',
 }
 
 export default function AboutPage() {

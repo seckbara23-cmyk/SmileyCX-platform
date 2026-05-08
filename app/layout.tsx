@@ -1,19 +1,29 @@
 import type { Metadata } from 'next'
 import './globals.css'
 
+const SITE_TITLE       = 'SmileyCX Academy — Formations en expérience client au Sénégal'
+const SITE_DESCRIPTION = 'Formations pratiques en expérience client, service client et relation client adaptées au contexte africain.'
+
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? 'https://academy.smileycx.com'),
   title: {
     template: '%s | SmileyCX Academy',
-    default:  'SmileyCX Academy — Formations en Expérience Client',
+    default:  SITE_TITLE,
   },
-  description:
-    'Développez vos compétences en expérience client avec SmileyCX Academy. Formations certifiantes en ligne pour individus et entreprises.',
-  keywords: ['expérience client', 'formation CX', 'customer experience', 'SmileyCX'],
+  description: SITE_DESCRIPTION,
+  keywords: ['expérience client', 'formation CX', 'service client', 'relation client', 'Sénégal', 'Afrique', 'SmileyCX'],
   authors: [{ name: 'SmileyCX Consulting' }],
   openGraph: {
-    type:    'website',
-    locale:  'fr_FR',
-    siteName: 'SmileyCX Academy',
+    type:        'website',
+    locale:      'fr_FR',
+    siteName:    'SmileyCX Academy',
+    title:       SITE_TITLE,
+    description: SITE_DESCRIPTION,
+  },
+  twitter: {
+    card:        'summary_large_image',
+    title:       SITE_TITLE,
+    description: SITE_DESCRIPTION,
   },
 }
 

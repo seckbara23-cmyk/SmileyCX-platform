@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'CGU — SmileyCX Academy',
+  title: "Conditions générales d'utilisation",
+  description: "Conditions générales d'utilisation de SmileyCX Academy.",
 }
 
 export default function TermsPage() {
