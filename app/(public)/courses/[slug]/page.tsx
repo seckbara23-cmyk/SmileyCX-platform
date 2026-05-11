@@ -19,6 +19,16 @@ const COURSE_META: Record<string, { number: number; objectives: string[]; image:
     ],
     image: '/images/Formation1.jpg',
   },
+  'comprendre-client-qualite-experience': {
+    number: 1,
+    objectives: [
+      "Comprendre les fondamentaux de l'expérience client",
+      'Analyser le parcours client de bout en bout',
+      'Identifier les moments clés de la relation client',
+      'Fidéliser vos clients grâce à la qualité de service',
+    ],
+    image: '/images/Formation1.jpg',
+  },
   'excellence-dans-le-service-client': {
     number: 1,
     objectives: [
@@ -231,15 +241,17 @@ export default async function CourseDetailPage({ params }: Props) {
             <div className="flex flex-col gap-4">
 
               {/* Video / cover */}
-              <div className="rounded-2xl overflow-hidden shadow-lg" style={{ aspectRatio: '16/9' }}>
+              <div className="aspect-video overflow-hidden rounded-3xl shadow-lg bg-black">
                 {introVideoUrl ? (
                   <video
-                    src={introVideoUrl}
                     controls
-                    className="w-full h-full bg-black"
                     preload="metadata"
+                    className="w-full h-full object-cover"
                     poster={coverImage ?? undefined}
-                  />
+                  >
+                    <source src={introVideoUrl} type="video/mp4" />
+                    Your browser does not support the video tag.
+                  </video>
                 ) : coverImage ? (
                   <div className="relative w-full h-full">
                     <Image src={coverImage} alt={title} fill className="object-cover" priority />
