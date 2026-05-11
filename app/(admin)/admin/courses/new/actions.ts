@@ -8,23 +8,30 @@ export async function createCourse(formData: FormData) {
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 
-  const title       = (formData.get('title') as string).trim()
-  const rawSlug     = (formData.get('slug') as string).trim()
-  const slug        = rawSlug
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-  const description = (formData.get('description') as string).trim()
+  const title       = (formData.get('title') as string ?? '').trim()
+  const rawSlug     = (formData.get('slug') as string ?? '').trim()
+  const description = (formData.get('description') as string ?? '').trim()
   const price       = parseFloat(formData.get('price') as string) || 0
   const level       = formData.get('level') as string
   const duration    = parseInt(formData.get('duration_hours') as string, 10) || null
   const is_free     = formData.get('is_free') === 'on'
   const is_published = formData.get('is_published') === 'on'
 
-  if (!title || !slug || !description) {
-    throw new Error('Titre, slug et description sont requis.')
+  if (!title || !description) {
+    throw new Error('Titre et description sont requis.')
+  }
+
+  // Generate slug from title if the field was left empty
+  const slugSource = rawSlug || title
+  const slug = slugSource
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+
+  if (!slug) {
+    throw new Error('Impossible de générer un slug valide depuis le titre.')
   }
 
   const { data, error } = await supabase
@@ -47,5 +54,6 @@ export async function createCourse(formData: FormData) {
   if (error) throw new Error(error.message)
 
   revalidatePath('/courses')
+  revalidatePath(`/courses/${slug}`)
   redirect(`/admin/courses/${data.id}/edit`)
 }

@@ -92,18 +92,28 @@ export default async function CourseDetailPage({ params }: Props) {
 
   let modules = COURSE_MODULES
 
+  // Look up course first, without any join — avoids silent failures from join RLS
   const { data: dbCourse } = await supabase
     .from('courses')
-    .select('*, modules(*, lessons(*))')
+    .select('*')
     .eq('slug', slug)
     .eq('is_published', true)
-    .single()
+    .maybeSingle()
 
+  if (!dbCourse && slug !== FLAGSHIP_COURSE.slug) notFound()
+
+  // Load modules + lessons separately so a join issue never hides the course
   if (dbCourse) {
-    modules = (dbCourse.modules ?? []).sort((a: any, b: any) => a.order_index - b.order_index)
-      .map((m: any) => ({ ...m, lessons: [...(m.lessons ?? [])].sort((a: any, b: any) => a.order_index - b.order_index) }))
-  } else if (slug !== FLAGSHIP_COURSE.slug) {
-    notFound()
+    const { data: dbModules } = await supabase
+      .from('modules')
+      .select('*, lessons(*)')
+      .eq('course_id', dbCourse.id)
+      .order('order_index')
+
+    modules = (dbModules ?? []).map((m: any) => ({
+      ...m,
+      lessons: [...(m.lessons ?? [])].sort((a: any, b: any) => a.order_index - b.order_index),
+    }))
   }
 
   const { data: { user } } = await supabase.auth.getUser()

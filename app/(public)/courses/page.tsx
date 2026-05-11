@@ -72,18 +72,20 @@ export default async function CoursesPage() {
   const hasDbCourses = dbCourses && dbCourses.length > 0
 
   const allCourses = hasDbCourses
-    ? dbCourses!.map((c, i) => ({
-        title:     c.title,
-        desc:      c.description ?? '',
-        duration:  c.duration_hours ? `${c.duration_hours}h` : '',
-        level:     c.level ?? '',
-        slug:      c.slug as string,
-        available: true,
-        modules:   Array.isArray(c.modules) ? c.modules.length : 0,
-        objectives: [] as string[],
-        image:     c.cover_url ?? STATIC_COURSES[i]?.image ?? null,
-        formation: i + 1,
-      }))
+    ? dbCourses!
+        .filter((c) => typeof c.slug === 'string' && c.slug.trim() !== '')
+        .map((c, i) => ({
+          title:     c.title,
+          desc:      c.description ?? '',
+          duration:  c.duration_hours ? `${c.duration_hours}h` : '',
+          level:     c.level ?? '',
+          slug:      c.slug as string,
+          available: true,
+          modules:   Array.isArray(c.modules) ? c.modules.length : 0,
+          objectives: [] as string[],
+          image:     c.cover_url ?? STATIC_COURSES[i]?.image ?? null,
+          formation: i + 1,
+        }))
     : STATIC_COURSES
 
   return (
