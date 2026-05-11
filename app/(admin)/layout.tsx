@@ -4,18 +4,19 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/admin'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
-  FileQuestion, LogOut, ExternalLink, Layers, TrendingUp,
+  FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap,
 } from 'lucide-react'
 
 const ADMIN_NAV = [
-  { href: '/admin',              label: 'Tableau de bord', icon: LayoutDashboard },
-  { href: '/admin/users',        label: 'Utilisateurs',    icon: Users },
-  { href: '/admin/courses',      label: 'Formations',      icon: Layers },
-  { href: '/admin/modules',      label: 'Modules',         icon: BookOpen },
-  { href: '/admin/quizzes',      label: 'Quiz',            icon: FileQuestion },
-  { href: '/admin/progress',     label: 'Progression',     icon: TrendingUp },
-  { href: '/admin/enrollments',  label: 'Inscriptions',    icon: Award },
-  { href: '/admin/payments',     label: 'Paiements',       icon: CreditCard },
+  { href: '/admin',                label: 'Tableau de bord', icon: LayoutDashboard },
+  { href: '/admin/users',          label: 'Utilisateurs',    icon: Users },
+  { href: '/admin/courses',        label: 'Formations',      icon: Layers },
+  { href: '/admin/modules',        label: 'Modules',         icon: BookOpen },
+  { href: '/admin/quizzes',        label: 'Quiz',            icon: FileQuestion },
+  { href: '/admin/progress',       label: 'Progression',     icon: TrendingUp },
+  { href: '/admin/enrollments',    label: 'Inscriptions',    icon: Award },
+  { href: '/admin/certificates',   label: 'Certificats',     icon: GraduationCap },
+  { href: '/admin/payments',       label: 'Paiements',       icon: CreditCard },
 ]
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
