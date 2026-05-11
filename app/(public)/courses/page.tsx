@@ -71,21 +71,27 @@ export default async function CoursesPage() {
 
   const hasDbCourses = dbCourses && dbCourses.length > 0
 
+  function toCleanSlug(raw: string): string {
+    return raw.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  }
+
   const allCourses = hasDbCourses
     ? dbCourses!
         .filter((c) => typeof c.slug === 'string' && c.slug.trim() !== '')
-        .map((c, i) => ({
+        .map((c, i) => {
+          const slug = toCleanSlug(c.slug as string)
+          return {
           title:     c.title,
           desc:      c.description ?? '',
           duration:  c.duration_hours ? `${c.duration_hours}h` : '',
           level:     c.level ?? '',
-          slug:      c.slug as string,
+          slug,
           available: true,
           modules:   Array.isArray(c.modules) ? c.modules.length : 0,
           objectives: [] as string[],
           image:     c.cover_url ?? STATIC_COURSES[i]?.image ?? null,
           formation: i + 1,
-        }))
+        }})
     : STATIC_COURSES
 
   return (

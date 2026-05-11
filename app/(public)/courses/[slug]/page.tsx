@@ -55,8 +55,18 @@ const COURSE_META: Record<string, { number: number; objectives: string[]; image:
 
 interface Props { params: Promise<{ slug: string }> }
 
+function normalizeSlug(raw: string): string {
+  return decodeURIComponent(raw)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const { slug } = await params
+  const { slug: rawSlug } = await params
+  const slug = normalizeSlug(rawSlug)
   const supabase = await createClient()
 
   const { data: course } = await supabase
@@ -87,7 +97,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function CourseDetailPage({ params }: Props) {
-  const { slug } = await params
+  const { slug: rawSlug } = await params
+  const slug = normalizeSlug(rawSlug)
   const supabase = await createClient()
 
   let modules = COURSE_MODULES
