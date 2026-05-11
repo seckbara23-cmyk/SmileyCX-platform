@@ -18,7 +18,7 @@ export default async function CertificateByIdPage({ params }: Props) {
   const [{ data: cert }, { data: profile }] = await Promise.all([
     supabase
       .from('certificates')
-      .select('id, user_id, certificate_number, issued_at, courses(title)')
+      .select('id, user_id, certificate_number, issued_at, pdf_url, courses(title)')
       .eq('id', certificateId)
       .single(),
     supabase
@@ -31,24 +31,21 @@ export default async function CertificateByIdPage({ params }: Props) {
   if (!cert) redirect('/dashboard')
   if (cert.user_id !== user!.id) redirect('/dashboard')
 
-  const coursesData = cert.courses as unknown as { title: string } | null
-  const courseTitle = coursesData?.title ?? ''
-  const learnerName = profile?.full_name || profile?.email || ''
+  const coursesData  = cert.courses as unknown as { title: string } | null
+  const courseTitle  = coursesData?.title ?? ''
+  const learnerName  = profile?.full_name || profile?.email || ''
 
   return (
     <div className="cert-page-wrapper">
       <div className="cx-container max-w-5xl">
         <CertificateView
+          certId={cert.id}
           certNumber={cert.certificate_number}
           issuedAt={cert.issued_at}
           learnerName={learnerName}
           courseTitle={courseTitle}
+          initialPdfUrl={(cert as Record<string, unknown>).pdf_url as string | null ?? null}
         />
-        <p className="text-xs text-cx-gray text-center mt-6 print:hidden">
-          Ce certificat peut être partagé sur LinkedIn et autres plateformes professionnelles.
-          <br />Vérification :{' '}
-          <span className="font-mono text-primary">{cert.certificate_number}</span>
-        </p>
       </div>
     </div>
   )

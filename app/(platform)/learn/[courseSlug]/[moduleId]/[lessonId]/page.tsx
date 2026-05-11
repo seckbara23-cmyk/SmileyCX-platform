@@ -298,14 +298,29 @@ export default function LessonPlayerPage() {
             return (
               <div key={mod.id}>
                 {/* Module header */}
-                <div className="px-4 py-2.5 bg-white/5 flex items-center justify-between gap-2">
-                  <p className="text-[11px] font-bold text-white/50 uppercase tracking-wider truncate">
-                    {mi + 1}. {mod.title}
-                  </p>
-                  {isValidated && (
-                    <span className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-success">
-                      <CheckCircle className="w-3 h-3" /> Valid&eacute;
-                    </span>
+                <div className="px-4 py-2.5 bg-white/5">
+                  <div className="flex items-center justify-between gap-2 mb-1.5">
+                    <p className="text-[11px] font-bold text-white/50 uppercase tracking-wider truncate">
+                      {mi + 1}. {mod.title}
+                    </p>
+                    {isValidated ? (
+                      <span className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-success">
+                        <CheckCircle className="w-3 h-3" /> Valid&eacute;
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-white/30 shrink-0">
+                        {mod.lessons.filter(l => !!progress[l.id]).length}/{mod.lessons.length}
+                      </span>
+                    )}
+                  </div>
+                  {/* Module progress bar */}
+                  {mod.lessons.length > 0 && (
+                    <div className="w-full h-0.5 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-success/60 rounded-full transition-all duration-300"
+                        style={{ width: `${Math.round((mod.lessons.filter(l => !!progress[l.id]).length / mod.lessons.length) * 100)}%` }}
+                      />
+                    </div>
                   )}
                 </div>
 
@@ -471,9 +486,9 @@ export default function LessonPlayerPage() {
                   {isLastLesson && completed && (
                     <Link
                       href={`/certificate/${courseSlug}`}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-yellow-500 text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm"
+                      className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm shadow-lg shadow-amber-500/30 animate-pulse-once"
                     >
-                      <Award className="w-4 h-4" /> Obtenir mon certificat
+                      <Award className="w-4 h-4" /> 🎉 Obtenir mon certificat
                     </Link>
                   )}
                 </>
