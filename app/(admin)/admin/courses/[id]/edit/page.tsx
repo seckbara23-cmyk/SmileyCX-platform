@@ -44,7 +44,7 @@ export default async function AdminEditCoursePage({ params }: Props) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-xl font-extrabold text-gray-900">Modifier la formation</h1>
-          <p className="text-xs text-gray-400 font-mono mt-0.5">{course.slug}</p>
+          <p className="text-xs text-gray-400 font-mono mt-0.5">/courses/{course.slug}</p>
         </div>
         <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
           course.is_published ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'
@@ -55,6 +55,22 @@ export default async function AdminEditCoursePage({ params }: Props) {
 
       <form action={updateCourse} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 sm:p-6 space-y-5">
         <input type="hidden" name="id" value={course.id} />
+
+        {/* Slug */}
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="course-slug" className="text-sm font-semibold text-gray-700">
+            Slug <span className="text-xs text-gray-400 font-normal">(URL de la formation)</span>
+          </label>
+          <input
+            id="course-slug"
+            type="text"
+            name="slug"
+            defaultValue={course.slug ?? ''}
+            placeholder="service-client-digital"
+            className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm font-mono focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+          />
+          <p className="text-xs text-gray-400">Normalisé automatiquement à l&apos;enregistrement — minuscules et tirets uniquement.</p>
+        </div>
 
         {/* Cover image */}
         <div className="flex flex-col gap-2">

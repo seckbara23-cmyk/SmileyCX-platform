@@ -4,12 +4,23 @@ import { requirePlatformAdmin } from '@/lib/auth/session'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
+function normalizeSlug(raw: string): string {
+  return raw
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 export async function updateCourse(formData: FormData) {
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 
   const id          = formData.get('id') as string
   const title       = (formData.get('title') as string).trim()
+  const rawSlug     = (formData.get('slug') as string ?? '').trim()
+  const slug        = rawSlug ? normalizeSlug(rawSlug) : null
   const description = (formData.get('description') as string).trim()
   const price       = parseFloat(formData.get('price') as string) || 0
   const level       = formData.get('level') as string
@@ -32,6 +43,7 @@ export async function updateCourse(formData: FormData) {
       is_published,
       intro_video_url,
       ...(cover_url !== undefined ? { cover_url } : {}),
+      ...(slug ? { slug } : {}),
       updated_at:     new Date().toISOString(),
     })
     .eq('id', id)
@@ -40,6 +52,7 @@ export async function updateCourse(formData: FormData) {
 
   revalidatePath('/courses')
   revalidatePath('/admin/courses')
+  if (slug) revalidatePath(`/courses/${slug}`)
   redirect('/admin/courses')
 }
 
