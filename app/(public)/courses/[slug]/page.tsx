@@ -246,7 +246,7 @@ export default async function CourseDetailPage({ params }: Props) {
                   <video
                     controls
                     preload="metadata"
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain bg-black"
                     poster={coverImage ?? undefined}
                   >
                     <source src={introVideoUrl} type="video/mp4" />
