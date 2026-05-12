@@ -15,6 +15,7 @@ interface DragMatchCategory { id: string; label: string }
 interface DragMatchItem    { id: string; label: string; correctCategoryId: string }
 
 interface QuestionDraft {
+  _id:                 string
   question_type:       QuestionType
   question:            string
   explanation:         string
@@ -25,6 +26,8 @@ interface QuestionDraft {
   dm_categories?:      DragMatchCategory[]
   dm_items?:           DragMatchItem[]
 }
+
+function genId() { return Math.random().toString(36).slice(2) }
 
 const TYPE_LABELS: Record<QuestionType, string> = {
   multiple_choice: 'Choix multiple',
@@ -37,32 +40,32 @@ const TYPE_LABELS: Record<QuestionType, string> = {
 const LETTERS = ['A', 'B', 'C', 'D']
 
 function blankMCQuestion(): QuestionDraft {
-  return { question_type: 'multiple_choice', question: '', options: ['', '', '', ''], correct_answer: 0, explanation: '' }
+  return { _id: genId(), question_type: 'multiple_choice', question: '', options: ['', '', '', ''], correct_answer: 0, explanation: '' }
 }
 
 function blankMAQuestion(): QuestionDraft {
-  return { question_type: 'multiple_answer', question: '', options: ['', '', '', ''], correct_indices: [], explanation: '' }
+  return { _id: genId(), question_type: 'multiple_answer', question: '', options: ['', '', '', ''], correct_indices: [], explanation: '' }
 }
 
 function blankTFQuestion(): QuestionDraft {
-  return { question_type: 'true_false', question: '', correct_answer: 0, explanation: '' }
+  return { _id: genId(), question_type: 'true_false', question: '', correct_answer: 0, explanation: '' }
 }
 
 function blankDMQuestion(): QuestionDraft {
-  const catId1 = crypto.randomUUID()
-  const catId2 = crypto.randomUUID()
+  const catId1 = genId()
+  const catId2 = genId()
   return {
-    question_type: 'drag_match', question: '', explanation: '',
+    _id: genId(), question_type: 'drag_match', question: '', explanation: '',
     dm_categories: [{ id: catId1, label: '' }, { id: catId2, label: '' }],
     dm_items: [
-      { id: crypto.randomUUID(), label: '', correctCategoryId: catId1 },
-      { id: crypto.randomUUID(), label: '', correctCategoryId: catId2 },
+      { id: genId(), label: '', correctCategoryId: catId1 },
+      { id: genId(), label: '', correctCategoryId: catId2 },
     ],
   }
 }
 
 function blankVCQuestion(): QuestionDraft {
-  return { question_type: 'visual_choice', question: '', options: ['', '', '', ''], correct_answer: 0, question_image_url: '', explanation: '' }
+  return { _id: genId(), question_type: 'visual_choice', question: '', options: ['', '', '', ''], correct_answer: 0, question_image_url: '', explanation: '' }
 }
 
 function blankForType(t: QuestionType): QuestionDraft {
@@ -91,83 +94,88 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   function handleCourseChange(id: string) { setCourseId(id); setModuleId(''); setLessonId('') }
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
 
-  function removeQuestion(i: number) {
-    setQuestions(prev => prev.filter((_, idx) => idx !== i))
+  function addQuestion(type: QuestionType) {
+    setQuestions(prev => [...prev, blankForType(type)])
   }
 
-  function updateQuestion(i: number, patch: Record<string, unknown>) {
-    setQuestions(prev => prev.map((q, idx) => idx === i ? { ...q, ...patch } : q))
+  function removeQuestion(id: string) {
+    setQuestions(prev => prev.filter(q => q._id !== id))
   }
 
-  function changeQuestionType(i: number, type: QuestionType) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== i) return q
+  function updateQuestion(id: string, patch: Record<string, unknown>) {
+    setQuestions(prev => prev.map(q => q._id === id ? { ...q, ...patch } : q))
+  }
+
+  function changeQuestionType(id: string, type: QuestionType) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       const draft = blankForType(type)
+      draft._id         = q._id
       draft.question    = q.question
       draft.explanation = q.explanation
       return draft
     }))
   }
 
-  function updateOption(qi: number, oi: number, val: string) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function updateOption(id: string, oi: number, val: string) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       const options = [...(q.options ?? ['', '', '', ''])]
       options[oi] = val
       return { ...q, options }
     }))
   }
 
-  function toggleMACorrect(qi: number, oi: number) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function toggleMACorrect(id: string, oi: number) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       const curr = q.correct_indices ?? []
       const next = curr.includes(oi) ? curr.filter(x => x !== oi) : [...curr, oi]
       return { ...q, correct_indices: next }
     }))
   }
 
-  function addDMCategory(qi: number) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
-      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: crypto.randomUUID(), label: '' }] }
+  function addDMCategory(id: string) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
+      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: genId(), label: '' }] }
     }))
   }
 
-  function updateDMCategory(qi: number, ci: number, label: string) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function updateDMCategory(id: string, ci: number, label: string) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       const dm_categories = (q.dm_categories ?? []).map((c, i) => i === ci ? { ...c, label } : c)
       return { ...q, dm_categories }
     }))
   }
 
-  function removeDMCategory(qi: number, catId: string) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function removeDMCategory(id: string, catId: string) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       return { ...q, dm_categories: (q.dm_categories ?? []).filter(c => c.id !== catId) }
     }))
   }
 
-  function addDMItem(qi: number) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function addDMItem(id: string) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       const firstCatId = (q.dm_categories ?? [])[0]?.id ?? ''
-      return { ...q, dm_items: [...(q.dm_items ?? []), { id: crypto.randomUUID(), label: '', correctCategoryId: firstCatId }] }
+      return { ...q, dm_items: [...(q.dm_items ?? []), { id: genId(), label: '', correctCategoryId: firstCatId }] }
     }))
   }
 
-  function updateDMItem(qi: number, ii: number, patch: Partial<DragMatchItem>) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function updateDMItem(id: string, ii: number, patch: Partial<DragMatchItem>) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       const dm_items = (q.dm_items ?? []).map((item, i) => i === ii ? { ...item, ...patch } : item)
       return { ...q, dm_items }
     }))
   }
 
-  function removeDMItem(qi: number, ii: number) {
-    setQuestions(prev => prev.map((q, idx) => {
-      if (idx !== qi) return q
+  function removeDMItem(id: string, ii: number) {
+    setQuestions(prev => prev.map(q => {
+      if (q._id !== id) return q
       return { ...q, dm_items: (q.dm_items ?? []).filter((_, i) => i !== ii) }
     }))
   }
@@ -265,11 +273,11 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
         <h2 className="text-sm font-bold text-gray-700">Questions</h2>
 
         {questions.map((q, qi) => (
-          <div key={qi} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
+          <div key={q._id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-bold text-gray-800">Question {qi + 1}</h3>
               {questions.length > 1 && (
-                <button type="button" onClick={() => removeQuestion(qi)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                <button type="button" onClick={() => removeQuestion(q._id)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
               )}
@@ -281,7 +289,7 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                 <button
                   key={type}
                   type="button"
-                  onClick={() => changeQuestionType(qi, type)}
+                  onClick={() => changeQuestionType(q._id, type)}
                   className={`px-3 py-1 rounded-lg text-xs font-semibold transition-colors ${
                     q.question_type === type ? 'bg-primary text-white' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'
                   }`}
@@ -293,13 +301,13 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
 
             {/* Question text */}
             <div className="flex flex-col gap-1.5">
-              <label htmlFor={`q-text-${qi}`} className="text-xs font-semibold text-gray-600">
+              <label htmlFor={`q-text-${q._id}`} className="text-xs font-semibold text-gray-600">
                 Texte <span className="text-red-500">*</span>
               </label>
               <textarea
-                id={`q-text-${qi}`}
+                id={`q-text-${q._id}`}
                 value={q.question}
-                onChange={e => updateQuestion(qi, { question: e.target.value })}
+                onChange={e => updateQuestion(q._id, { question: e.target.value })}
                 rows={2}
                 placeholder="Quel est l'objectif principal de l'expérience client ?"
                 className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all resize-none"
@@ -309,14 +317,14 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
             {/* ── Visual choice image ───────────────────────────────────── */}
             {q.question_type === 'visual_choice' && (
               <div className="flex flex-col gap-1.5">
-                <label htmlFor={`q-img-${qi}`} className="text-xs font-semibold text-gray-600">
+                <label htmlFor={`q-img-${q._id}`} className="text-xs font-semibold text-gray-600">
                   URL de l&apos;image
                 </label>
                 <input
-                  id={`q-img-${qi}`}
+                  id={`q-img-${q._id}`}
                   type="url"
                   value={q.question_image_url ?? ''}
-                  onChange={e => updateQuestion(qi, { question_image_url: e.target.value })}
+                  onChange={e => updateQuestion(q._id, { question_image_url: e.target.value })}
                   placeholder="https://…/image.jpg"
                   className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                 />
@@ -341,8 +349,8 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                           type="button"
                           onClick={() =>
                             q.question_type === 'multiple_answer'
-                              ? toggleMACorrect(qi, oi)
-                              : updateQuestion(qi, { correct_answer: oi })
+                              ? toggleMACorrect(q._id, oi)
+                              : updateQuestion(q._id, { correct_answer: oi })
                           }
                           title={isCorrect ? 'Bonne réponse' : 'Marquer comme bonne réponse'}
                           className={`w-7 h-7 rounded-full border-2 flex items-center justify-center text-xs font-bold shrink-0 transition-all ${
@@ -354,7 +362,7 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                         <input
                           type="text"
                           value={opt}
-                          onChange={e => updateOption(qi, oi, e.target.value)}
+                          onChange={e => updateOption(q._id, oi, e.target.value)}
                           placeholder={`Option ${LETTERS[oi]}`}
                           className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                         />
@@ -377,7 +385,7 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                   <button
                     key={oi}
                     type="button"
-                    onClick={() => updateQuestion(qi, { correct_answer: oi })}
+                    onClick={() => updateQuestion(q._id, { correct_answer: oi })}
                     className={`flex-1 py-2.5 rounded-xl text-sm font-semibold border-2 transition-all ${
                       q.correct_answer === oi
                         ? 'border-green-500 bg-green-50 text-green-700'
@@ -404,19 +412,19 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                         <input
                           type="text"
                           value={cat.label}
-                          onChange={e => updateDMCategory(qi, ci, e.target.value)}
+                          onChange={e => updateDMCategory(q._id, ci, e.target.value)}
                           placeholder={`Catégorie ${ci + 1}`}
                           className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                         />
                         {(q.dm_categories ?? []).length > 2 && (
-                          <button type="button" onClick={() => removeDMCategory(qi, cat.id)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                          <button type="button" onClick={() => removeDMCategory(q._id, cat.id)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
                     ))}
                   </div>
-                  <button type="button" onClick={() => addDMCategory(qi)} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors">
+                  <button type="button" onClick={() => addDMCategory(q._id)} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors">
                     <Plus className="w-3.5 h-3.5" /> Ajouter une catégorie
                   </button>
                 </div>
@@ -432,13 +440,13 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                         <input
                           type="text"
                           value={item.label}
-                          onChange={e => updateDMItem(qi, ii, { label: e.target.value })}
+                          onChange={e => updateDMItem(q._id, ii, { label: e.target.value })}
                           placeholder={`Élément ${ii + 1}`}
                           className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                         />
                         <select
                           value={item.correctCategoryId}
-                          onChange={e => updateDMItem(qi, ii, { correctCategoryId: e.target.value })}
+                          onChange={e => updateDMItem(q._id, ii, { correctCategoryId: e.target.value })}
                           className="w-40 px-2 py-2 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                         >
                           <option value="">— Catégorie correcte —</option>
@@ -449,14 +457,14 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
                           ))}
                         </select>
                         {(q.dm_items ?? []).length > 2 && (
-                          <button type="button" onClick={() => removeDMItem(qi, ii)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                          <button type="button" onClick={() => removeDMItem(q._id, ii)} className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         )}
                       </div>
                     ))}
                   </div>
-                  <button type="button" onClick={() => addDMItem(qi)} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors">
+                  <button type="button" onClick={() => addDMItem(q._id)} className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-primary hover:text-primary/80 transition-colors">
                     <Plus className="w-3.5 h-3.5" /> Ajouter un élément
                   </button>
                 </div>
@@ -465,14 +473,14 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
 
             {/* Explanation */}
             <div className="flex flex-col gap-1.5">
-              <label htmlFor={`q-expl-${qi}`} className="text-xs font-semibold text-gray-600">
+              <label htmlFor={`q-expl-${q._id}`} className="text-xs font-semibold text-gray-600">
                 Explication <span className="text-gray-400 font-normal">(optionnel)</span>
               </label>
               <input
-                id={`q-expl-${qi}`}
+                id={`q-expl-${q._id}`}
                 type="text"
                 value={q.explanation}
-                onChange={e => updateQuestion(qi, { explanation: e.target.value })}
+                onChange={e => updateQuestion(q._id, { explanation: e.target.value })}
                 placeholder="Affiché après la réponse pour expliquer le bon choix."
                 className="w-full px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
@@ -486,7 +494,7 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
             <button
               key={type}
               type="button"
-              onClick={() => setQuestions(prev => [...prev, blankForType(type)])}
+              onClick={() => addQuestion(type)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-gray-200 text-xs font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors"
             >
               <Plus className="w-3.5 h-3.5" /> {TYPE_LABELS[type]}
