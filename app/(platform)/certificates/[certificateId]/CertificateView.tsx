@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import QRCode from 'react-qr-code'
-import { Download, Printer, Linkedin, Share2, Loader2 } from 'lucide-react'
+import { Download, Printer, Linkedin, Share2, Loader2, MessageSquare } from 'lucide-react'
 
 interface Props {
   certId: string
@@ -10,6 +11,7 @@ interface Props {
   issuedAt: string
   learnerName: string
   courseTitle: string
+  courseSlug?: string
   initialPdfUrl?: string | null
 }
 
@@ -23,6 +25,7 @@ export default function CertificateView({
   issuedAt,
   learnerName,
   courseTitle,
+  courseSlug,
   initialPdfUrl,
 }: Props) {
   const [pdfUrl, setPdfUrl]           = useState<string | null>(initialPdfUrl ?? null)
@@ -260,6 +263,21 @@ export default function CertificateView({
               {verifyUrl}
             </a>
           </p>
+        )}
+
+        {/* Feedback CTA */}
+        {courseSlug && (
+          <div className="mt-8 pt-6 border-t border-black/[0.06] text-center">
+            <p className="text-xs text-cx-gray mb-3">
+              Vous avez quelques minutes ? Votre avis améliore directement la prochaine version.
+            </p>
+            <Link
+              href={`/feedback/${courseSlug}`}
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-light border border-black/[0.08] text-cx-gray font-semibold rounded-cx hover:bg-white hover:text-dark transition-colors text-sm"
+            >
+              <MessageSquare className="w-4 h-4" /> Donner mon avis sur la formation
+            </Link>
+          </div>
         )}
       </div>
     </>

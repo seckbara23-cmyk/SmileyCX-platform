@@ -275,13 +275,24 @@ export default function LessonPlayerPage() {
   }
 
   return (
-    <div className="flex h-[calc(100vh-72px)] bg-[#0f1117]">
+    <div className="relative flex h-[calc(100vh-72px)] bg-[#0f1117]">
+
+      {/* Mobile sidebar backdrop */}
+      {sideOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-30 bg-black/60"
+          onClick={() => setSideOpen(false)}
+          aria-hidden
+        />
+      )}
 
       {/* ── Sidebar ──────────────────────────────────────────────────── */}
       <aside className={`
-        shrink-0 bg-[#1a1d27] border-r border-white/10 overflow-y-auto
-        transition-all duration-300 z-40
-        ${sideOpen ? 'w-72' : 'w-0 md:w-64'} overflow-hidden
+        bg-[#1a1d27] border-r border-white/10 overflow-y-auto
+        transition-all duration-300 z-40 shrink-0
+        fixed md:static top-[72px] md:top-0 bottom-0 left-0 md:h-auto
+        ${sideOpen ? 'w-72 shadow-2xl shadow-black/50' : 'w-0 md:w-64'}
+        overflow-hidden
       `}>
         <div className="p-4 border-b border-white/10">
           <Link
@@ -290,6 +301,11 @@ export default function LessonPlayerPage() {
           >
             {PILOT_MODE ? '← Les formations' : '← Mon espace'}
           </Link>
+          {!PILOT_MODE && (
+            <p className="text-[10px] text-white/25 mt-2 leading-tight">
+              Suivez les leçons dans l&apos;ordre pour débloquer votre certificat.
+            </p>
+          )}
         </div>
 
         <nav>
@@ -463,7 +479,7 @@ export default function LessonPlayerPage() {
             )}
 
             {/* ── Actions ───────────────────────────────────────────────── */}
-            <div className="flex flex-wrap items-center gap-3 mt-10 pt-6 border-t border-white/10">
+            <div className="mt-10 pt-6 border-t border-white/10 space-y-4">
               {PILOT_MODE ? (
                 <p className="text-sm text-white/40 italic">
                   Le suivi de progression et les certificats seront disponibles après le lancement complet.
@@ -473,64 +489,58 @@ export default function LessonPlayerPage() {
                   {!completed ? (
                     <button
                       onClick={markComplete}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-success text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm"
+                      className="flex items-center gap-2 px-5 py-3 bg-success text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm w-full sm:w-auto"
                     >
                       <CheckCircle className="w-4 h-4" /> Marquer comme complétée
                     </button>
+                  ) : isLastLesson ? (
+                    <Link
+                      href={`/certificate/${courseSlug}`}
+                      className="flex items-center justify-center gap-2 px-6 py-3.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm shadow-lg shadow-amber-500/30 animate-pulse-once w-full sm:w-auto sm:inline-flex"
+                    >
+                      <Award className="w-4 h-4" /> 🎉 Obtenir mon certificat
+                    </Link>
+                  ) : nextLesson && !nextIsBlocked ? (
+                    <Link
+                      href={`/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`}
+                      className="flex items-center justify-center gap-2 px-6 py-3.5 bg-primary text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-base shadow-sm w-full sm:w-auto sm:inline-flex"
+                    >
+                      Continuer vers la leçon suivante <ChevronRight className="w-5 h-5" />
+                    </Link>
                   ) : (
                     <span className="flex items-center gap-2 text-success font-semibold text-sm">
                       <CheckCircle className="w-5 h-5" /> Leçon complétée
                     </span>
                   )}
 
-                  {isLastLesson && completed && (
+                  {/* "Passer au quiz" — shown when blocked by quiz requirement */}
+                  {completed && isLastLessonInModule && currentModHasQuiz && !currentModPassed && (
                     <Link
-                      href={`/certificate/${courseSlug}`}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm shadow-lg shadow-amber-500/30 animate-pulse-once"
+                      href={`/learn/${courseSlug}/${module?.id}/quiz`}
+                      className="flex items-center justify-center gap-2 px-6 py-3.5 bg-secondary text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm shadow-sm w-full sm:w-auto sm:inline-flex"
                     >
-                      <Award className="w-4 h-4" /> 🎉 Obtenir mon certificat
+                      <ClipboardList className="w-4 h-4" /> Passer au quiz du module →
                     </Link>
                   )}
-                </>
-              )}
 
-              {/* "Passer au quiz" CTA on the last lesson of a module */}
-              {isLastLessonInModule && (
-                <Link
-                  href={`/learn/${courseSlug}/${module?.id}/quiz`}
-                  className="flex items-center gap-2 px-5 py-2.5 bg-secondary text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm"
-                >
-                  <ClipboardList className="w-4 h-4" /> Passer au quiz
-                </Link>
+                  <p className="text-xs text-white/25 pt-1">
+                    Votre progression est sauvegardée automatiquement.
+                  </p>
+                </>
               )}
             </div>
 
-            {/* ── Navigation ────────────────────────────────────────────── */}
-            <div className="flex justify-between mt-8">
-              {prevLesson ? (
+            {/* ── Navigation — previous only ─────────────────────────────── */}
+            {prevLesson && (
+              <div className="mt-6">
                 <Link
                   href={`/learn/${courseSlug}/${prevLesson.module.id}/${prevLesson.id}`}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-white/10 text-white text-sm font-medium rounded-cx hover:bg-white/15 transition-colors"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/10 text-white/70 text-sm font-medium rounded-cx hover:bg-white/15 hover:text-white transition-colors"
                 >
                   <ChevronLeft className="w-4 h-4" /> Leçon précédente
                 </Link>
-              ) : <div />}
-
-              {nextLesson && (
-                nextIsBlocked ? (
-                  <span className="flex items-center gap-2 px-4 py-2.5 bg-white/5 text-white/25 text-sm font-semibold rounded-cx cursor-not-allowed select-none">
-                    Le&ccedil;on suivante <ChevronRight className="w-4 h-4" />
-                  </span>
-                ) : (
-                  <Link
-                    href={`/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`}
-                    className="flex items-center gap-2 px-4 py-2.5 bg-primary text-white text-sm font-semibold rounded-cx hover:opacity-90 transition-opacity"
-                  >
-                    Le&ccedil;on suivante <ChevronRight className="w-4 h-4" />
-                  </Link>
-                )
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -4,7 +4,7 @@ import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/admin'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
-  FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap,
+  FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare,
 } from 'lucide-react'
 
 const ADMIN_NAV = [
@@ -16,6 +16,7 @@ const ADMIN_NAV = [
   { href: '/admin/progress',       label: 'Progression',     icon: TrendingUp },
   { href: '/admin/enrollments',    label: 'Inscriptions',    icon: Award },
   { href: '/admin/certificates',   label: 'Certificats',     icon: GraduationCap },
+  { href: '/admin/feedback',       label: 'Retours pilote',  icon: MessageSquare },
   { href: '/admin/payments',       label: 'Paiements',       icon: CreditCard },
 ]
 

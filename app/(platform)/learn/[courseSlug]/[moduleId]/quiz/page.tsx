@@ -247,9 +247,9 @@ export default function ModuleQuizPage() {
               </Link>
             )}
             {isLastModule && (
-              <Link href={`/courses/${courseSlug}`}
-                className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-secondary text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity">
-                Voir le cours <ChevronRight className="w-3.5 h-3.5" />
+              <Link href={`/certificate/${courseSlug}`}
+                className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-500 to-yellow-400 text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity">
+                <Award className="w-3.5 h-3.5" /> Obtenir mon certificat
               </Link>
             )}
           </div>
@@ -489,9 +489,9 @@ export default function ModuleQuizPage() {
                     </Link>
                   )}
                   {isPassed && isLastModule && (
-                    <Link href={`/courses/${courseSlug}`}
-                      className="flex items-center gap-2 px-5 py-2.5 bg-secondary text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity">
-                      Terminer le cours <CheckCircle className="w-4 h-4" />
+                    <Link href={`/certificate/${courseSlug}`}
+                      className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-amber-500 to-yellow-400 text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity shadow-md shadow-amber-500/30 animate-pulse-once">
+                      <Award className="w-4 h-4" /> 🎉 Obtenir mon certificat
                     </Link>
                   )}
                   <button onClick={handleRetry} className="text-sm text-primary hover:underline">

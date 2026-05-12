@@ -12,7 +12,7 @@ export const metadata: Metadata = {
 const STATIC_COURSES = [
   {
     title: "Fondamentaux de l'expérience client",
-    desc: "Comprenez les bases de l'expérience client et apprenez à analyser le parcours client pour identifier les points de friction et les moments clés.",
+    desc: "Identifiez les frustrations de vos clients, améliorez les moments clés du parcours et créez une expérience qui donne envie de revenir — avec des outils directement applicables à votre contexte.",
     duration: '4h',
     level: 'Débutant',
     slug: 'fondamentaux-experience-client',
@@ -24,7 +24,7 @@ const STATIC_COURSES = [
   },
   {
     title: 'Créer une expérience client mémorable',
-    desc: 'Techniques concrètes pour concevoir des interactions qui fidélisent et différencient votre organisation.',
+    desc: "Passez de la réaction à la création : apprenez à concevoir des interactions qui marquent durablement vos clients, renforcent leur fidélité et différencient votre organisation.",
     duration: '6h',
     level: 'Intermédiaire',
     slug: 'experience-client-memorable',
@@ -36,7 +36,7 @@ const STATIC_COURSES = [
   },
   {
     title: 'Service client digital',
-    desc: 'Gérer les canaux digitaux, réseaux sociaux et outils CRM pour une relation client moderne et efficace.',
+    desc: "Maîtrisez les canaux digitaux et les outils CRM pour offrir une relation client fluide, réactive et cohérente — quel que soit le canal utilisé par vos clients.",
     duration: '5h',
     level: 'Intermédiaire',
     slug: 'service-client-digital',

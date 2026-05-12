@@ -18,7 +18,7 @@ export default async function CertificateByIdPage({ params }: Props) {
   const [{ data: cert }, { data: profile }] = await Promise.all([
     supabase
       .from('certificates')
-      .select('id, user_id, certificate_number, issued_at, pdf_url, courses(title)')
+      .select('id, user_id, certificate_number, issued_at, pdf_url, courses(title, slug)')
       .eq('id', certificateId)
       .single(),
     supabase
@@ -31,8 +31,9 @@ export default async function CertificateByIdPage({ params }: Props) {
   if (!cert) redirect('/dashboard')
   if (cert.user_id !== user!.id) redirect('/dashboard')
 
-  const coursesData  = cert.courses as unknown as { title: string } | null
+  const coursesData  = cert.courses as unknown as { title: string; slug: string } | null
   const courseTitle  = coursesData?.title ?? ''
+  const courseSlug   = coursesData?.slug  ?? ''
   const learnerName  = profile?.full_name || profile?.email || ''
 
   return (
@@ -44,6 +45,7 @@ export default async function CertificateByIdPage({ params }: Props) {
           issuedAt={cert.issued_at}
           learnerName={learnerName}
           courseTitle={courseTitle}
+          courseSlug={courseSlug}
           initialPdfUrl={(cert as Record<string, unknown>).pdf_url as string | null ?? null}
         />
       </div>
