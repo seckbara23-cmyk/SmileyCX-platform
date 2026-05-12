@@ -119,10 +119,20 @@ export default function Footer() {
         <div className="flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-white/40">
           <p>© 2025 SmileyCX Consulting. Tous droits réservés.</p>
           <div className="flex gap-4">
-            <Link href="/privacy" className="hover:text-white/70 transition-colors">Confidentialité</Link>
-            <Link href="/terms"   className="hover:text-white/70 transition-colors">CGU</Link>
+            <Link href="/privacy"    className="hover:text-white/70 transition-colors">Confidentialité</Link>
+            <Link href="/terms"      className="hover:text-white/70 transition-colors">CGU</Link>
             <Link href="/admin/login" className="hover:text-white/70 transition-colors">Admin</Link>
           </div>
+        </div>
+        <div className="mt-5 flex justify-center">
+          <a
+            href="https://terangatechnologies.com"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[11px] text-white/25 hover:text-white/50 transition-colors duration-200 tracking-wide"
+          >
+            Plateforme conçue par Teranga Technologies
+          </a>
         </div>
       </div>
     </footer>

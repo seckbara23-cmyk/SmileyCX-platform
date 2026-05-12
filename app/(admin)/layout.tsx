@@ -86,6 +86,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             </button>
           </form>
           <p className="px-3 pt-1 text-[10px] text-white/20 truncate">{displayName}</p>
+          <p className="px-3 pb-1 text-[9px] text-white/15 truncate">
+            by Teranga Technologies
+          </p>
         </div>
       </aside>
 

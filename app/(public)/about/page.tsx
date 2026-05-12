@@ -19,18 +19,34 @@ export default function AboutPage() {
             Nous croyons que l&apos;expérience client est le moteur de la croissance durable. C&apos;est pourquoi nous proposons
             des contenus clairs, une pédagogie adaptée et un accompagnement orienté résultats.
           </p>
+
           <div className="grid gap-4 sm:grid-cols-2 mt-8">
             {[
-              { label: "Cours 100% en ligne", description: "Formations accessibles à tout moment, depuis n’importe quel appareil." },
-              { label: "Certificat inclus", description: "Obtenez une reconnaissance officielle à la fin de votre parcours." },
-              { label: "Support dédié", description: "Un accompagnement utilisateur pour vous aider à avancer rapidement." },
-              { label: "Mises à jour continues", description: "Contenu enrichi régulièrement par des experts CX." },
+              { label: 'Cours 100% en ligne',      description: "Formations accessibles à tout moment, depuis n'importe quel appareil." },
+              { label: 'Certificat inclus',         description: 'Obtenez une reconnaissance officielle à la fin de votre parcours.' },
+              { label: 'Support dédié',             description: 'Un accompagnement utilisateur pour vous aider à avancer rapidement.' },
+              { label: 'Mises à jour continues',    description: 'Contenu enrichi régulièrement par des experts CX.' },
             ].map(card => (
               <div key={card.label} className="rounded-cx border border-black/[0.06] p-5 bg-white shadow-sm">
                 <h2 className="text-lg font-semibold text-dark mb-2">{card.label}</h2>
                 <p className="text-sm text-cx-gray">{card.description}</p>
               </div>
             ))}
+          </div>
+
+          <div className="mt-10 pt-8 border-t border-black/[0.06]">
+            <p className="text-sm text-cx-gray leading-relaxed">
+              SmileyCX Academy est une plateforme de formation développée par{' '}
+              <a
+                href="https://terangatechnologies.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary font-semibold hover:underline"
+              >
+                Teranga Technologies
+              </a>
+              {' '}pour aider les entreprises et professionnels à améliorer concrètement leur expérience client.
+            </p>
           </div>
         </div>
       </div>
