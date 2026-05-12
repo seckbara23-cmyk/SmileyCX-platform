@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useRef } from 'react'
+import { useState, useRef, useId } from 'react'
 import Link from 'next/link'
 import { Plus, Trash2, Loader2 } from 'lucide-react'
 import { createQuiz } from './actions'
@@ -77,14 +77,25 @@ function blankForType(t: QuestionType): QuestionDraft {
 }
 
 export default function NewQuizForm({ courses }: { courses: Course[] }) {
-  const [isPending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [error, setError]    = useState<string | null>(null)
   const titleRef = useRef<HTMLInputElement>(null)
 
   const [courseId,  setCourseId]  = useState('')
   const [moduleId,  setModuleId]  = useState('')
   const [lessonId,  setLessonId]  = useState('')
-  const [questions, setQuestions] = useState<QuestionDraft[]>([blankMCQuestion()])
+
+  // useId gives a stable server/client consistent ID, avoiding hydration mismatch
+  // from Math.random() being called on both SSR and client.
+  const initId = useId()
+  const [questions, setQuestions] = useState<QuestionDraft[]>(() => [{
+    _id: initId,
+    question_type: 'multiple_choice' as const,
+    question: '',
+    options: ['', '', '', ''],
+    correct_answer: 0,
+    explanation: '',
+  }])
 
   const selectedCourse  = courses.find(c => c.id === courseId)
   const modules  = (selectedCourse?.modules ?? []).slice().sort((a, b) => a.order_index - b.order_index)
@@ -95,7 +106,12 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
 
   function addQuestion(type: QuestionType) {
-    setQuestions(prev => [...prev, blankForType(type)])
+    console.log('[NewQuizForm] addQuestion called:', type)
+    setQuestions(prev => {
+      const next = [...prev, blankForType(type)]
+      console.log('[NewQuizForm] questions after add:', next.length)
+      return next
+    })
   }
 
   function removeQuestion(id: string) {
@@ -180,22 +196,29 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
     }))
   }
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError(null)
-    const fd = new FormData()
-    fd.set('title', titleRef.current?.value.trim() ?? '')
-    if (lessonId) {
-      fd.set('lesson_id', lessonId)
-    } else {
-      fd.set('module_id', moduleId)
-    }
-    fd.set('questions_json', JSON.stringify(questions.map((q, i) => ({ ...q, order_index: i }))))
-    startTransition(async () => {
+    setIsSubmitting(true)
+    try {
+      const fd = new FormData()
+      fd.set('title', titleRef.current?.value.trim() ?? '')
+      if (lessonId) {
+        fd.set('lesson_id', lessonId)
+      } else {
+        fd.set('module_id', moduleId)
+      }
+      fd.set('questions_json', JSON.stringify(questions.map((q, i) => ({ ...q, order_index: i }))))
       const result = await createQuiz(fd)
       if (result?.error) setError(result.error)
-    })
+    } catch {
+      // redirect() from the server action throws — that's fine, navigation proceeds
+    } finally {
+      setIsSubmitting(false)
+    }
   }
+
+  console.log('[NewQuizForm] render, questions.length =', questions.length)
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -270,7 +293,9 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
 
       {/* Questions */}
       <div className="space-y-4">
-        <h2 className="text-sm font-bold text-gray-700">Questions</h2>
+        <h2 className="text-sm font-bold text-gray-700">
+          Questions <span className="ml-1 text-xs font-normal text-gray-400">({questions.length})</span>
+        </h2>
 
         {questions.map((q, qi) => (
           <div key={q._id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5 space-y-4">
@@ -510,10 +535,10 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
       <div className="flex items-center gap-3">
         <button
           type="submit"
-          disabled={isPending}
+          disabled={isSubmitting}
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-60 transition-colors"
         >
-          {isPending && <Loader2 className="w-4 h-4 animate-spin" />}
+          {isSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
           Créer le quiz
         </button>
         <Link
