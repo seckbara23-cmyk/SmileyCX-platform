@@ -6,8 +6,7 @@ import { CheckCircle, Loader2, Star } from 'lucide-react'
 import { submitFeedback } from '@/app/actions/feedback'
 
 interface Props {
-  courseId:   string
-  courseTitle: string
+  courseId: string
 }
 
 function StarRating({
@@ -17,7 +16,7 @@ function StarRating({
 }: {
   label: string
   value: number
-  onChange: (v: number) => void
+  onChange: (rating: number) => void
 }) {
   const [hovered, setHovered] = useState(0)
   return (
@@ -52,21 +51,21 @@ function StarRating({
   )
 }
 
-export default function FeedbackForm({ courseId, courseTitle }: Props) {
+export default function FeedbackForm({ courseId }: Props) {
   const router = useRouter()
 
-  const [clarity,       setClarity]       = useState(0)
-  const [practical,     setPractical]     = useState(0)
-  const [easeOfUse,     setEaseOfUse]     = useState(0)
-  const [mostUseful,    setMostUseful]    = useState('')
-  const [confusing,     setConfusing]     = useState('')
-  const [recommend,     setRecommend]     = useState<boolean | undefined>(undefined)
-  const [fairPrice,     setFairPrice]     = useState('')
-  const [comment,       setComment]       = useState('')
+  const [clarity,    setClarity]    = useState(0)
+  const [practical,  setPractical]  = useState(0)
+  const [easeOfUse,  setEaseOfUse]  = useState(0)
+  const [mostUseful, setMostUseful] = useState('')
+  const [confusing,  setConfusing]  = useState('')
+  const [recommend,  setRecommend]  = useState<boolean | undefined>(undefined)
+  const [fairPrice,  setFairPrice]  = useState('')
+  const [comment,    setComment]    = useState('')
 
-  const [submitting,    setSubmitting]    = useState(false)
-  const [submitted,     setSubmitted]     = useState(false)
-  const [error,         setError]         = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [submitted,  setSubmitted]  = useState(false)
+  const [error,      setError]      = useState('')
 
   const canSubmit = clarity > 0 && practical > 0 && easeOfUse > 0
 
@@ -102,7 +101,7 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
         <div className="w-16 h-16 rounded-full bg-success/10 flex items-center justify-center mb-4">
           <CheckCircle className="w-8 h-8 text-success" />
         </div>
-        <h2 className="text-xl font-extrabold text-dark mb-2">Merci pour votre retour !</h2>
+        <h2 className="text-xl font-extrabold text-dark mb-2">Merci pour votre retour&nbsp;!</h2>
         <p className="text-sm text-cx-gray max-w-sm mb-6">
           Vos réponses nous aident à améliorer SmileyCX Academy pour la prochaine version.
         </p>
@@ -122,7 +121,8 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
       {/* Ratings */}
       <div className="cx-card p-6 space-y-6">
         <h2 className="text-base font-bold text-dark border-b border-black/[0.06] pb-3">
-          Évaluez votre expérience <span className="text-cx-gray font-normal text-sm">(obligatoire)</span>
+          Évaluez votre expérience{' '}
+          <span className="text-cx-gray font-normal text-sm">(obligatoire)</span>
         </h2>
         <StarRating label="Clarté du contenu" value={clarity} onChange={setClarity} />
         <StarRating label="Valeur pratique" value={practical} onChange={setPractical} />
@@ -132,14 +132,16 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
       {/* Open questions */}
       <div className="cx-card p-6 space-y-5">
         <h2 className="text-base font-bold text-dark border-b border-black/[0.06] pb-3">
-          Vos retours <span className="text-cx-gray font-normal text-sm">(facultatif)</span>
+          Vos retours{' '}
+          <span className="text-cx-gray font-normal text-sm">(facultatif)</span>
         </h2>
 
         <div>
-          <label className="block text-sm font-semibold text-dark mb-1.5">
-            Qu&apos;est-ce qui vous a été le plus utile ?
+          <label htmlFor="fb-most-useful" className="block text-sm font-semibold text-dark mb-1.5">
+            Qu&apos;est-ce qui vous a été le plus utile&nbsp;?
           </label>
           <textarea
+            id="fb-most-useful"
             value={mostUseful}
             onChange={e => setMostUseful(e.target.value)}
             rows={3}
@@ -149,10 +151,11 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-dark mb-1.5">
-            Qu&apos;est-ce qui était confus ou difficile à suivre ?
+          <label htmlFor="fb-confusing" className="block text-sm font-semibold text-dark mb-1.5">
+            Qu&apos;est-ce qui était confus ou difficile à suivre&nbsp;?
           </label>
           <textarea
+            id="fb-confusing"
             value={confusing}
             onChange={e => setConfusing(e.target.value)}
             rows={3}
@@ -162,11 +165,11 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-dark mb-2">
-            Recommanderiez-vous cette formation ?
-          </label>
-          <div className="flex gap-3">
-            {[true, false].map(val => (
+          <p className="text-sm font-semibold text-dark mb-2">
+            Recommanderiez-vous cette formation&nbsp;?
+          </p>
+          <div className="flex gap-3" role="group" aria-label="Recommandation">
+            {([true, false] as const).map(val => (
               <button
                 key={String(val)}
                 type="button"
@@ -186,10 +189,11 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-dark mb-1.5">
-            Quel prix vous semblerait juste pour cette formation ?
+          <label htmlFor="fb-fair-price" className="block text-sm font-semibold text-dark mb-1.5">
+            Quel prix vous semblerait juste pour cette formation&nbsp;?
           </label>
           <input
+            id="fb-fair-price"
             type="text"
             value={fairPrice}
             onChange={e => setFairPrice(e.target.value)}
@@ -199,10 +203,12 @@ export default function FeedbackForm({ courseId, courseTitle }: Props) {
         </div>
 
         <div>
-          <label className="block text-sm font-semibold text-dark mb-1.5">
-            Commentaire libre <span className="text-cx-gray font-normal">(facultatif)</span>
+          <label htmlFor="fb-comment" className="block text-sm font-semibold text-dark mb-1.5">
+            Commentaire libre{' '}
+            <span className="text-cx-gray font-normal">(facultatif)</span>
           </label>
           <textarea
+            id="fb-comment"
             value={comment}
             onChange={e => setComment(e.target.value)}
             rows={4}

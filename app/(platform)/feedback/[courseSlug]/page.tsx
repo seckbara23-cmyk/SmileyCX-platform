@@ -44,7 +44,7 @@ export default async function FeedbackPage({ params }: Props) {
           </p>
         </div>
 
-        <FeedbackForm courseId={course.id} courseTitle={course.title} />
+        <FeedbackForm courseId={course.id} />
 
       </div>
     </div>
