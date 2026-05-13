@@ -44,6 +44,26 @@ export default function LessonPlayerPage() {
 
   const videoRef         = useRef<HTMLVideoElement>(null)
   const autoCompletedRef = useRef(false)
+  const progressRef      = useRef<Record<string, boolean>>({})
+
+  // ── Progress persistence helpers ──────────────────────────────────────────
+  // Single point of truth: updates React state, the ref (for sync reads inside
+  // event handlers), and localStorage (for PILOT_MODE persistence + fast cache).
+  const updateProgress = useCallback((map: Record<string, boolean>) => {
+    progressRef.current = map
+    setProgress(map)
+    try { localStorage.setItem('lms_progress', JSON.stringify(map)) } catch {}
+  }, [])
+
+  // On mount: hydrate from localStorage so progress is visible before the DB
+  // round-trip completes — critical for PILOT_MODE (no DB) and eliminates the
+  // flash for authenticated users navigating between lessons.
+  useEffect(() => {
+    try {
+      const s = localStorage.getItem('lms_progress')
+      if (s) { const m = JSON.parse(s); progressRef.current = m; setProgress(m) }
+    } catch {}
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleCC() {
     const track = videoRef.current?.textTracks[0]
@@ -122,8 +142,8 @@ export default function LessonPlayerPage() {
       .eq('user_id', uid).eq('is_completed', true)
     const map: Record<string, boolean> = {}
     data?.forEach(p => { map[p.lesson_id] = true })
-    setProgress(map)
-  }, [supabase])
+    updateProgress(map) // DB is source of truth for auth users; caches to localStorage
+  }, [supabase, updateProgress])
 
   useEffect(() => {
     if (PILOT_MODE) {
@@ -168,8 +188,10 @@ export default function LessonPlayerPage() {
   async function markComplete(suppressAutoAdvance = false) {
     if (!lesson || completed) return
     setCompleted(true)
-    setProgress(p => ({ ...p, [lesson.id]: true }))
     if (!suppressAutoAdvance) setJustCompleted(true)
+    // updateProgress writes to ref + state + localStorage atomically.
+    // In PILOT_MODE userId is null, so localStorage is the only persistence.
+    updateProgress({ ...progressRef.current, [lesson.id]: true })
     if (!userId) return
     await supabase.from('lesson_progress').upsert(
       { user_id: userId, lesson_id: lesson.id, is_completed: true, completed_at: new Date().toISOString() },

@@ -62,29 +62,29 @@ export default function LessonSidebar({
             ← {pilotMode ? 'Les formations' : 'Mon espace'}
           </Link>
 
-          {!pilotMode && totalLessons > 0 && (
+          {totalLessons > 0 && (
             <div className="mt-4">
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex items-center justify-between mb-2">
                 <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">
-                  Ma progression
+                  {pilotMode ? 'Progression' : 'Ma progression'}
                 </span>
                 <span className="text-[11px] font-bold text-primary tabular-nums">
                   {progressPct}%
                 </span>
               </div>
-              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+              <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                  className="h-full bg-primary rounded-full transition-[width] duration-700 ease-out"
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
-              <p className="text-[10px] text-white/30 mt-1.5 tabular-nums">
+              <p className="text-[10px] text-white/35 mt-1.5 tabular-nums">
                 {completedLessons}&nbsp;/&nbsp;{totalLessons} leçon{totalLessons > 1 ? 's' : ''} complétée{completedLessons > 1 ? 's' : ''}
               </p>
             </div>
           )}
 
-          {pilotMode && (
+          {pilotMode && totalLessons === 0 && (
             <p className="text-[10px] text-white/25 mt-2 leading-tight">
               Explorez librement toutes les leçons.
             </p>
@@ -119,9 +119,12 @@ export default function LessonSidebar({
                     )}
                   </div>
                   {modTotal > 0 && (
-                    <div className="w-full h-0.5 bg-white/10 rounded-full overflow-hidden">
+                    <div className="w-full h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-success/60 rounded-full transition-all duration-500 ease-out"
+                        className={cn(
+                          'h-full rounded-full transition-[width] duration-700 ease-out',
+                          isValidated ? 'bg-success' : 'bg-success/70'
+                        )}
                         style={{ width: `${modPct}%` }}
                       />
                     </div>
