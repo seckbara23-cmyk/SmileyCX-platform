@@ -1,0 +1,194 @@
+'use client'
+import Link from 'next/link'
+import { Check, CheckCircle, ClipboardList } from 'lucide-react'
+import { cn } from '@/lib/utils/cn'
+
+export interface SidebarLessonRow {
+  id: string; slug: string; title: string; order_index: number
+  content: string | null; video_url: string | null
+  subtitle_url: string | null; duration_minutes: number | null
+}
+export interface SidebarModuleRow {
+  id: string; slug: string; title: string; order_index: number
+  lessons: SidebarLessonRow[]
+}
+
+interface Props {
+  modules:          SidebarModuleRow[]
+  courseSlug:       string
+  activeLessonId:   string | null
+  activeModuleId:   string | null
+  progress:         Record<string, boolean>
+  validatedModules: Set<string>
+  modulesWithQuiz:  Set<string>
+  pilotMode:        boolean
+  sideOpen:         boolean
+  onClose:          () => void
+}
+
+export default function LessonSidebar({
+  modules, courseSlug, activeLessonId, activeModuleId,
+  progress, validatedModules, modulesWithQuiz,
+  pilotMode, sideOpen, onClose,
+}: Props) {
+  const totalLessons     = modules.reduce((s, m) => s + m.lessons.length, 0)
+  const completedLessons = modules.reduce((s, m) => s + m.lessons.filter(l => !!progress[l.id]).length, 0)
+  const progressPct      = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
+
+  return (
+    <>
+      {/* Mobile backdrop */}
+      {sideOpen && (
+        <div
+          className="md:hidden fixed inset-0 z-30 bg-black/60"
+          onClick={onClose}
+          aria-hidden
+        />
+      )}
+
+      <aside className={cn(
+        'bg-[#1a1d27] border-r border-white/10 overflow-y-auto shrink-0',
+        'transition-all duration-300 z-40',
+        'fixed md:static top-[72px] md:top-0 bottom-0 left-0 md:h-auto',
+        sideOpen ? 'w-80 shadow-2xl shadow-black/50' : 'w-0 md:w-80',
+        'overflow-hidden'
+      )}>
+        {/* ── Header ─────────────────────────────────────────────────────── */}
+        <div className="px-5 py-4 border-b border-white/[0.08]">
+          <Link
+            href={pilotMode ? '/courses' : '/dashboard'}
+            className="text-xs text-white/50 hover:text-white/80 transition-colors"
+          >
+            ← {pilotMode ? 'Les formations' : 'Mon espace'}
+          </Link>
+
+          {!pilotMode && totalLessons > 0 && (
+            <div className="mt-4">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                  Ma progression
+                </span>
+                <span className="text-[11px] font-bold text-primary tabular-nums">
+                  {progressPct}%
+                </span>
+              </div>
+              <div className="w-full h-1.5 bg-white/10 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-primary rounded-full transition-all duration-500 ease-out"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+              <p className="text-[10px] text-white/30 mt-1.5 tabular-nums">
+                {completedLessons}&nbsp;/&nbsp;{totalLessons} leçon{totalLessons > 1 ? 's' : ''} complétée{completedLessons > 1 ? 's' : ''}
+              </p>
+            </div>
+          )}
+
+          {pilotMode && (
+            <p className="text-[10px] text-white/25 mt-2 leading-tight">
+              Explorez librement toutes les leçons.
+            </p>
+          )}
+        </div>
+
+        {/* ── Module list ─────────────────────────────────────────────────── */}
+        <nav className="pb-6">
+          {modules.map((mod, mi) => {
+            const isValidated = validatedModules.has(mod.id)
+            const hasQuiz     = modulesWithQuiz.has(mod.id)
+            const modDone     = mod.lessons.filter(l => !!progress[l.id]).length
+            const modTotal    = mod.lessons.length
+            const modPct      = modTotal > 0 ? Math.round((modDone / modTotal) * 100) : 0
+
+            return (
+              <div key={mod.id}>
+                {/* Module header */}
+                <div className="px-5 pt-4 pb-2.5 bg-white/[0.03] border-t border-white/[0.06]">
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <p className="text-[11px] font-bold text-white/55 uppercase tracking-wide leading-tight flex-1 [overflow-wrap:anywhere]">
+                      {mi + 1}. {mod.title}
+                    </p>
+                    {isValidated ? (
+                      <span className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-success mt-0.5">
+                        <CheckCircle className="w-3 h-3" /> Validé
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-white/30 shrink-0 mt-0.5 tabular-nums">
+                        {modDone}/{modTotal}
+                      </span>
+                    )}
+                  </div>
+                  {modTotal > 0 && (
+                    <div className="w-full h-0.5 bg-white/10 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-success/60 rounded-full transition-all duration-500 ease-out"
+                        style={{ width: `${modPct}%` }}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Lesson list */}
+                {mod.lessons.map(les => {
+                  const isActive = les.id === activeLessonId
+                  const isDone   = !!progress[les.id]
+                  return (
+                    <Link
+                      key={les.id}
+                      href={`/learn/${courseSlug}/${mod.id}/${les.id}`}
+                      onClick={onClose}
+                      className={cn(
+                        'flex items-start gap-3 px-5 py-3 text-sm transition-all duration-150 border-l-2',
+                        isActive
+                          ? 'bg-primary/[0.12] border-primary'
+                          : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
+                      )}
+                    >
+                      {/* State indicator */}
+                      {isDone ? (
+                        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0 mt-0.5">
+                          <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                        </div>
+                      ) : isActive ? (
+                        <div className="w-5 h-5 rounded-full border-2 border-primary bg-primary/20 ring-2 ring-primary/20 shrink-0 mt-0.5" />
+                      ) : (
+                        <div className="w-5 h-5 rounded-full border-2 border-white/20 shrink-0 mt-0.5" />
+                      )}
+
+                      <span className={cn(
+                        'leading-snug line-clamp-2 text-sm',
+                        isActive  ? 'text-white font-semibold'
+                        : isDone  ? 'text-white/65'
+                                  : 'text-white/50'
+                      )}>
+                        {les.title}
+                      </span>
+                    </Link>
+                  )
+                })}
+
+                {/* Quiz link */}
+                {hasQuiz && (
+                  <Link
+                    href={`/learn/${courseSlug}/${mod.id}/quiz`}
+                    onClick={onClose}
+                    className={cn(
+                      'flex items-center gap-3 px-5 py-2.5 text-sm transition-all duration-150 border-l-2',
+                      activeModuleId === mod.id && activeLessonId === null
+                        ? 'bg-secondary/[0.12] text-secondary border-secondary'
+                        : 'text-white/35 border-transparent hover:bg-white/[0.04] hover:text-white/55 hover:border-white/[0.12]'
+                    )}
+                  >
+                    <ClipboardList className="w-4 h-4 shrink-0" />
+                    <span className="italic">Quiz du module</span>
+                    {isValidated && <CheckCircle className="w-3.5 h-3.5 text-success ml-auto shrink-0" />}
+                  </Link>
+                )}
+              </div>
+            )
+          })}
+        </nav>
+      </aside>
+    </>
+  )
+}

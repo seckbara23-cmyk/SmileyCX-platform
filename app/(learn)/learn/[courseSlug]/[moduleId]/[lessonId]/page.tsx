@@ -1,30 +1,19 @@
 'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { CheckCircle, ChevronLeft, ChevronRight, List, Award, Loader2, Captions, ClipboardList } from 'lucide-react'
+import { List, Loader2, Captions } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { enrollForFree } from '@/app/actions/enrollment'
 import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
+import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
+import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
-interface LessonRow {
-  id:               string
-  slug:             string
-  title:            string
-  content:          string | null
-  video_url:        string | null
-  subtitle_url:     string | null
-  duration_minutes: number | null
-  order_index:      number
-}
+interface LessonRow extends SidebarLessonRow {}
 
-interface ModuleRow {
-  id:          string
-  slug:        string
-  title:       string
-  order_index: number
-  lessons:     LessonRow[]
+interface ModuleRow extends SidebarModuleRow {
+  lessons: LessonRow[]
 }
 
 interface FlatLesson extends LessonRow {
@@ -33,9 +22,9 @@ interface FlatLesson extends LessonRow {
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function LessonPlayerPage() {
-  const params    = useParams()
-  const router    = useRouter()
-  const supabase  = createClient()
+  const params   = useParams()
+  const router   = useRouter()
+  const supabase = createClient()
 
   const courseSlug = params.courseSlug as string
   const moduleId   = params.moduleId   as string
@@ -51,11 +40,11 @@ export default function LessonPlayerPage() {
   const [loading,          setLoading]          = useState(true)
   const [ccEnabled,        setCcEnabled]        = useState(true)
 
-  // ── Module validation state (from localStorage) ───────────────────────────
   const [validatedModules, setValidatedModules] = useState<Set<string>>(new Set())
   const [modulesWithQuiz,  setModulesWithQuiz]  = useState<Set<string>>(new Set())
 
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef         = useRef<HTMLVideoElement>(null)
+  const autoCompletedRef = useRef(false)
 
   function toggleCC() {
     const track = videoRef.current?.textTracks[0]
@@ -65,16 +54,14 @@ export default function LessonPlayerPage() {
     setCcEnabled(next)
   }
 
-  // ── Shared: set modules and find the active lesson ─────────────────────────
+  // ── Shared: resolve active module/lesson from sorted list ─────────────────
   function resolveLesson(sorted: ModuleRow[]) {
     setModules(sorted)
     for (const mod of sorted) {
       if (mod.id === moduleId || mod.slug === moduleId) {
         for (const les of mod.lessons) {
           if (les.id === lessonId || les.slug === lessonId) {
-            setModule(mod)
-            setLesson(les)
-            return
+            setModule(mod); setLesson(les); return
           }
         }
         if (mod.lessons[0]) { setModule(mod); setLesson(mod.lessons[0]); return }
@@ -83,85 +70,61 @@ export default function LessonPlayerPage() {
     if (sorted[0]?.lessons[0]) { setModule(sorted[0]); setLesson(sorted[0].lessons[0]) }
   }
 
-  // ── PILOT_MODE: load course anonymously ───────────────────────────────────
+  // ── PILOT_MODE: anonymous load ────────────────────────────────────────────
   const loadCourseAnon = useCallback(async () => {
     const { data: course } = await supabase
-      .from('courses')
-      .select('id')
-      .eq('slug', courseSlug)
-      .eq('is_published', true)
-      .single()
-
+      .from('courses').select('id')
+      .eq('slug', courseSlug).eq('is_published', true).single()
     if (!course) { router.push('/courses'); return }
 
     const { data: mods } = await supabase
       .from('modules')
       .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, duration_minutes, order_index)')
-      .eq('course_id', course.id)
-      .order('order_index')
-
+      .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
-    const sorted: ModuleRow[] = mods.map(m => ({
+    resolveLesson(mods.map(m => ({
       ...m,
       lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
-    }))
-
-    resolveLesson(sorted)
+    })))
   }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Authenticated: load course structure + verify enrollment ──────────────
+  // ── Authenticated: load + verify enrollment ───────────────────────────────
   const loadCourse = useCallback(async (uid: string) => {
     const { data: course } = await supabase
-      .from('courses')
-      .select('id')
-      .eq('slug', courseSlug)
-      .single()
-
+      .from('courses').select('id').eq('slug', courseSlug).single()
     if (!course) return
 
     const { data: enrollment } = await supabase
-      .from('enrollments')
-      .select('id, status')
-      .eq('user_id', uid)
-      .eq('course_id', course.id)
-      .eq('status', 'active')
-      .single()
+      .from('enrollments').select('id, status')
+      .eq('user_id', uid).eq('course_id', course.id).eq('status', 'active').single()
 
     if (!enrollment) {
       if (FREE_ACCESS_MODE) {
         const { error } = await enrollForFree(course.id)
         if (error) { router.push(`/courses/${courseSlug}`); return }
       } else {
-        router.push(`/courses/${courseSlug}`)
-        return
+        router.push(`/courses/${courseSlug}`); return
       }
     }
 
     const { data: mods } = await supabase
       .from('modules')
       .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, duration_minutes, order_index)')
-      .eq('course_id', course.id)
-      .order('order_index')
-
+      .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
-    const sorted: ModuleRow[] = mods.map(m => ({
+    resolveLesson(mods.map(m => ({
       ...m,
       lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
-    }))
-
-    resolveLesson(sorted)
+    })))
   }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Load user progress ─────────────────────────────────────────────────────
   const loadUserProgress = useCallback(async (uid: string) => {
     const { data } = await supabase
-      .from('lesson_progress')
-      .select('lesson_id')
-      .eq('user_id', uid)
-      .eq('is_completed', true)
-
+      .from('lesson_progress').select('lesson_id')
+      .eq('user_id', uid).eq('is_completed', true)
     const map: Record<string, boolean> = {}
     data?.forEach(p => { map[p.lesson_id] = true })
     setProgress(map)
@@ -179,68 +142,60 @@ export default function LessonPlayerPage() {
     })
   }, [supabase, router, loadCourse, loadCourseAnon, loadUserProgress])
 
-  // ── Load validated modules + quiz existence ───────────────────────────────
-  // For authenticated users, DB quiz_attempts is the source of truth.
-  // In PILOT_MODE, gating is disabled entirely — all modules are accessible.
+  // ── Quiz metadata ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (modules.length === 0) return
     const modIds = modules.map(m => m.id)
 
-    // Always fetch which modules have a quiz (for sidebar icon display).
-    supabase
-      .from('quizzes')
-      .select('module_id')
-      .in('module_id', modIds)
+    supabase.from('quizzes').select('module_id').in('module_id', modIds)
       .then(({ data }) => {
         setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string)))
       })
 
-    // In PILOT_MODE there is no user account or enrollment — skip gating.
     if (PILOT_MODE) return
 
-    // Authenticated path: use quiz_attempts from the DB.
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
-      supabase
-        .from('quiz_attempts')
-        .select('module_id')
-        .eq('user_id', user.id)
-        .eq('passed', true)
-        .in('module_id', modIds)
+      supabase.from('quiz_attempts').select('module_id')
+        .eq('user_id', user.id).eq('passed', true).in('module_id', modIds)
         .then(({ data: attempts }) => {
-          setValidatedModules(
-            new Set((attempts ?? []).map(a => a.module_id as string))
-          )
+          setValidatedModules(new Set((attempts ?? []).map(a => a.module_id as string)))
         })
     })
   }, [modules]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync completion state when lesson changes ──────────────────────────────
   useEffect(() => {
-    if (lesson) setCompleted(!!progress[lesson.id])
+    if (lesson) {
+      setCompleted(!!progress[lesson.id])
+      autoCompletedRef.current = false
+    }
   }, [lesson, progress])
 
-  // ── Mark lesson complete (authenticated users only) ────────────────────────
+  // ── Mark lesson complete ───────────────────────────────────────────────────
   async function markComplete() {
-    if (!lesson || !userId) return
+    if (!lesson || completed) return
     setCompleted(true)
     setProgress(p => ({ ...p, [lesson.id]: true }))
-
+    if (!userId) return
     await supabase.from('lesson_progress').upsert(
-      {
-        user_id:      userId,
-        lesson_id:    lesson.id,
-        is_completed: true,
-        completed_at: new Date().toISOString(),
-      },
+      { user_id: userId, lesson_id: lesson.id, is_completed: true, completed_at: new Date().toISOString() },
       { onConflict: 'user_id,lesson_id' }
     )
   }
 
-  // ── Build flat lesson list for prev/next navigation ────────────────────────
-  const allLessons: FlatLesson[] = modules.flatMap(m =>
-    m.lessons.map(l => ({ ...l, module: m }))
-  )
+  // ── Auto-complete on video 85% ─────────────────────────────────────────────
+  function handleVideoTimeUpdate() {
+    if (completed || autoCompletedRef.current || !videoRef.current) return
+    const { currentTime, duration } = videoRef.current
+    if (duration > 0 && currentTime / duration >= 0.85) {
+      autoCompletedRef.current = true
+      markComplete()
+    }
+  }
+
+  // ── Flat lesson list for prev/next ─────────────────────────────────────────
+  const allLessons: FlatLesson[] = modules.flatMap(m => m.lessons.map(l => ({ ...l, module: m })))
   const currentIndex = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
   const prevLesson   = currentIndex > 0                      ? allLessons[currentIndex - 1] : null
   const nextLesson   = currentIndex < allLessons.length - 1 ? allLessons[currentIndex + 1] : null
@@ -248,17 +203,18 @@ export default function LessonPlayerPage() {
   const isLastLessonInModule = !!lesson && !!module &&
     module.lessons[module.lessons.length - 1]?.id === lesson.id
 
-  // ── Next-module gating ────────────────────────────────────────────────────
-  // PILOT_MODE: anonymous access — no accounts, no quiz records, no gating.
-  const nextIsNewModule    = !!nextLesson && nextLesson.module.id !== module?.id
-  const currentModHasQuiz  = modulesWithQuiz.has(module?.id ?? '')
-  const currentModPassed   = validatedModules.has(module?.id ?? '')
-  const nextIsBlocked      = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
+  const nextIsNewModule   = !!nextLesson && nextLesson.module.id !== module?.id
+  const currentModHasQuiz = modulesWithQuiz.has(module?.id ?? '')
+  const currentModPassed  = validatedModules.has(module?.id ?? '')
+  const nextIsBlocked     = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
 
-  // ── Loading state ──────────────────────────────────────────────────────────
+  const navPrevLesson: NavLesson | null = prevLesson ? { id: prevLesson.id, title: prevLesson.title, module: { id: prevLesson.module.id } } : null
+  const navNextLesson: NavLesson | null = nextLesson ? { id: nextLesson.id, title: nextLesson.title, module: { id: nextLesson.module.id } } : null
+
+  // ── Loading / error states ─────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#0f1117] text-white/40 gap-3">
+      <div className="flex items-center justify-center h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-3">
         <Loader2 className="w-5 h-5 animate-spin" />
         <span className="text-sm">Chargement…</span>
       </div>
@@ -267,7 +223,7 @@ export default function LessonPlayerPage() {
 
   if (!lesson) {
     return (
-      <div className="flex flex-col items-center justify-center h-screen bg-[#0f1117] text-white/40 gap-4">
+      <div className="flex flex-col items-center justify-center h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-4">
         <p className="text-sm">Leçon introuvable.</p>
         <Link href="/courses" className="text-primary text-sm hover:underline">← Les formations</Link>
       </div>
@@ -277,141 +233,53 @@ export default function LessonPlayerPage() {
   return (
     <div className="relative flex h-[calc(100vh-72px)] bg-[#0f1117]">
 
-      {/* Mobile sidebar backdrop */}
-      {sideOpen && (
-        <div
-          className="md:hidden fixed inset-0 z-30 bg-black/60"
-          onClick={() => setSideOpen(false)}
-          aria-hidden
-        />
-      )}
+      {/* ── Sidebar ──────────────────────────────────────────────────────── */}
+      <LessonSidebar
+        modules={modules}
+        courseSlug={courseSlug}
+        activeLessonId={lesson.id}
+        activeModuleId={module?.id ?? null}
+        progress={progress}
+        validatedModules={validatedModules}
+        modulesWithQuiz={modulesWithQuiz}
+        pilotMode={PILOT_MODE}
+        sideOpen={sideOpen}
+        onClose={() => setSideOpen(false)}
+      />
 
-      {/* ── Sidebar ──────────────────────────────────────────────────── */}
-      <aside className={`
-        bg-[#1a1d27] border-r border-white/10 overflow-y-auto
-        transition-all duration-300 z-40 shrink-0
-        fixed md:static top-[72px] md:top-0 bottom-0 left-0 md:h-auto
-        ${sideOpen ? 'w-72 shadow-2xl shadow-black/50' : 'w-0 md:w-64'}
-        overflow-hidden
-      `}>
-        <div className="p-4 border-b border-white/10">
-          <Link
-            href={PILOT_MODE ? '/courses' : '/dashboard'}
-            className="text-xs text-white/50 hover:text-white/80 transition-colors"
-          >
-            {PILOT_MODE ? '← Les formations' : '← Mon espace'}
-          </Link>
-          {!PILOT_MODE && (
-            <p className="text-[10px] text-white/25 mt-2 leading-tight">
-              Suivez les leçons dans l&apos;ordre pour débloquer votre certificat.
-            </p>
-          )}
-        </div>
-
-        <nav>
-          {modules.map((mod, mi) => {
-            const isValidated = validatedModules.has(mod.id)
-            return (
-              <div key={mod.id}>
-                {/* Module header */}
-                <div className="px-4 py-2.5 bg-white/5">
-                  <div className="flex items-center justify-between gap-2 mb-1.5">
-                    <p className="text-[11px] font-bold text-white/50 uppercase tracking-wider truncate">
-                      {mi + 1}. {mod.title}
-                    </p>
-                    {isValidated ? (
-                      <span className="flex items-center gap-1 shrink-0 text-[10px] font-bold text-success">
-                        <CheckCircle className="w-3 h-3" /> Valid&eacute;
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-white/30 shrink-0">
-                        {mod.lessons.filter(l => !!progress[l.id]).length}/{mod.lessons.length}
-                      </span>
-                    )}
-                  </div>
-                  {/* Module progress bar */}
-                  {mod.lessons.length > 0 && (
-                    <div className="w-full h-0.5 bg-white/10 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-success/60 rounded-full transition-all duration-300"
-                        style={{ width: `${Math.round((mod.lessons.filter(l => !!progress[l.id]).length / mod.lessons.length) * 100)}%` }}
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Lessons */}
-                {mod.lessons.map(les => {
-                  const isActive = les.id === lesson?.id
-                  const isDone   = !!progress[les.id]
-                  return (
-                    <Link
-                      key={les.id}
-                      href={`/learn/${courseSlug}/${mod.id}/${les.id}`}
-                      className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors border-l-2 ${
-                        isActive
-                          ? 'bg-primary/20 text-white border-primary'
-                          : 'text-white/60 border-transparent hover:bg-white/5 hover:text-white/80'
-                      }`}
-                    >
-                      {isDone
-                        ? <CheckCircle className="w-4 h-4 text-success shrink-0" />
-                        : <span className={`w-4 h-4 rounded-full border shrink-0 ${isActive ? 'border-primary' : 'border-white/20'}`} />
-                      }
-                      <span className="line-clamp-2 leading-tight">{les.title}</span>
-                    </Link>
-                  )
-                })}
-
-                {/* Quiz entry */}
-                {mod.lessons.length > 0 && (
-                  <Link
-                    href={`/learn/${courseSlug}/${mod.id}/quiz`}
-                    className={`flex items-center gap-3 px-4 py-3 text-sm transition-colors border-l-2 ${
-                      module?.id === mod.id && !lesson
-                        ? 'bg-secondary/20 text-secondary border-secondary'
-                        : 'text-white/40 border-transparent hover:bg-white/5 hover:text-white/60'
-                    }`}
-                  >
-                    <ClipboardList className="w-4 h-4 shrink-0" />
-                    <span className="italic">Quiz</span>
-                    {isValidated && <CheckCircle className="w-3.5 h-3.5 text-success ml-auto shrink-0" />}
-                  </Link>
-                )}
-              </div>
-            )
-          })}
-        </nav>
-      </aside>
-
-      {/* ── Main content ─────────────────────────────────────────────── */}
+      {/* ── Main area ─────────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col overflow-hidden">
+
         {/* Top bar */}
-        <div className="flex items-center gap-3 px-4 py-3 bg-[#1a1d27] border-b border-white/10">
+        <div className="flex items-center gap-3 px-4 py-3 bg-[#1a1d27] border-b border-white/10 shrink-0">
           <button
             onClick={() => setSideOpen(o => !o)}
             className="md:hidden p-1.5 rounded text-white/60 hover:text-white hover:bg-white/10 transition-colors"
-            aria-label="Toggle sidebar"
+            aria-label="Ouvrir le menu"
           >
             <List className="w-5 h-5" />
           </button>
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-white/50 truncate">{module?.title}</p>
+            <p className="text-xs text-white/45 truncate">{module?.title}</p>
             <p className="text-sm font-semibold text-white truncate">{lesson.title}</p>
           </div>
           {!PILOT_MODE && completed && (
-            <span className="hidden sm:flex items-center gap-1.5 text-xs text-success font-semibold">
-              <CheckCircle className="w-4 h-4" /> Complétée
+            <span className="hidden sm:flex items-center gap-1.5 text-xs text-success font-semibold shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+              Complétée
             </span>
           )}
         </div>
 
-        {/* Video / Content area */}
+        {/* Content area — internal scroll */}
         <div className="flex-1 overflow-y-auto bg-[#0f1117]">
+
+          {/* Video wrapper */}
           <div className="lesson-video-wrapper max-w-4xl mx-auto mt-6">
             {lesson.video_url ? (
               /\.(mp4|webm|mov|ogg)(\?|$)/i.test(lesson.video_url) || lesson.video_url.startsWith('/') ? (
                 <>
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
                   <video
                     ref={videoRef}
                     key={lesson.video_url}
@@ -421,15 +289,10 @@ export default function LessonPlayerPage() {
                     controlsList="nodownload"
                     className="absolute inset-0 w-full h-full bg-black"
                     title={lesson.title}
+                    onTimeUpdate={handleVideoTimeUpdate}
                   >
                     {lesson.subtitle_url && (
-                      <track
-                        kind="subtitles"
-                        src={lesson.subtitle_url}
-                        label="Français"
-                        srcLang="fr"
-                        default
-                      />
+                      <track kind="subtitles" src={lesson.subtitle_url} label="Français" srcLang="fr" default />
                     )}
                   </video>
                   {lesson.subtitle_url && (
@@ -437,9 +300,7 @@ export default function LessonPlayerPage() {
                       onClick={toggleCC}
                       title={ccEnabled ? 'Désactiver les sous-titres' : 'Activer les sous-titres'}
                       className={`absolute bottom-14 right-3 z-10 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-bold transition-colors ${
-                        ccEnabled
-                          ? 'bg-primary text-white'
-                          : 'bg-black/60 text-white/60 hover:text-white'
+                        ccEnabled ? 'bg-primary text-white' : 'bg-black/60 text-white/60 hover:text-white'
                       }`}
                     >
                       <Captions className="w-3.5 h-3.5" /> CC
@@ -467,8 +328,8 @@ export default function LessonPlayerPage() {
             )}
           </div>
 
-          {/* Lesson content */}
-          <div className="max-w-3xl mx-auto px-4 py-8">
+          {/* Lesson content + navigation */}
+          <div className="max-w-3xl mx-auto px-4 pt-8 pb-28 md:pb-10">
             <h1 className="text-2xl font-extrabold text-white mb-6">{lesson.title}</h1>
 
             {lesson.content && (
@@ -478,69 +339,21 @@ export default function LessonPlayerPage() {
               />
             )}
 
-            {/* ── Actions ───────────────────────────────────────────────── */}
-            <div className="mt-10 pt-6 border-t border-white/10 space-y-4">
-              {PILOT_MODE ? (
-                <p className="text-sm text-white/40 italic">
-                  Le suivi de progression et les certificats seront disponibles après le lancement complet.
-                </p>
-              ) : (
-                <>
-                  {!completed ? (
-                    <button
-                      onClick={markComplete}
-                      className="flex items-center gap-2 px-5 py-3 bg-success text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm w-full sm:w-auto"
-                    >
-                      <CheckCircle className="w-4 h-4" /> Marquer comme complétée
-                    </button>
-                  ) : isLastLesson ? (
-                    <Link
-                      href={`/certificate/${courseSlug}`}
-                      className="flex items-center justify-center gap-2 px-6 py-3.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm shadow-lg shadow-amber-500/30 animate-pulse-once w-full sm:w-auto sm:inline-flex"
-                    >
-                      <Award className="w-4 h-4" /> 🎉 Obtenir mon certificat
-                    </Link>
-                  ) : nextLesson && !nextIsBlocked ? (
-                    <Link
-                      href={`/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`}
-                      className="flex items-center justify-center gap-2 px-6 py-3.5 bg-primary text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-base shadow-sm w-full sm:w-auto sm:inline-flex"
-                    >
-                      Continuer vers la leçon suivante <ChevronRight className="w-5 h-5" />
-                    </Link>
-                  ) : (
-                    <span className="flex items-center gap-2 text-success font-semibold text-sm">
-                      <CheckCircle className="w-5 h-5" /> Leçon complétée
-                    </span>
-                  )}
-
-                  {/* "Passer au quiz" — shown when blocked by quiz requirement */}
-                  {completed && isLastLessonInModule && currentModHasQuiz && !currentModPassed && (
-                    <Link
-                      href={`/learn/${courseSlug}/${module?.id}/quiz`}
-                      className="flex items-center justify-center gap-2 px-6 py-3.5 bg-secondary text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm shadow-sm w-full sm:w-auto sm:inline-flex"
-                    >
-                      <ClipboardList className="w-4 h-4" /> Passer au quiz du module →
-                    </Link>
-                  )}
-
-                  <p className="text-xs text-white/25 pt-1">
-                    Votre progression est sauvegardée automatiquement.
-                  </p>
-                </>
-              )}
-            </div>
-
-            {/* ── Navigation — previous only ─────────────────────────────── */}
-            {prevLesson && (
-              <div className="mt-6">
-                <Link
-                  href={`/learn/${courseSlug}/${prevLesson.module.id}/${prevLesson.id}`}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/10 text-white/70 text-sm font-medium rounded-cx hover:bg-white/15 hover:text-white transition-colors"
-                >
-                  <ChevronLeft className="w-4 h-4" /> Leçon précédente
-                </Link>
-              </div>
-            )}
+            {/* Navigation */}
+            <LessonNavigation
+              courseSlug={courseSlug}
+              prevLesson={navPrevLesson}
+              nextLesson={navNextLesson}
+              completed={completed}
+              isLastLesson={isLastLesson}
+              isLastLessonInModule={isLastLessonInModule}
+              currentModHasQuiz={currentModHasQuiz}
+              currentModPassed={currentModPassed}
+              nextIsBlocked={nextIsBlocked}
+              moduleId={module?.id ?? null}
+              pilotMode={PILOT_MODE}
+              onMarkComplete={markComplete}
+            />
           </div>
         </div>
       </div>
