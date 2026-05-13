@@ -15,6 +15,13 @@ interface LessonRow extends SidebarLessonRow {}
 interface ModuleRow extends SidebarModuleRow { lessons: LessonRow[] }
 interface FlatLesson extends LessonRow { module: ModuleRow }
 
+function fmtMinutes(mins: number): string {
+  if (mins < 60) return `${mins} min`
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return m > 0 ? `${h}h ${m} min` : `${h}h`
+}
+
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function LessonPlayerPage() {
   const params   = useParams()
@@ -41,6 +48,8 @@ export default function LessonPlayerPage() {
   // Auto-advance state — only active when completion fires in this session
   const [justCompleted,        setJustCompleted]        = useState(false)
   const [autoAdvanceCancelled, setAutoAdvanceCancelled] = useState(false)
+  // Actual video duration in minutes, populated by loadedmetadata; overrides lesson.duration_minutes
+  const [videoDuration,        setVideoDuration]        = useState<number | null>(null)
 
   const videoRef         = useRef<HTMLVideoElement>(null)
   const autoCompletedRef = useRef(false)
@@ -207,6 +216,7 @@ export default function LessonPlayerPage() {
     autoCompletedRef.current = false
     setJustCompleted(false)
     setAutoAdvanceCancelled(false)
+    setVideoDuration(null)
   }, [lesson?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync completed state from persisted progress ──────────────────────────
@@ -240,6 +250,12 @@ export default function LessonPlayerPage() {
     }
   }
 
+  // ── Video: capture real duration from metadata for the lesson info strip ──
+  function handleVideoLoadedMetadata() {
+    const dur = videoRef.current?.duration
+    if (dur && isFinite(dur) && dur > 0) setVideoDuration(Math.ceil(dur / 60))
+  }
+
   // ── Video: natural end — trigger auto-advance countdown ──────────────────
   function handleVideoEnded() {
     autoCompletedRef.current = true
@@ -263,6 +279,29 @@ export default function LessonPlayerPage() {
   const currentModHasQuiz  = modulesWithQuiz.has(module?.id ?? '')
   const currentModPassed   = validatedModules.has(module?.id ?? '')
   const nextIsBlocked      = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
+
+  // ── Lesson metadata ────────────────────────────────────────────────────────
+  const moduleIndex     = module ? modules.findIndex(m => m.id === module.id) : -1
+  const moduleNumber    = moduleIndex + 1
+  const lessonInModIdx  = lesson && module ? module.lessons.findIndex(l => l.id === lesson.id) : -1
+  const lessonNumber    = lessonInModIdx + 1
+  const totalModLessons = module?.lessons.length ?? 0
+  // videoDuration (from loadedmetadata) is more accurate than the DB field; fall back gracefully
+  const displayDuration = videoDuration ?? lesson?.duration_minutes ?? null
+
+  // Remaining incomplete steps after the current lesson (lessons + unpassed quizzes)
+  const FALLBACK_MINS = 5
+  const remainingMinutes = (() => {
+    if (currentIndex < 0 || moduleIndex < 0) return 0
+    const lessonMins = allLessons
+      .slice(currentIndex + 1)
+      .filter(l => !progress[l.id])
+      .reduce((s, l) => s + (l.duration_minutes ?? FALLBACK_MINS), 0)
+    const quizMins = modules
+      .filter((m, i) => i >= moduleIndex && modulesWithQuiz.has(m.id) && !validatedModules.has(m.id))
+      .length * FALLBACK_MINS
+    return lessonMins + quizMins
+  })()
 
   // ── Auto-advance target ────────────────────────────────────────────────────
   type AdvanceTarget = { href: string; label: string }
@@ -373,6 +412,7 @@ export default function LessonPlayerPage() {
                     controlsList="nodownload"
                     className="absolute inset-0 w-full h-full bg-black"
                     title={lesson.title}
+                    onLoadedMetadata={handleVideoLoadedMetadata}
                     onTimeUpdate={handleVideoTimeUpdate}
                     onEnded={handleVideoEnded}
                   >
@@ -428,7 +468,26 @@ export default function LessonPlayerPage() {
               </div>
             )}
 
-            <h1 className="text-2xl font-extrabold text-white mb-6">{lesson.title}</h1>
+            <h1 className="text-2xl font-extrabold text-white mb-1.5">{lesson.title}</h1>
+
+            {/* Lesson metadata strip */}
+            <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mb-6 text-[11px] text-white/35 font-medium select-none leading-relaxed">
+              {moduleNumber > 0 && (
+                <span>Module&nbsp;{moduleNumber}&ensp;·&ensp;Leçon&nbsp;{lessonNumber}&nbsp;/&nbsp;{totalModLessons}</span>
+              )}
+              {displayDuration !== null && displayDuration > 0 && (
+                <>
+                  <span className="text-white/15" aria-hidden>·</span>
+                  <span>{displayDuration}&nbsp;min</span>
+                </>
+              )}
+              {remainingMinutes > 0 && (
+                <>
+                  <span className="text-white/15" aria-hidden>·</span>
+                  <span>~{fmtMinutes(remainingMinutes)}&nbsp;restantes</span>
+                </>
+              )}
+            </div>
 
             {lesson.content && (
               <div
