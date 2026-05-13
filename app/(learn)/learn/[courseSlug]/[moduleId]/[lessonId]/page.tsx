@@ -8,17 +8,12 @@ import { enrollForFree } from '@/app/actions/enrollment'
 import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
+import AutoAdvanceBanner from '@/components/lms/AutoAdvanceBanner'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface LessonRow extends SidebarLessonRow {}
-
-interface ModuleRow extends SidebarModuleRow {
-  lessons: LessonRow[]
-}
-
-interface FlatLesson extends LessonRow {
-  module: ModuleRow
-}
+interface ModuleRow extends SidebarModuleRow { lessons: LessonRow[] }
+interface FlatLesson extends LessonRow { module: ModuleRow }
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 export default function LessonPlayerPage() {
@@ -43,6 +38,10 @@ export default function LessonPlayerPage() {
   const [validatedModules, setValidatedModules] = useState<Set<string>>(new Set())
   const [modulesWithQuiz,  setModulesWithQuiz]  = useState<Set<string>>(new Set())
 
+  // Auto-advance state — only active when completion fires in this session
+  const [justCompleted,        setJustCompleted]        = useState(false)
+  const [autoAdvanceCancelled, setAutoAdvanceCancelled] = useState(false)
+
   const videoRef         = useRef<HTMLVideoElement>(null)
   const autoCompletedRef = useRef(false)
 
@@ -54,7 +53,7 @@ export default function LessonPlayerPage() {
     setCcEnabled(next)
   }
 
-  // ── Shared: resolve active module/lesson from sorted list ─────────────────
+  // ── Resolve active module/lesson from sorted data ─────────────────────────
   function resolveLesson(sorted: ModuleRow[]) {
     setModules(sorted)
     for (const mod of sorted) {
@@ -70,7 +69,7 @@ export default function LessonPlayerPage() {
     if (sorted[0]?.lessons[0]) { setModule(sorted[0]); setLesson(sorted[0].lessons[0]) }
   }
 
-  // ── PILOT_MODE: anonymous load ────────────────────────────────────────────
+  // ── Data loading ──────────────────────────────────────────────────────────
   const loadCourseAnon = useCallback(async () => {
     const { data: course } = await supabase
       .from('courses').select('id')
@@ -84,12 +83,10 @@ export default function LessonPlayerPage() {
     if (!mods) return
 
     resolveLesson(mods.map(m => ({
-      ...m,
-      lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
+      ...m, lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
     })))
   }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Authenticated: load + verify enrollment ───────────────────────────────
   const loadCourse = useCallback(async (uid: string) => {
     const { data: course } = await supabase
       .from('courses').select('id').eq('slug', courseSlug).single()
@@ -115,12 +112,10 @@ export default function LessonPlayerPage() {
     if (!mods) return
 
     resolveLesson(mods.map(m => ({
-      ...m,
-      lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
+      ...m, lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
     })))
   }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Load user progress ─────────────────────────────────────────────────────
   const loadUserProgress = useCallback(async (uid: string) => {
     const { data } = await supabase
       .from('lesson_progress').select('lesson_id')
@@ -146,37 +141,35 @@ export default function LessonPlayerPage() {
   useEffect(() => {
     if (modules.length === 0) return
     const modIds = modules.map(m => m.id)
-
     supabase.from('quizzes').select('module_id').in('module_id', modIds)
-      .then(({ data }) => {
-        setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string)))
-      })
-
+      .then(({ data }) => setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string))))
     if (PILOT_MODE) return
-
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
       supabase.from('quiz_attempts').select('module_id')
         .eq('user_id', user.id).eq('passed', true).in('module_id', modIds)
-        .then(({ data: attempts }) => {
-          setValidatedModules(new Set((attempts ?? []).map(a => a.module_id as string)))
-        })
+        .then(({ data: a }) => setValidatedModules(new Set((a ?? []).map(x => x.module_id as string))))
     })
   }, [modules]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Sync completion state when lesson changes ──────────────────────────────
+  // ── Per-lesson reset: fires when navigating to a new lesson ───────────────
   useEffect(() => {
-    if (lesson) {
-      setCompleted(!!progress[lesson.id])
-      autoCompletedRef.current = false
-    }
-  }, [lesson, progress])
+    autoCompletedRef.current = false
+    setJustCompleted(false)
+    setAutoAdvanceCancelled(false)
+  }, [lesson?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Mark lesson complete ───────────────────────────────────────────────────
-  async function markComplete() {
+  // ── Sync completed state from persisted progress ──────────────────────────
+  useEffect(() => {
+    if (lesson) setCompleted(!!progress[lesson.id])
+  }, [lesson?.id, progress]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Completion: save progress and optionally trigger auto-advance ─────────
+  async function markComplete(suppressAutoAdvance = false) {
     if (!lesson || completed) return
     setCompleted(true)
     setProgress(p => ({ ...p, [lesson.id]: true }))
+    if (!suppressAutoAdvance) setJustCompleted(true)
     if (!userId) return
     await supabase.from('lesson_progress').upsert(
       { user_id: userId, lesson_id: lesson.id, is_completed: true, completed_at: new Date().toISOString() },
@@ -184,34 +177,69 @@ export default function LessonPlayerPage() {
     )
   }
 
-  // ── Auto-complete on video 85% ─────────────────────────────────────────────
+  // ── Video: auto-complete at 85% — only while actively playing ─────────────
   function handleVideoTimeUpdate() {
     if (completed || autoCompletedRef.current || !videoRef.current) return
-    const { currentTime, duration } = videoRef.current
+    const { currentTime, duration, paused } = videoRef.current
     if (duration > 0 && currentTime / duration >= 0.85) {
       autoCompletedRef.current = true
-      markComplete()
+      // If paused at 85%: save progress but don't start countdown
+      markComplete(paused)
     }
   }
 
-  // ── Flat lesson list for prev/next ─────────────────────────────────────────
-  const allLessons: FlatLesson[] = modules.flatMap(m => m.lessons.map(l => ({ ...l, module: m })))
-  const currentIndex = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
-  const prevLesson   = currentIndex > 0                      ? allLessons[currentIndex - 1] : null
-  const nextLesson   = currentIndex < allLessons.length - 1 ? allLessons[currentIndex + 1] : null
-  const isLastLesson         = currentIndex === allLessons.length - 1
-  const isLastLessonInModule = !!lesson && !!module &&
+  // ── Video: auto-complete on natural end ───────────────────────────────────
+  function handleVideoEnded() {
+    if (completed) return
+    autoCompletedRef.current = true
+    markComplete(false) // always trigger auto-advance on natural end
+  }
+
+  // ── Derived navigation state ──────────────────────────────────────────────
+  const allLessons: FlatLesson[]  = modules.flatMap(m => m.lessons.map(l => ({ ...l, module: m })))
+  const currentIndex              = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
+  const prevLesson                = currentIndex > 0                       ? allLessons[currentIndex - 1] : null
+  const nextLesson                = currentIndex < allLessons.length - 1  ? allLessons[currentIndex + 1] : null
+  const isLastLesson              = currentIndex === allLessons.length - 1
+  const isLastLessonInModule      = !!lesson && !!module &&
     module.lessons[module.lessons.length - 1]?.id === lesson.id
 
-  const nextIsNewModule   = !!nextLesson && nextLesson.module.id !== module?.id
-  const currentModHasQuiz = modulesWithQuiz.has(module?.id ?? '')
-  const currentModPassed  = validatedModules.has(module?.id ?? '')
-  const nextIsBlocked     = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
+  const nextIsNewModule    = !!nextLesson && nextLesson.module.id !== module?.id
+  const currentModHasQuiz  = modulesWithQuiz.has(module?.id ?? '')
+  const currentModPassed   = validatedModules.has(module?.id ?? '')
+  const nextIsBlocked      = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
 
-  const navPrevLesson: NavLesson | null = prevLesson ? { id: prevLesson.id, title: prevLesson.title, module: { id: prevLesson.module.id } } : null
-  const navNextLesson: NavLesson | null = nextLesson ? { id: nextLesson.id, title: nextLesson.title, module: { id: nextLesson.module.id } } : null
+  // ── Auto-advance target ────────────────────────────────────────────────────
+  type AdvanceTarget = { href: string; label: string }
 
-  // ── Loading / error states ─────────────────────────────────────────────────
+  function getAutoAdvanceTarget(): AdvanceTarget | null {
+    if (PILOT_MODE) {
+      if (!nextLesson) return null
+      return { href: `/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`, label: 'Leçon suivante' }
+    }
+    if (isLastLesson) {
+      return { href: `/certificate/${courseSlug}`, label: 'Vers votre certificat' }
+    }
+    if (nextIsBlocked || (isLastLessonInModule && currentModHasQuiz && !currentModPassed)) {
+      return { href: `/learn/${courseSlug}/${module?.id}/quiz`, label: 'Quiz du module' }
+    }
+    if (nextLesson) {
+      return { href: `/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`, label: 'Leçon suivante' }
+    }
+    return null
+  }
+
+  const autoAdvanceTarget   = getAutoAdvanceTarget()
+  const showAutoAdvance     = justCompleted && !autoAdvanceCancelled && autoAdvanceTarget !== null
+
+  const navPrevLesson: NavLesson | null = prevLesson
+    ? { id: prevLesson.id, title: prevLesson.title, module: { id: prevLesson.module.id } }
+    : null
+  const navNextLesson: NavLesson | null = nextLesson
+    ? { id: nextLesson.id, title: nextLesson.title, module: { id: nextLesson.module.id } }
+    : null
+
+  // ── Loading / error ────────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex items-center justify-center h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-3">
@@ -274,7 +302,7 @@ export default function LessonPlayerPage() {
         {/* Content area — internal scroll */}
         <div className="flex-1 overflow-y-auto bg-[#0f1117]">
 
-          {/* Video wrapper */}
+          {/* Video */}
           <div className="lesson-video-wrapper max-w-4xl mx-auto mt-6">
             {lesson.video_url ? (
               /\.(mp4|webm|mov|ogg)(\?|$)/i.test(lesson.video_url) || lesson.video_url.startsWith('/') ? (
@@ -285,11 +313,11 @@ export default function LessonPlayerPage() {
                     key={lesson.video_url}
                     src={lesson.video_url}
                     controls
-                    autoPlay
                     controlsList="nodownload"
                     className="absolute inset-0 w-full h-full bg-black"
                     title={lesson.title}
                     onTimeUpdate={handleVideoTimeUpdate}
+                    onEnded={handleVideoEnded}
                   >
                     {lesson.subtitle_url && (
                       <track kind="subtitles" src={lesson.subtitle_url} label="Français" srcLang="fr" default />
@@ -329,7 +357,20 @@ export default function LessonPlayerPage() {
           </div>
 
           {/* Lesson content + navigation */}
-          <div className="max-w-3xl mx-auto px-4 pt-8 pb-28 md:pb-10">
+          <div className="max-w-3xl mx-auto px-4 pt-6 pb-28 md:pb-10">
+
+            {/* Auto-advance banner — appears immediately after video on completion */}
+            {showAutoAdvance && autoAdvanceTarget && (
+              <div className="mb-6">
+                <AutoAdvanceBanner
+                  nextHref={autoAdvanceTarget.href}
+                  nextLabel={autoAdvanceTarget.label}
+                  delaySeconds={5}
+                  onCancel={() => setAutoAdvanceCancelled(true)}
+                />
+              </div>
+            )}
+
             <h1 className="text-2xl font-extrabold text-white mb-6">{lesson.title}</h1>
 
             {lesson.content && (
@@ -339,12 +380,12 @@ export default function LessonPlayerPage() {
               />
             )}
 
-            {/* Navigation */}
             <LessonNavigation
               courseSlug={courseSlug}
               prevLesson={navPrevLesson}
               nextLesson={navNextLesson}
               completed={completed}
+              justCompleted={justCompleted && !autoAdvanceCancelled}
               isLastLesson={isLastLesson}
               isLastLessonInModule={isLastLessonInModule}
               currentModHasQuiz={currentModHasQuiz}
@@ -352,7 +393,7 @@ export default function LessonPlayerPage() {
               nextIsBlocked={nextIsBlocked}
               moduleId={module?.id ?? null}
               pilotMode={PILOT_MODE}
-              onMarkComplete={markComplete}
+              onMarkComplete={() => markComplete(false)}
             />
           </div>
         </div>
