@@ -50,17 +50,7 @@ export default function LessonNavigation({
       )
     }
 
-    if (isLastLesson) {
-      return (
-        <Link
-          href={`/certificate/${courseSlug}`}
-          className="inline-flex items-center gap-2 px-6 py-3.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-white font-bold rounded-xl hover:opacity-90 active:scale-[0.98] transition-all text-sm shadow-lg shadow-amber-500/25"
-        >
-          <Award className="w-4 h-4" /> Obtenir mon certificat 🎉
-        </Link>
-      )
-    }
-
+    // Quiz gate takes priority — even when this is the final lesson of the course.
     if (nextIsBlocked || (isLastLessonInModule && currentModHasQuiz && !currentModPassed)) {
       return (
         <Link
@@ -69,6 +59,17 @@ export default function LessonNavigation({
         >
           <ClipboardList className="w-4 h-4" /> Passer au quiz du module
           <ChevronRight className="w-4 h-4" />
+        </Link>
+      )
+    }
+
+    if (isLastLesson) {
+      return (
+        <Link
+          href={`/certificate/${courseSlug}`}
+          className="inline-flex items-center gap-2 px-6 py-3.5 bg-gradient-to-r from-amber-500 to-yellow-400 text-white font-bold rounded-xl hover:opacity-90 active:scale-[0.98] transition-all text-sm shadow-lg shadow-amber-500/25"
+        >
+          <Award className="w-4 h-4" /> Obtenir mon certificat 🎉
         </Link>
       )
     }
@@ -93,17 +94,8 @@ export default function LessonNavigation({
 
   // ── Mobile right-side button ───────────────────────────────────────────────
   function renderMobileRight() {
-    if (isLastLesson) {
-      return (
-        <Link
-          href={`/certificate/${courseSlug}`}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-400 text-white text-sm font-bold hover:opacity-90 transition-opacity active:scale-[0.97]"
-        >
-          <Award className="w-4 h-4" />
-        </Link>
-      )
-    }
-    if (nextIsBlocked) {
+    // Quiz gate takes priority — even when this is the final lesson of the course.
+    if (nextIsBlocked || (isLastLessonInModule && currentModHasQuiz && !currentModPassed)) {
       return (
         <Link
           href={`/learn/${courseSlug}/${moduleId}/quiz`}
@@ -111,6 +103,16 @@ export default function LessonNavigation({
         >
           <ClipboardList className="w-4 h-4" />
           <span className="text-xs">Quiz</span>
+        </Link>
+      )
+    }
+    if (isLastLesson) {
+      return (
+        <Link
+          href={`/certificate/${courseSlug}`}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-yellow-400 text-white text-sm font-bold hover:opacity-90 transition-opacity active:scale-[0.97]"
+        >
+          <Award className="w-4 h-4" />
         </Link>
       )
     }

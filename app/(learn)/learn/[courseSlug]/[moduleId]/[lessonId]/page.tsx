@@ -182,7 +182,18 @@ export default function LessonPlayerPage() {
     const modIds = modules.map(m => m.id)
     supabase.from('quizzes').select('module_id').in('module_id', modIds)
       .then(({ data }) => setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string))))
-    if (PILOT_MODE) return
+    if (PILOT_MODE) {
+      // For pilot users there are no quiz_attempts rows; read from localStorage instead.
+      const validated = new Set<string>()
+      for (const mod of modules) {
+        try {
+          const s = localStorage.getItem(`quiz-${mod.id}`)
+          if (s && JSON.parse(s).passed) validated.add(mod.id)
+        } catch {}
+      }
+      setValidatedModules(validated)
+      return
+    }
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (!user) return
       supabase.from('quiz_attempts').select('module_id')
@@ -261,11 +272,13 @@ export default function LessonPlayerPage() {
       if (!nextLesson) return null
       return { href: `/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`, label: 'Leçon suivante' }
     }
+    // Quiz gate: always route through the module quiz before advancing further,
+    // even when this is the very last lesson of the course.
+    if (isLastLessonInModule && currentModHasQuiz && !currentModPassed) {
+      return { href: `/learn/${courseSlug}/${module?.id}/quiz`, label: 'Quiz du module' }
+    }
     if (isLastLesson) {
       return { href: `/certificate/${courseSlug}`, label: 'Vers votre certificat' }
-    }
-    if (nextIsBlocked || (isLastLessonInModule && currentModHasQuiz && !currentModPassed)) {
-      return { href: `/learn/${courseSlug}/${module?.id}/quiz`, label: 'Quiz du module' }
     }
     if (nextLesson) {
       return { href: `/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`, label: 'Leçon suivante' }

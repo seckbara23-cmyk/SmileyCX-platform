@@ -31,8 +31,12 @@ export default function LessonSidebar({
   progress, validatedModules, modulesWithQuiz,
   pilotMode, sideOpen, onClose,
 }: Props) {
-  const totalLessons     = modules.reduce((s, m) => s + m.lessons.length, 0)
-  const completedLessons = modules.reduce((s, m) => s + m.lessons.filter(l => !!progress[l.id]).length, 0)
+  const totalLessons     = modules.reduce((s, m) => s + m.lessons.length + (modulesWithQuiz.has(m.id) ? 1 : 0), 0)
+  const completedLessons = modules.reduce((s, m) => {
+    const lessons = m.lessons.filter(l => !!progress[l.id]).length
+    const quiz    = modulesWithQuiz.has(m.id) && validatedModules.has(m.id) ? 1 : 0
+    return s + lessons + quiz
+  }, 0)
   const progressPct      = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
 
   return (
@@ -96,8 +100,8 @@ export default function LessonSidebar({
           {modules.map((mod, mi) => {
             const isValidated = validatedModules.has(mod.id)
             const hasQuiz     = modulesWithQuiz.has(mod.id)
-            const modDone     = mod.lessons.filter(l => !!progress[l.id]).length
-            const modTotal    = mod.lessons.length
+            const modDone     = mod.lessons.filter(l => !!progress[l.id]).length + (isValidated ? 1 : 0)
+            const modTotal    = mod.lessons.length + (hasQuiz ? 1 : 0)
             const modPct      = modTotal > 0 ? Math.round((modDone / modTotal) * 100) : 0
 
             return (
@@ -178,13 +182,30 @@ export default function LessonSidebar({
                     className={cn(
                       'flex items-center gap-3 px-5 py-2.5 text-sm transition-all duration-150 border-l-2',
                       activeModuleId === mod.id && activeLessonId === null
-                        ? 'bg-secondary/[0.12] text-secondary border-secondary'
-                        : 'text-white/35 border-transparent hover:bg-white/[0.04] hover:text-white/55 hover:border-white/[0.12]'
+                        ? 'bg-secondary/[0.12] border-secondary'
+                        : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
                     )}
                   >
-                    <ClipboardList className="w-4 h-4 shrink-0" />
-                    <span className="italic">Quiz du module</span>
-                    {isValidated && <CheckCircle className="w-3.5 h-3.5 text-success ml-auto shrink-0" />}
+                    {/* 3-state indicator matching lessons */}
+                    {isValidated ? (
+                      <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
+                        <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                      </div>
+                    ) : activeModuleId === mod.id && activeLessonId === null ? (
+                      <div className="w-5 h-5 rounded-full border-2 border-secondary bg-secondary/20 ring-2 ring-secondary/20 shrink-0" />
+                    ) : (
+                      <ClipboardList className="w-4 h-4 shrink-0 text-white/35" />
+                    )}
+                    <span className={cn(
+                      'leading-snug text-sm italic',
+                      activeModuleId === mod.id && activeLessonId === null
+                        ? 'text-secondary font-semibold'
+                        : isValidated
+                        ? 'text-white/65'
+                        : 'text-white/35'
+                    )}>
+                      Quiz du module
+                    </span>
                   </Link>
                 )}
               </div>
