@@ -45,25 +45,36 @@ export default function LessonPlayerPage() {
   const videoRef         = useRef<HTMLVideoElement>(null)
   const autoCompletedRef = useRef(false)
   const progressRef      = useRef<Record<string, boolean>>({})
+  const courseIdRef      = useRef<string | null>(null)
 
   // ── Progress persistence helpers ──────────────────────────────────────────
-  // Single point of truth: updates React state, the ref (for sync reads inside
-  // event handlers), and localStorage (for PILOT_MODE persistence + fast cache).
+  // Key is scoped to the real course UUID so multiple courses never collide.
   const updateProgress = useCallback((map: Record<string, boolean>) => {
     progressRef.current = map
     setProgress(map)
-    try { localStorage.setItem('lms_progress', JSON.stringify(map)) } catch {}
+    if (!courseIdRef.current) return
+    try { localStorage.setItem(`lms_progress_${courseIdRef.current}`, JSON.stringify(map)) } catch {}
   }, [])
 
-  // On mount: hydrate from localStorage so progress is visible before the DB
-  // round-trip completes — critical for PILOT_MODE (no DB) and eliminates the
-  // flash for authenticated users navigating between lessons.
-  useEffect(() => {
+  // Called as soon as courseId is known (before the module/progress fetches
+  // complete) so that PILOT_MODE progress and the auth-user warm cache are
+  // available the moment the sidebar renders.
+  // Also handles one-time migration from the old flat `lms_progress` key.
+  const loadProgressFromCache = useCallback((courseId: string) => {
+    courseIdRef.current = courseId
+    const key = `lms_progress_${courseId}`
     try {
-      const s = localStorage.getItem('lms_progress')
+      // One-time migration: if the legacy flat key exists and the scoped key
+      // has no data yet, copy it over, then delete the legacy key.
+      const legacy = localStorage.getItem('lms_progress')
+      if (legacy) {
+        if (!localStorage.getItem(key)) localStorage.setItem(key, legacy)
+        localStorage.removeItem('lms_progress')
+      }
+      const s = localStorage.getItem(key)
       if (s) { const m = JSON.parse(s); progressRef.current = m; setProgress(m) }
     } catch {}
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [])
 
   function toggleCC() {
     const track = videoRef.current?.textTracks[0]
@@ -96,6 +107,10 @@ export default function LessonPlayerPage() {
       .eq('slug', courseSlug).eq('is_published', true).single()
     if (!course) { router.push('/courses'); return }
 
+    // Hydrate from localStorage immediately with the now-known courseId,
+    // before the (slower) module fetch completes.
+    loadProgressFromCache(course.id)
+
     const { data: mods } = await supabase
       .from('modules')
       .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, duration_minutes, order_index)')
@@ -105,12 +120,16 @@ export default function LessonPlayerPage() {
     resolveLesson(mods.map(m => ({
       ...m, lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
     })))
-  }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [courseSlug, moduleId, lessonId, supabase, router, loadProgressFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadCourse = useCallback(async (uid: string) => {
     const { data: course } = await supabase
       .from('courses').select('id').eq('slug', courseSlug).single()
     if (!course) return
+
+    // Set courseId and warm the progress cache before the enrollment + module
+    // fetches run; courseIdRef is also needed by updateProgress (DB path).
+    loadProgressFromCache(course.id)
 
     const { data: enrollment } = await supabase
       .from('enrollments').select('id, status')
@@ -134,7 +153,7 @@ export default function LessonPlayerPage() {
     resolveLesson(mods.map(m => ({
       ...m, lessons: [...(m.lessons as LessonRow[])].sort((a, b) => a.order_index - b.order_index),
     })))
-  }, [courseSlug, moduleId, lessonId, supabase, router]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [courseSlug, moduleId, lessonId, supabase, router, loadProgressFromCache]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadUserProgress = useCallback(async (uid: string) => {
     const { data } = await supabase
