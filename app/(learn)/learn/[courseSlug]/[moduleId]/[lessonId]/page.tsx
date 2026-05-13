@@ -218,22 +218,25 @@ export default function LessonPlayerPage() {
     )
   }
 
-  // ── Video: auto-complete at 85% — only while actively playing ─────────────
+  // ── Video: complete within final 2 s — save progress, suppress countdown ──
   function handleVideoTimeUpdate() {
     if (completed || autoCompletedRef.current || !videoRef.current) return
-    const { currentTime, duration, paused } = videoRef.current
-    if (duration > 0 && currentTime / duration >= 0.85) {
+    const { currentTime, duration, seeking } = videoRef.current
+    if (seeking) return
+    if (duration > 0 && currentTime > 0 && duration - currentTime <= 2) {
       autoCompletedRef.current = true
-      // If paused at 85%: save progress but don't start countdown
-      markComplete(paused)
+      markComplete(true) // suppress auto-advance; onEnded triggers the countdown
     }
   }
 
-  // ── Video: auto-complete on natural end ───────────────────────────────────
+  // ── Video: natural end — trigger auto-advance countdown ──────────────────
   function handleVideoEnded() {
-    if (completed) return
     autoCompletedRef.current = true
-    markComplete(false) // always trigger auto-advance on natural end
+    if (!completed) {
+      markComplete(false) // short video or seeked to end before threshold
+    } else if (!autoAdvanceCancelled) {
+      setJustCompleted(true) // threshold already saved progress; start countdown
+    }
   }
 
   // ── Derived navigation state ──────────────────────────────────────────────
