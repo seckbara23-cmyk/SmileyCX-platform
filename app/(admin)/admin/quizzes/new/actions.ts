@@ -132,6 +132,22 @@ export async function createQuiz(formData: FormData) {
   if (!title)                 return { error: 'Le titre est obligatoire.' }
   if (!moduleId && !lessonId) return { error: 'Sélectionnez un module ou une leçon.' }
 
+  // When a lesson is selected, resolve its parent module_id so the learner
+  // quiz page (which always queries WHERE module_id = ?) can find the quiz.
+  // This mirrors the same logic in updateQuiz.
+  let resolvedModuleId = moduleId
+  if (!moduleId && lessonId) {
+    const supabaseEarly = createAdminClient()
+    const { data: lessonRow } = await supabaseEarly
+      .from('lessons')
+      .select('module_id')
+      .eq('id', lessonId)
+      .single()
+    if (!lessonRow?.module_id) return { error: 'Leçon introuvable ou sans module associé.' }
+    resolvedModuleId = lessonRow.module_id
+    log.info({ lessonId, resolvedModuleId }, 'Resolved module_id from lesson for new quiz')
+  }
+
   let questions: QuestionPayload[]
   try {
     questions = JSON.parse(qJson)
@@ -177,7 +193,7 @@ export async function createQuiz(formData: FormData) {
     .from('quizzes')
     .insert({
       title,
-      module_id: lessonId ? null : moduleId,
+      module_id: resolvedModuleId,
       lesson_id: lessonId ?? null,
     })
     .select('id')
