@@ -9,6 +9,7 @@ import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
 import AutoAdvanceBanner from '@/components/lms/AutoAdvanceBanner'
+import ExerciseBlock, { type ExerciseData } from '@/components/lms/ExerciseBlock'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface LessonRow extends SidebarLessonRow {}
@@ -46,6 +47,7 @@ export default function LessonPlayerPage() {
   const [modulesWithQuiz,  setModulesWithQuiz]  = useState<Set<string>>(new Set())
   const [hasFinalExam,     setHasFinalExam]     = useState(false)
   const [finalExamPassed,  setFinalExamPassed]  = useState(false)
+  const [exercises,        setExercises]        = useState<ExerciseData[]>([])
 
   // Auto-advance state — only active when completion fires in this session
   const [justCompleted,        setJustCompleted]        = useState(false)
@@ -255,12 +257,33 @@ export default function LessonPlayerPage() {
     })
   }, [modules]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Per-lesson reset: fires when navigating to a new lesson ───────────────
+  // ── Per-lesson reset + exercise load: fires when navigating to a new lesson
   useEffect(() => {
     autoCompletedRef.current = false
     setJustCompleted(false)
     setAutoAdvanceCancelled(false)
     setVideoDuration(null)
+    setExercises([])
+
+    if (!lesson?.id) return
+    supabase
+      .from('exercises')
+      .select('id, title, instructions, exercise_categories(id, name, color, order_index), exercise_items(id, label, correct_category_id, order_index)')
+      .eq('lesson_id', lesson.id)
+      .eq('is_published', true)
+      .order('order_index')
+      .then(({ data }) => {
+        if (!data) return
+        type CatRow  = ExerciseData['categories'][number] & { order_index: number }
+        type ItemRow = ExerciseData['items'][number]      & { order_index: number }
+        setExercises(data.map(ex => ({
+          id:           ex.id,
+          title:        ex.title,
+          instructions: ex.instructions,
+          categories:   ([...(ex.exercise_categories as unknown as CatRow[])]).sort((a, b) => a.order_index - b.order_index),
+          items:        ([...(ex.exercise_items      as unknown as ItemRow[])]).sort((a, b) => a.order_index - b.order_index),
+        })))
+      })
   }, [lesson?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Sync completed state from persisted progress ──────────────────────────
@@ -545,6 +568,10 @@ export default function LessonPlayerPage() {
                 dangerouslySetInnerHTML={{ __html: lesson.content.replace(/\n/g, '<br/>') }}
               />
             )}
+
+            {exercises.map(ex => (
+              <ExerciseBlock key={ex.id} exercise={ex} pilotMode={PILOT_MODE} />
+            ))}
 
             <LessonNavigation
               courseSlug={courseSlug}
