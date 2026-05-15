@@ -104,6 +104,22 @@
   @apply bg-[#2d0b0b] text-red-200 border border-red-800;
 }
 
+/* ── LMS Sidebar scrollbar ───────────────────────────────────────── */
+/* Windows 11 defaults to overlay/hidden scrollbars; make them visible */
+.lms-sidebar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.18) transparent;
+}
+.lms-sidebar::-webkit-scrollbar { width: 4px; }
+.lms-sidebar::-webkit-scrollbar-track { background: transparent; }
+.lms-sidebar::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.18);
+  border-radius: 4px;
+}
+.lms-sidebar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.35);
+}
+
 /* ── Lesson Video Player ─────────────────────────────────────────── */
 .lesson-video-wrapper {
   @apply relative w-full overflow-hidden rounded-cx bg-black;

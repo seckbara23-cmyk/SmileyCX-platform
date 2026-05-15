@@ -51,11 +51,10 @@ export default function LessonSidebar({
       )}
 
       <aside className={cn(
-        'bg-[#1a1d27] border-r border-white/10 overflow-y-auto shrink-0',
+        'lms-sidebar bg-[#1a1d27] border-r border-white/10 overflow-y-auto overflow-x-hidden shrink-0',
         'transition-all duration-300 z-40',
-        'fixed md:static top-[72px] md:top-0 bottom-0 left-0 md:h-auto',
+        'fixed md:static top-[72px] md:top-0 bottom-0 left-0 md:h-full',
         sideOpen ? 'w-80 shadow-2xl shadow-black/50' : 'w-0 md:w-80',
-        'overflow-hidden'
       )}>
         {/* ── Header ─────────────────────────────────────────────────────── */}
         <div className="px-5 py-4 border-b border-white/[0.08]">
