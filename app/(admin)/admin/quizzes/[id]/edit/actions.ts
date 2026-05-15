@@ -138,19 +138,6 @@ export async function updateQuiz(formData: FormData) {
   if (!title)                 return { error: 'Le titre est obligatoire.' }
   if (!moduleId && !lessonId) return { error: 'Sélectionnez un module ou une leçon.' }
 
-  let resolvedModuleId = moduleId
-  if (!moduleId && lessonId) {
-    const supabaseEarly = createAdminClient()
-    const { data: lessonRow } = await supabaseEarly
-      .from('lessons')
-      .select('module_id')
-      .eq('id', lessonId)
-      .single()
-    if (!lessonRow?.module_id) return { error: 'Leçon introuvable ou sans module associé.' }
-    resolvedModuleId = lessonRow.module_id
-    log.info({ quizId, lessonId, resolvedModuleId }, 'Resolved module_id from lesson')
-  }
-
   let questions:  QuestionUpdate[]
   let deletedIds: string[]
   try {
@@ -195,7 +182,7 @@ export async function updateQuiz(formData: FormData) {
 
   const { error: quizErr } = await supabase
     .from('quizzes')
-    .update({ title, module_id: resolvedModuleId, lesson_id: lessonId })
+    .update({ title, module_id: lessonId ? null : moduleId, lesson_id: lessonId ?? null })
     .eq('id', quizId)
 
   if (quizErr) {
@@ -235,7 +222,7 @@ export async function updateQuiz(formData: FormData) {
     }
   }
 
-  log.info({ quizId, updated: questions.filter(q => q.id).length, inserted: newQuestions.length, deleted: deletedIds.length, moduleId: resolvedModuleId }, 'Quiz updated')
+  log.info({ quizId, updated: questions.filter(q => q.id).length, inserted: newQuestions.length, deleted: deletedIds.length, moduleId, lessonId }, 'Quiz updated')
   revalidatePath('/admin/quizzes')
   revalidatePath(`/admin/quizzes/${quizId}`)
   revalidatePath('/learn', 'layout')

@@ -124,7 +124,8 @@ export default function ModuleQuizPage() {
       if (s && JSON.parse(s).passed) setAlreadyPassed(true)
     } catch {}
 
-    const { data: quizData, error: quizErr } = await supabase
+    // Primary: module-level quiz (lesson_id = NULL, module_id = this module)
+    const { data: modQuiz, error: quizErr } = await supabase
       .from('quizzes')
       .select('id, title, passing_score')
       .eq('module_id', resolvedId)
@@ -132,6 +133,23 @@ export default function ModuleQuizPage() {
       .maybeSingle()
 
     if (quizErr) console.error('[quiz]', quizErr.message, quizErr.code)
+
+    // Fallback: lesson-attached quiz — any quiz whose lesson_id belongs to
+    // this module (covers quizzes created with the "lesson" attachment option)
+    let quizData = modQuiz
+    if (!quizData) {
+      const lessonIds = curLessons.map((l: LessonMeta) => l.id)
+      if (lessonIds.length > 0) {
+        const { data: lessonQuiz, error: lqErr } = await supabase
+          .from('quizzes')
+          .select('id, title, passing_score')
+          .in('lesson_id', lessonIds)
+          .limit(1)
+          .maybeSingle()
+        if (lqErr) console.error('[quiz:lesson-fallback]', lqErr.message, lqErr.code)
+        quizData = lessonQuiz ?? null
+      }
+    }
 
     if (quizData) {
       setQuiz(quizData)

@@ -1,41 +1,32 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- Migration 021: Backfill module_id on quizzes created via lesson attachment
+-- Migration 021: Quiz visibility fix — application-layer only, no data change
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- Root cause (fixed in createQuiz server action):
---   When an admin attached a quiz to a lesson, the action set module_id = NULL
---   instead of resolving the lesson's parent module_id.
---   The learner quiz page queries exclusively on module_id, so those quizzes
---   were invisible to learners even though data was correctly inserted.
+-- Problem:
+--   The learner quiz page queried ONLY WHERE module_id = <current-module>.
+--   Quizzes attached to a lesson (lesson_id set, module_id NULL) were
+--   invisible to learners even though data was correct and RLS allowed access.
 --
--- Fix:
---   For every quiz that has lesson_id set but module_id NULL, look up the
---   lesson's module_id and copy it onto the quiz row.
---   This is a one-time backfill; the application code was fixed simultaneously.
+-- Why no SQL backfill:
+--   The quizzes_single_parent CHECK constraint (migration 004) enforces that
+--   exactly one of (module_id, lesson_id) is non-null.  Any attempt to set
+--   both on an existing row would violate the constraint.  The existing data
+--   is already correct — no rows need to change.
+--
+-- Fix applied in application code (same commit):
+--   1. learner quiz page — added a two-step lookup:
+--        (a) SELECT ... WHERE module_id = resolvedId   (module-level quiz)
+--        (b) If nothing found, SELECT ... WHERE lesson_id IN (<module lessons>)
+--      This covers both attachment styles transparently.
+--
+--   2. updateQuiz server action — removed the resolver block that was trying
+--      to set both module_id AND lesson_id on update, which would have
+--      violated quizzes_single_parent on save.  Now mirrors createQuiz:
+--        module_id: lessonId ? null : moduleId
+--        lesson_id: lessonId ?? null
+--
+-- This migration is intentionally a no-op.  It is kept so the migration
+-- sequence number is reserved and deployment scripts do not skip it.
 -- ═══════════════════════════════════════════════════════════════════════════
 
-UPDATE quizzes
-SET    module_id = lessons.module_id
-FROM   lessons
-WHERE  quizzes.lesson_id  = lessons.id
-  AND  quizzes.module_id  IS NULL;
-
--- Verify: after this migration, no quiz should have module_id NULL.
--- (Quizzes with both lesson_id AND module_id are fine — the learner page
--- finds them by module_id; lesson_id is kept for optional lesson-scope use.)
-DO $$
-DECLARE
-  orphan_count INTEGER;
-BEGIN
-  SELECT COUNT(*) INTO orphan_count
-  FROM quizzes
-  WHERE module_id IS NULL;
-
-  IF orphan_count > 0 THEN
-    RAISE WARNING 'After backfill, % quiz row(s) still have module_id = NULL. '
-      'These may have no associated lesson either — investigate manually.',
-      orphan_count;
-  ELSE
-    RAISE NOTICE 'Backfill complete: all quizzes now have module_id set.';
-  END IF;
-END $$;
+SELECT 1; -- no-op
