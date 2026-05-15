@@ -75,7 +75,17 @@ export default function EditQuizForm({
 
   const [scope,      setScope]      = useState<QuizScope>(initialIsFinal ? 'final' : (initialLessonId ? 'lesson' : 'module'))
   const [courseId,   setCourseId]   = useState(initialCourseId)
-  const [moduleId,   setModuleId]   = useState(initialModuleId)
+  const [moduleId,   setModuleId]   = useState(() => {
+    if (initialModuleId) return initialModuleId
+    if (initialLessonId) {
+      for (const course of courses) {
+        for (const mod of course.modules) {
+          if (mod.lessons.some(l => l.id === initialLessonId)) return mod.id
+        }
+      }
+    }
+    return ''
+  })
   const [lessonId,   setLessonId]   = useState(initialLessonId)
   const [questions,  setQuestions]  = useState<QuestionDraft[]>(initialQuestions)
   const [deletedIds, setDeletedIds] = useState<string[]>([])
