@@ -193,8 +193,25 @@ export default function LessonPlayerPage() {
     const modIds   = modules.map(m => m.id)
     const courseId = courseIdRef.current
 
-    supabase.from('quizzes').select('module_id').in('module_id', modIds)
-      .then(({ data }) => setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string))))
+    // Detect which modules have quizzes — both module-scope (module_id set) and
+    // lesson-scope (lesson_id set, module_id null) quizzes must be found.
+    const allLessonIds = modules.flatMap(m => m.lessons.map(l => l.id))
+    Promise.all([
+      supabase.from('quizzes').select('module_id').in('module_id', modIds),
+      allLessonIds.length > 0
+        ? supabase.from('quizzes').select('lesson_id').in('lesson_id', allLessonIds)
+        : Promise.resolve({ data: null }),
+    ]).then(([{ data: modData }, { data: lesData }]) => {
+      const combined = new Set<string>()
+      ;(modData ?? []).forEach(q => { if (q.module_id) combined.add(q.module_id as string) })
+      if (lesData?.length) {
+        const lessonIdSet = new Set(lesData.map(q => q.lesson_id as string))
+        for (const mod of modules) {
+          if (mod.lessons.some(l => lessonIdSet.has(l.id))) combined.add(mod.id)
+        }
+      }
+      setModulesWithQuiz(combined)
+    })
 
     // Check for course-level final exam quiz
     if (courseId) {
