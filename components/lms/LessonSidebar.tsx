@@ -175,39 +175,40 @@ export default function LessonSidebar({
                 })}
 
                 {/* Quiz link */}
-                {hasQuiz && (
-                  <Link
-                    href={`/learn/${courseSlug}/${mod.id}/quiz`}
-                    onClick={onClose}
-                    className={cn(
-                      'flex items-center gap-3 px-5 py-2.5 text-sm transition-all duration-150 border-l-2',
-                      activeModuleId === mod.id && activeLessonId === null
-                        ? 'bg-secondary/[0.12] border-secondary'
-                        : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
-                    )}
-                  >
-                    {/* 3-state indicator matching lessons */}
-                    {isValidated ? (
-                      <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
-                        <Check className="w-3 h-3 text-white" strokeWidth={3} />
-                      </div>
-                    ) : activeModuleId === mod.id && activeLessonId === null ? (
-                      <div className="w-5 h-5 rounded-full border-2 border-secondary bg-secondary/20 ring-2 ring-secondary/20 shrink-0" />
-                    ) : (
-                      <ClipboardList className="w-4 h-4 shrink-0 text-white/35" />
-                    )}
-                    <span className={cn(
-                      'leading-snug text-sm italic',
-                      activeModuleId === mod.id && activeLessonId === null
-                        ? 'text-secondary font-semibold'
-                        : isValidated
-                        ? 'text-white/65'
-                        : 'text-white/35'
-                    )}>
-                      Quiz du module
-                    </span>
-                  </Link>
-                )}
+                {hasQuiz && (() => {
+                  const isQuizActive = activeModuleId === mod.id && activeLessonId === null
+                  return (
+                    <Link
+                      href={`/learn/${courseSlug}/${mod.id}/quiz`}
+                      onClick={onClose}
+                      className={cn(
+                        'flex items-center gap-3 px-5 py-2.5 text-sm transition-all duration-150 border-l-2',
+                        isQuizActive
+                          ? 'bg-secondary/[0.12] border-secondary'
+                          : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
+                      )}
+                    >
+                      {/* 3-state indicator matching lessons */}
+                      {isValidated ? (
+                        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
+                          <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                        </div>
+                      ) : isQuizActive ? (
+                        <div className="w-5 h-5 rounded-full border-2 border-secondary bg-secondary/20 ring-2 ring-secondary/20 shrink-0" />
+                      ) : (
+                        <ClipboardList className="w-4 h-4 shrink-0 text-white/40" />
+                      )}
+                      <span className={cn(
+                        'leading-snug text-sm italic',
+                        isQuizActive  ? 'text-secondary font-semibold'
+                        : isValidated ? 'text-white/65'
+                                      : 'text-white/50'
+                      )}>
+                        Quiz du module
+                      </span>
+                    </Link>
+                  )
+                })()}
               </div>
             )
           })}
