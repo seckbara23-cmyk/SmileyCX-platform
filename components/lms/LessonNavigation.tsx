@@ -1,6 +1,6 @@
 'use client'
 import Link from 'next/link'
-import { ChevronLeft, ChevronRight, CheckCircle, Award, ClipboardList, Lock } from 'lucide-react'
+import { ChevronLeft, ChevronRight, CheckCircle, Award, ClipboardList, Lock, Star } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 
 export interface NavLesson {
@@ -22,6 +22,8 @@ interface Props {
   nextIsBlocked:        boolean
   moduleId:             string | null
   pilotMode:            boolean
+  hasFinalExam:         boolean
+  finalExamPassed:      boolean
   onMarkComplete:       () => void
 }
 
@@ -29,7 +31,7 @@ export default function LessonNavigation({
   courseSlug, prevLesson, nextLesson, completed, justCompleted,
   isLastLesson, isLastLessonInModule,
   currentModHasQuiz, currentModPassed, nextIsBlocked,
-  moduleId, pilotMode, onMarkComplete,
+  moduleId, pilotMode, hasFinalExam, finalExamPassed, onMarkComplete,
 }: Props) {
 
   function renderPrimaryCTA() {
@@ -59,6 +61,17 @@ export default function LessonNavigation({
         >
           <ClipboardList className="w-4 h-4" /> Passer au quiz du module
           <ChevronRight className="w-4 h-4" />
+        </Link>
+      )
+    }
+
+    if (isLastLesson && hasFinalExam && !finalExamPassed) {
+      return (
+        <Link
+          href={`/learn/${courseSlug}/final-exam`}
+          className="inline-flex items-center gap-2 px-6 py-3.5 bg-gradient-to-r from-amber-600 to-amber-400 text-white font-bold rounded-xl hover:opacity-90 active:scale-[0.98] transition-all text-sm shadow-lg shadow-amber-500/25"
+        >
+          <Star className="w-4 h-4" /> Passer l&apos;examen final <ChevronRight className="w-4 h-4" />
         </Link>
       )
     }
@@ -103,6 +116,16 @@ export default function LessonNavigation({
         >
           <ClipboardList className="w-4 h-4" />
           <span className="text-xs">Quiz</span>
+        </Link>
+      )
+    }
+    if (isLastLesson && hasFinalExam && !finalExamPassed) {
+      return (
+        <Link
+          href={`/learn/${courseSlug}/final-exam`}
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-amber-600 to-amber-400 text-white text-sm font-bold hover:opacity-90 transition-opacity active:scale-[0.97]"
+        >
+          <Star className="w-4 h-4" />
         </Link>
       )
     }

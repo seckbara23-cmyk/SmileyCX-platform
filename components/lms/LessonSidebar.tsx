@@ -14,29 +14,33 @@ export interface SidebarModuleRow {
 }
 
 interface Props {
-  modules:          SidebarModuleRow[]
-  courseSlug:       string
-  activeLessonId:   string | null
-  activeModuleId:   string | null
-  progress:         Record<string, boolean>
-  validatedModules: Set<string>
-  modulesWithQuiz:  Set<string>
-  pilotMode:        boolean
-  sideOpen:         boolean
-  onClose:          () => void
+  modules:            SidebarModuleRow[]
+  courseSlug:         string
+  activeLessonId:     string | null
+  activeModuleId:     string | null
+  progress:           Record<string, boolean>
+  validatedModules:   Set<string>
+  modulesWithQuiz:    Set<string>
+  hasFinalExam:       boolean
+  finalExamPassed:    boolean
+  isFinalExamActive:  boolean
+  pilotMode:          boolean
+  sideOpen:           boolean
+  onClose:            () => void
 }
 
 export default function LessonSidebar({
   modules, courseSlug, activeLessonId, activeModuleId,
   progress, validatedModules, modulesWithQuiz,
+  hasFinalExam, finalExamPassed, isFinalExamActive,
   pilotMode, sideOpen, onClose,
 }: Props) {
-  const totalLessons     = modules.reduce((s, m) => s + m.lessons.length + (modulesWithQuiz.has(m.id) ? 1 : 0), 0)
+  const totalLessons     = modules.reduce((s, m) => s + m.lessons.length + (modulesWithQuiz.has(m.id) ? 1 : 0), 0) + (hasFinalExam ? 1 : 0)
   const completedLessons = modules.reduce((s, m) => {
     const lessons = m.lessons.filter(l => !!progress[l.id]).length
     const quiz    = modulesWithQuiz.has(m.id) && validatedModules.has(m.id) ? 1 : 0
     return s + lessons + quiz
-  }, 0)
+  }, 0) + (hasFinalExam && finalExamPassed ? 1 : 0)
   const progressPct      = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
 
   return (
@@ -211,6 +215,44 @@ export default function LessonSidebar({
               </div>
             )
           })}
+          {/* ── Final exam ──────────────────────────────────────────────── */}
+          {hasFinalExam && (
+            <div className="border-t border-white/[0.08] mt-1">
+              <div className="px-5 pt-4 pb-2.5 bg-white/[0.03]">
+                <p className="text-[11px] font-bold text-white/55 uppercase tracking-wide">
+                  Examen final
+                </p>
+              </div>
+              <Link
+                href={`/learn/${courseSlug}/final-exam`}
+                onClick={onClose}
+                className={cn(
+                  'flex items-center gap-3 px-5 py-3 text-sm transition-all duration-150 border-l-2',
+                  isFinalExamActive
+                    ? 'bg-amber-500/[0.12] border-amber-400'
+                    : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
+                )}
+              >
+                {finalExamPassed ? (
+                  <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
+                    <Check className="w-3 h-3 text-white" strokeWidth={3} />
+                  </div>
+                ) : isFinalExamActive ? (
+                  <div className="w-5 h-5 rounded-full border-2 border-amber-400 bg-amber-400/20 ring-2 ring-amber-400/20 shrink-0" />
+                ) : (
+                  <div className="w-5 h-5 rounded-full border-2 border-white/25 shrink-0" />
+                )}
+                <span className={cn(
+                  'leading-snug text-sm font-semibold',
+                  isFinalExamActive ? 'text-amber-300'
+                  : finalExamPassed ? 'text-white/65'
+                                    : 'text-white/55'
+                )}>
+                  Examen final
+                </span>
+              </Link>
+            </div>
+          )}
         </nav>
       </aside>
     </>

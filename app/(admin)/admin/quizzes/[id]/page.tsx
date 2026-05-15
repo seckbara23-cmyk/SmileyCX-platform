@@ -21,7 +21,7 @@ export default async function AdminQuizDetailPage({
 
   const { data: quiz } = await supabase
     .from('quizzes')
-    .select(`id, title, modules(title, courses(title)), lessons(title)`)
+    .select(`id, title, modules(title, courses(title)), lessons(title), courses(title)`)
     .eq('id', params.id)
     .single()
 
@@ -37,8 +37,10 @@ export default async function AdminQuizDetailPage({
     log.error({ quizId: params.id, error: qErr.message }, 'Failed to load quiz questions for detail page')
   }
 
-  const mod    = quiz.modules as unknown as { title: string; courses: { title: string } | null } | null
-  const lesson = quiz.lessons as unknown as { title: string } | null
+  const mod         = quiz.modules as unknown as { title: string; courses: { title: string } | null } | null
+  const lesson      = quiz.lessons as unknown as { title: string } | null
+  const finalCourse = (quiz as Record<string, unknown>).courses as { title: string } | null
+  const isFinal     = !!finalCourse && !mod && !lesson
 
   return (
     <div className="p-4 sm:p-6 max-w-3xl mx-auto space-y-6">
@@ -55,7 +57,9 @@ export default async function AdminQuizDetailPage({
           <div>
             <h1 className="text-lg font-extrabold text-gray-900">{quiz.title}</h1>
             <p className="text-sm text-gray-400 mt-1">
-              {mod?.courses?.title ? `${mod.courses.title} › ` : ''}{mod?.title ?? lesson?.title ?? '—'}
+              {isFinal
+                ? `${finalCourse?.title} · ⭐ Examen final`
+                : `${mod?.courses?.title ? `${mod.courses.title} › ` : ''}${mod?.title ?? lesson?.title ?? '—'}`}
             </p>
             <p className="text-xs text-gray-300 mt-0.5">{questions?.length ?? 0} question(s)</p>
           </div>

@@ -127,10 +127,11 @@ export async function createQuiz(formData: FormData) {
   const title    = (formData.get('title')     as string | null)?.trim() ?? ''
   const moduleId = (formData.get('module_id') as string | null)?.trim() || null
   const lessonId = (formData.get('lesson_id') as string | null)?.trim() || null
+  const courseId = (formData.get('course_id') as string | null)?.trim() || null
   const qJson    = (formData.get('questions_json') as string | null) ?? '[]'
 
-  if (!title)                 return { error: 'Le titre est obligatoire.' }
-  if (!moduleId && !lessonId) return { error: 'Sélectionnez un module ou une leçon.' }
+  if (!title)                              return { error: 'Le titre est obligatoire.' }
+  if (!moduleId && !lessonId && !courseId) return { error: 'Sélectionnez un module, une leçon ou une formation.' }
 
   let questions: QuestionPayload[]
   try {
@@ -177,8 +178,9 @@ export async function createQuiz(formData: FormData) {
     .from('quizzes')
     .insert({
       title,
-      module_id: lessonId ? null : moduleId,
-      lesson_id: lessonId ?? null,
+      course_id: courseId ?? null,
+      module_id: courseId ? null : (lessonId ? null : moduleId),
+      lesson_id: courseId ? null : (lessonId ?? null),
     })
     .select('id')
     .single()
@@ -197,7 +199,7 @@ export async function createQuiz(formData: FormData) {
     return { error: qqErr.message }
   }
 
-  log.info({ quizId: quiz.id, questionCount: rows.length, moduleId, lessonId }, 'Quiz created')
+  log.info({ quizId: quiz.id, questionCount: rows.length, moduleId, lessonId, courseId }, 'Quiz created')
   revalidatePath('/admin/quizzes')
   revalidatePath(`/admin/quizzes/${quiz.id}`)
   revalidatePath('/learn', 'layout')

@@ -26,7 +26,7 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
 
   const { data: quiz } = await supabase
     .from('quizzes')
-    .select('id, title, module_id, lesson_id, modules(id, course_id), lessons(id, module_id)')
+    .select('id, title, module_id, lesson_id, course_id, modules(id, course_id), lessons(id, module_id)')
     .eq('id', params.id)
     .single()
 
@@ -46,9 +46,12 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
 
   const mod = quiz.modules as unknown as { id: string; course_id: string } | null
   const les = quiz.lessons as unknown as { id: string; module_id: string } | null
+  const isFinalExam = !!(quiz as Record<string, unknown>).course_id
 
   let initialCourseId = ''
-  if (mod) {
+  if (isFinalExam) {
+    initialCourseId = (quiz as Record<string, unknown>).course_id as string
+  } else if (mod) {
     initialCourseId = mod.course_id
   } else if (les) {
     for (const c of rawCourses ?? []) {
@@ -155,6 +158,7 @@ export default async function AdminEditQuizPage({ params }: { params: { id: stri
         initialCourseId={initialCourseId}
         initialModuleId={quiz.module_id ?? ''}
         initialLessonId={quiz.lesson_id ?? ''}
+        initialIsFinal={isFinalExam}
         initialQuestions={questions}
         courses={courses}
       />

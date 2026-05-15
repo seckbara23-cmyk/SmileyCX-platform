@@ -15,7 +15,8 @@ export default async function AdminQuizzesPage() {
     .select(`
       id, title, created_at,
       modules(id, title, courses(id, title)),
-      lessons(id, title)
+      lessons(id, title),
+      courses(id, title)
     `)
     .order('created_at', { ascending: false })
 
@@ -69,10 +70,12 @@ export default async function AdminQuizzesPage() {
             </div>
 
             {(quizzes ?? []).map(q => {
-              const mod    = q.modules as unknown as { id: string; title: string; courses: { title: string } | null } | null
-              const lesson = q.lessons as unknown as { id: string; title: string } | null
-              const context = mod?.title ?? lesson?.title ?? '—'
-              const course  = mod?.courses?.title ?? '—'
+              const mod        = q.modules as unknown as { id: string; title: string; courses: { title: string } | null } | null
+              const lesson     = q.lessons as unknown as { id: string; title: string } | null
+              const finalCourse = (q as Record<string, unknown>).courses as { id: string; title: string } | null
+              const isFinal    = !!finalCourse && !mod && !lesson
+              const context    = isFinal ? '⭐ Examen final' : (mod?.title ?? lesson?.title ?? '—')
+              const course     = isFinal ? (finalCourse?.title ?? '—') : (mod?.courses?.title ?? '—')
               const nQ = countMap[q.id] ?? 0
               return (
                 <div key={q.id} className="hover:bg-gray-50/60 transition-colors">

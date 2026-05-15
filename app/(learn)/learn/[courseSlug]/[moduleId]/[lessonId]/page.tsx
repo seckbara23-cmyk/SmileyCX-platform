@@ -44,6 +44,8 @@ export default function LessonPlayerPage() {
 
   const [validatedModules, setValidatedModules] = useState<Set<string>>(new Set())
   const [modulesWithQuiz,  setModulesWithQuiz]  = useState<Set<string>>(new Set())
+  const [hasFinalExam,     setHasFinalExam]     = useState(false)
+  const [finalExamPassed,  setFinalExamPassed]  = useState(false)
 
   // Auto-advance state — only active when completion fires in this session
   const [justCompleted,        setJustCompleted]        = useState(false)
@@ -188,9 +190,34 @@ export default function LessonPlayerPage() {
   // ── Quiz metadata ──────────────────────────────────────────────────────────
   useEffect(() => {
     if (modules.length === 0) return
-    const modIds = modules.map(m => m.id)
+    const modIds   = modules.map(m => m.id)
+    const courseId = courseIdRef.current
+
     supabase.from('quizzes').select('module_id').in('module_id', modIds)
       .then(({ data }) => setModulesWithQuiz(new Set((data ?? []).map(q => q.module_id as string))))
+
+    // Check for course-level final exam quiz
+    if (courseId) {
+      supabase.from('quizzes').select('id').eq('course_id', courseId).maybeSingle()
+        .then(({ data: fq }) => {
+          if (!fq) return
+          setHasFinalExam(true)
+          if (PILOT_MODE) {
+            try {
+              const s = localStorage.getItem(`final-exam-${courseSlug}`)
+              if (s && JSON.parse(s).passed) setFinalExamPassed(true)
+            } catch {}
+            return
+          }
+          supabase.auth.getUser().then(({ data: { user } }) => {
+            if (!user) return
+            supabase.from('quiz_attempts').select('id')
+              .eq('user_id', user.id).eq('quiz_id', fq.id).eq('passed', true).limit(1)
+              .then(({ data: a }) => { if ((a ?? []).length > 0) setFinalExamPassed(true) })
+          })
+        })
+    }
+
     if (PILOT_MODE) {
       // For pilot users there are no quiz_attempts rows; read from localStorage instead.
       const validated = new Set<string>()
@@ -316,6 +343,9 @@ export default function LessonPlayerPage() {
     if (isLastLessonInModule && currentModHasQuiz && !currentModPassed) {
       return { href: `/learn/${courseSlug}/${module?.id}/quiz`, label: 'Quiz du module' }
     }
+    if (isLastLesson && hasFinalExam && !finalExamPassed) {
+      return { href: `/learn/${courseSlug}/final-exam`, label: 'Examen final' }
+    }
     if (isLastLesson) {
       return { href: `/certificate/${courseSlug}`, label: 'Vers votre certificat' }
     }
@@ -366,6 +396,9 @@ export default function LessonPlayerPage() {
         progress={progress}
         validatedModules={validatedModules}
         modulesWithQuiz={modulesWithQuiz}
+        hasFinalExam={hasFinalExam}
+        finalExamPassed={finalExamPassed}
+        isFinalExamActive={false}
         pilotMode={PILOT_MODE}
         sideOpen={sideOpen}
         onClose={() => setSideOpen(false)}
@@ -509,6 +542,8 @@ export default function LessonPlayerPage() {
               nextIsBlocked={nextIsBlocked}
               moduleId={module?.id ?? null}
               pilotMode={PILOT_MODE}
+              hasFinalExam={hasFinalExam}
+              finalExamPassed={finalExamPassed}
               onMarkComplete={() => markComplete(false)}
             />
           </div>

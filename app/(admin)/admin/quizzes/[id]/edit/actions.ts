@@ -131,12 +131,13 @@ export async function updateQuiz(formData: FormData) {
   const title    = (formData.get('title')     as string | null)?.trim() ?? ''
   const moduleId = (formData.get('module_id') as string | null)?.trim() || null
   const lessonId = (formData.get('lesson_id') as string | null)?.trim() || null
+  const courseId = (formData.get('course_id') as string | null)?.trim() || null
   const qJson    = (formData.get('questions_json')   as string | null) ?? '[]'
   const delJson  = (formData.get('deleted_ids_json') as string | null) ?? '[]'
 
-  if (!quizId)                return { error: 'ID du quiz manquant.' }
-  if (!title)                 return { error: 'Le titre est obligatoire.' }
-  if (!moduleId && !lessonId) return { error: 'Sélectionnez un module ou une leçon.' }
+  if (!quizId)                              return { error: 'ID du quiz manquant.' }
+  if (!title)                               return { error: 'Le titre est obligatoire.' }
+  if (!moduleId && !lessonId && !courseId)  return { error: 'Sélectionnez un module, une leçon ou une formation.' }
 
   let questions:  QuestionUpdate[]
   let deletedIds: string[]
@@ -182,7 +183,12 @@ export async function updateQuiz(formData: FormData) {
 
   const { error: quizErr } = await supabase
     .from('quizzes')
-    .update({ title, module_id: lessonId ? null : moduleId, lesson_id: lessonId ?? null })
+    .update({
+      title,
+      course_id: courseId ?? null,
+      module_id: courseId ? null : (lessonId ? null : moduleId),
+      lesson_id: courseId ? null : (lessonId ?? null),
+    })
     .eq('id', quizId)
 
   if (quizErr) {
@@ -222,7 +228,7 @@ export async function updateQuiz(formData: FormData) {
     }
   }
 
-  log.info({ quizId, updated: questions.filter(q => q.id).length, inserted: newQuestions.length, deleted: deletedIds.length, moduleId, lessonId }, 'Quiz updated')
+  log.info({ quizId, updated: questions.filter(q => q.id).length, inserted: newQuestions.length, deleted: deletedIds.length, moduleId, lessonId, courseId }, 'Quiz updated')
   revalidatePath('/admin/quizzes')
   revalidatePath(`/admin/quizzes/${quizId}`)
   revalidatePath('/learn', 'layout')

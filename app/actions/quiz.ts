@@ -14,7 +14,7 @@ const DMAnswerSchema = z.record(z.string().uuid(), z.string().uuid())
 
 const SubmitSchema = z.object({
   quizId:   UuidSchema,
-  moduleId: UuidSchema,
+  moduleId: z.union([UuidSchema, z.null()]),
   answers:  z.record(UuidSchema, z.union([MCAnswerSchema, MAAnswerSchema, DMAnswerSchema])),
 })
 
@@ -34,7 +34,7 @@ const MIN_PASS = 80
 
 export async function submitQuizAnswers(input: {
   quizId:   string
-  moduleId: string
+  moduleId: string | null
   answers:  Record<string, number | number[] | Record<string, string>>
 }): Promise<QuizSubmitResult> {
   const parsed = SubmitSchema.safeParse(input)

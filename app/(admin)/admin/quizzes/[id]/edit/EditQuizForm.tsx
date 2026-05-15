@@ -28,12 +28,15 @@ interface QuestionDraft {
   dm_items?:           DragMatchItem[]
 }
 
+type QuizScope = 'module' | 'lesson' | 'final'
+
 interface Props {
   quizId:           string
   initialTitle:     string
   initialCourseId:  string
   initialModuleId:  string
   initialLessonId:  string
+  initialIsFinal:   boolean
   initialQuestions: QuestionDraft[]
   courses:          Course[]
 }
@@ -64,12 +67,13 @@ function blankForType(type: QuestionType, order: number): QuestionDraft {
 }
 
 export default function EditQuizForm({
-  quizId, initialTitle, initialCourseId, initialModuleId, initialLessonId, initialQuestions, courses,
+  quizId, initialTitle, initialCourseId, initialModuleId, initialLessonId, initialIsFinal, initialQuestions, courses,
 }: Props) {
   const [isPending, startTransition] = useTransition()
   const [error,     setError]        = useState<string | null>(null)
   const titleRef                     = useRef<HTMLInputElement>(null)
 
+  const [scope,      setScope]      = useState<QuizScope>(initialIsFinal ? 'final' : (initialLessonId ? 'lesson' : 'module'))
   const [courseId,   setCourseId]   = useState(initialCourseId)
   const [moduleId,   setModuleId]   = useState(initialModuleId)
   const [lessonId,   setLessonId]   = useState(initialLessonId)
@@ -81,6 +85,7 @@ export default function EditQuizForm({
   const selectedModule = modules.find(m => m.id === moduleId)
   const lessons        = (selectedModule?.lessons ?? []).slice().sort((a, b) => a.order_index - b.order_index)
 
+  function handleScopeChange(s: QuizScope) { setScope(s); setModuleId(''); setLessonId('') }
   function handleCourseChange(id: string) { setCourseId(id); setModuleId(''); setLessonId('') }
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
 
@@ -174,7 +179,13 @@ export default function EditQuizForm({
     const fd = new FormData()
     fd.set('quiz_id', quizId)
     fd.set('title', titleRef.current?.value.trim() ?? '')
-    if (lessonId) { fd.set('lesson_id', lessonId) } else { fd.set('module_id', moduleId) }
+    if (scope === 'final') {
+      fd.set('course_id', courseId)
+    } else if (scope === 'lesson' && lessonId) {
+      fd.set('lesson_id', lessonId)
+    } else {
+      fd.set('module_id', moduleId)
+    }
     fd.set('questions_json', JSON.stringify(questions.map((q, i) => ({ ...q, order_index: i }))))
     fd.set('deleted_ids_json', JSON.stringify(deletedIds))
     startTransition(async () => {
@@ -196,7 +207,21 @@ export default function EditQuizForm({
             className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all" />
         </div>
 
-        <div className="grid sm:grid-cols-3 gap-4">
+        {/* Scope selector */}
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm font-semibold text-gray-700">Type <span className="text-red-500">*</span></span>
+          <div className="flex gap-2">
+            {([['module', 'Quiz de module'], ['lesson', 'Quiz de leçon'], ['final', 'Examen final']] as [QuizScope, string][]).map(([s, label]) => (
+              <button key={s} type="button" onClick={() => handleScopeChange(s)}
+                className={`px-4 py-2 rounded-xl text-sm font-semibold border transition-colors ${scope === s ? 'bg-primary text-white border-primary' : 'bg-white text-gray-600 border-gray-200 hover:border-primary/40'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+          {scope === 'final' && <p className="text-xs text-gray-400">L&apos;examen final appara&icirc;t apr&egrave;s tous les modules. Un seul par formation.</p>}
+        </div>
+
+        <div className={`grid gap-4 ${scope === 'final' ? 'sm:grid-cols-1 max-w-sm' : 'sm:grid-cols-3'}`}>
           <div className="flex flex-col gap-1.5">
             <label htmlFor="edit-course" className="text-sm font-semibold text-gray-700">Formation <span className="text-red-500">*</span></label>
             <select id="edit-course" value={courseId} onChange={e => handleCourseChange(e.target.value)}
@@ -205,22 +230,26 @@ export default function EditQuizForm({
               {courses.map(c => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="edit-module" className="text-sm font-semibold text-gray-700">Module <span className="text-red-500">*</span></label>
-            <select id="edit-module" value={moduleId} onChange={e => handleModuleChange(e.target.value)} disabled={!courseId}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-              <option value="">— Choisir —</option>
-              {modules.map(m => <option key={m.id} value={m.id}>{m.title}</option>)}
-            </select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <label htmlFor="edit-lesson" className="text-sm font-semibold text-gray-700">Leçon <span className="text-xs text-gray-400 font-normal">(optionnel)</span></label>
-            <select id="edit-lesson" value={lessonId} onChange={e => setLessonId(e.target.value)} disabled={!moduleId}
-              className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
-              <option value="">— Attacher au module —</option>
-              {lessons.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}
-            </select>
-          </div>
+          {scope !== 'final' && (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="edit-module" className="text-sm font-semibold text-gray-700">Module <span className="text-red-500">*</span></label>
+              <select id="edit-module" value={moduleId} onChange={e => handleModuleChange(e.target.value)} disabled={!courseId}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                <option value="">— Choisir —</option>
+                {modules.map(m => <option key={m.id} value={m.id}>{m.title}</option>)}
+              </select>
+            </div>
+          )}
+          {scope === 'lesson' && (
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="edit-lesson" className="text-sm font-semibold text-gray-700">Leçon <span className="text-red-500">*</span></label>
+              <select id="edit-lesson" value={lessonId} onChange={e => setLessonId(e.target.value)} disabled={!moduleId}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all disabled:opacity-50 disabled:cursor-not-allowed">
+                <option value="">— Choisir une leçon —</option>
+                {lessons.map(l => <option key={l.id} value={l.id}>{l.title}</option>)}
+              </select>
+            </div>
+          )}
         </div>
       </div>
 
