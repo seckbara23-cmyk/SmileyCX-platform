@@ -113,7 +113,7 @@ export default function AboutPage() {
               </p>
               <p className="text-sm text-cx-gray leading-relaxed mb-5 max-w-xl">
                 Avec une exp&eacute;rience dans les t&eacute;l&eacute;communications, l&apos;e-commerce et la sant&eacute;,
-                Mariame a cr&eacute;&eacute; XP Client Academy pour rendre la formation CX accessible,
+                Marieme a cr&eacute;&eacute; XP Client Academy pour rendre la formation CX accessible,
                 pratique et ancr&eacute;e dans la r&eacute;alit&eacute; des professionnels africains.
               </p>
               <Link
