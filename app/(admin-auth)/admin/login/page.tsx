@@ -27,7 +27,7 @@ export default async function AdminLoginPage({ searchParams }: Props) {
             <Shield className="w-7 h-7 text-white" />
           </div>
           <p className="text-2xl font-extrabold text-white">
-            Smiley<span className="text-secondary">CX</span>
+            XP<span className="text-secondary"> Client</span>
           </p>
           <p className="text-sm text-white/40 mt-1">Administration Platform</p>
         </div>
@@ -75,7 +75,7 @@ export default async function AdminLoginPage({ searchParams }: Props) {
         </div>
 
         <p className="text-center text-xs text-white/20 mt-6">
-          Accès réservé aux administrateurs de la plateforme SmileyCX.
+          Accès réservé aux administrateurs de la plateforme XP Client.
         </p>
       </div>
     </div>

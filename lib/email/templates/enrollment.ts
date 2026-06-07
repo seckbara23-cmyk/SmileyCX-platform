@@ -29,7 +29,7 @@ export function enrollmentEmailHtml({ fullName, courseTitle, courseUrl }: Enroll
 <body>
   <div class="wrapper">
     <div class="header">
-      <h1>SmileyCX</h1>
+      <h1>XP Client</h1>
       <p>La plateforme de formation en expérience client</p>
     </div>
     <div class="body">
@@ -45,7 +45,7 @@ export function enrollmentEmailHtml({ fullName, courseTitle, courseUrl }: Enroll
       </p>
     </div>
     <div class="footer">
-      © ${new Date().getFullYear()} SmileyCX. Tous droits réservés.
+      © ${new Date().getFullYear()} XP Client. Tous droits réservés.
     </div>
   </div>
 </body>
@@ -60,7 +60,7 @@ Bonjour ${fullName},
 Votre inscription à "${courseTitle}" est confirmée. Commencez dès maintenant :
 ${courseUrl}
 
-© ${new Date().getFullYear()} SmileyCX`
+© ${new Date().getFullYear()} XP Client`
 }
 
 function escHtml(s: string): string {

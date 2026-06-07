@@ -104,7 +104,7 @@ function MedalSvg() {
 
 export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, issuedAt }: Props) {
   return (
-    <Document title={`Certificat — ${learnerName}`} author="SmileyCX Academy">
+    <Document title={`Certificat — ${learnerName}`} author="XP Client Academy">
       <Page size="A4" orientation="landscape" style={s.page}>
 
         {/* Outer border frame */}
@@ -131,8 +131,8 @@ export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, i
         <View style={s.body}>
           {/* Brand */}
           <Text style={s.brand}>
-            <Text>Smiley</Text>
-            <Text style={s.brandCX}>CX</Text>
+            <Text>XP</Text>
+            <Text style={s.brandCX}> Client</Text>
             <Text style={s.brandAcademy}> Academy</Text>
           </Text>
           <View style={s.divider} />
@@ -152,7 +152,7 @@ export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, i
           <View style={s.sigRow}>
             <View style={s.sigBlock}>
               <View style={s.sigLine} />
-              <Text style={s.sigName}>SmileyCX Consulting</Text>
+              <Text style={s.sigName}>XP Client Consulting</Text>
               <Text style={s.sigRole}>Organisation</Text>
             </View>
             <View style={s.sigBlock}>

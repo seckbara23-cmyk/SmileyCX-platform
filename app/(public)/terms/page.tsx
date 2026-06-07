@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: "Conditions générales d'utilisation",
-  description: "Conditions générales d'utilisation de SmileyCX Academy.",
+  description: "Conditions générales d'utilisation de XP Client Academy.",
 }
 
 export default function TermsPage() {
@@ -12,7 +12,7 @@ export default function TermsPage() {
         <div className="cx-card p-8">
           <h1 className="text-3xl font-extrabold mb-4">Conditions Générales d’Utilisation</h1>
           <p className="text-base text-cx-gray leading-relaxed mb-4">
-            En utilisant SmileyCX Academy, vous acceptez nos conditions générales d’utilisation. Celles-ci définissent
+            En utilisant XP Client Academy, vous acceptez nos conditions générales d’utilisation. Celles-ci définissent
             les règles d’accès, de cotisation et de support à nos formations.
           </p>
           <div className="space-y-4 text-sm text-cx-gray">

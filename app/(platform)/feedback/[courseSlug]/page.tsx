@@ -4,7 +4,7 @@ import { PILOT_MODE } from '@/lib/pilot'
 import FeedbackForm from './FeedbackForm'
 import type { Metadata } from 'next'
 
-export const metadata: Metadata = { title: 'Donner mon avis — SmileyCX Academy' }
+export const metadata: Metadata = { title: 'Donner mon avis — XP Client Academy' }
 
 interface Props { params: Promise<{ courseSlug: string }> }
 

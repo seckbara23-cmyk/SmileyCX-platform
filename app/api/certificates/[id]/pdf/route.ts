@@ -41,7 +41,7 @@ export async function GET(req: NextRequest, { params }: RouteContext) {
     .eq('id', user.id)
     .single()
 
-  const courseTitle = (cert.courses as unknown as { title: string } | null)?.title ?? 'Formation SmileyCX'
+  const courseTitle = (cert.courses as unknown as { title: string } | null)?.title ?? 'Formation XP Client'
   const learnerName = profile?.full_name || profile?.email || 'Apprenant'
 
   // Generate PDF buffer

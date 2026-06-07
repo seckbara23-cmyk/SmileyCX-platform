@@ -49,7 +49,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         {/* Logo */}
         <div className="px-4 py-4 border-b border-white/[0.06]">
           <p className="text-lg font-extrabold text-white">
-            Smiley<span className="text-secondary">CX</span>
+            XP<span className="text-secondary"> Client</span>
           </p>
           <p className="text-[11px] text-white/40 mt-0.5 font-semibold uppercase tracking-wider">
             Administration

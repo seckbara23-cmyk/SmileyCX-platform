@@ -103,7 +103,7 @@ export default function FeedbackForm({ courseId }: Props) {
         </div>
         <h2 className="text-xl font-extrabold text-dark mb-2">Merci pour votre retour&nbsp;!</h2>
         <p className="text-sm text-cx-gray max-w-sm mb-6">
-          Vos réponses nous aident à améliorer SmileyCX Academy pour la prochaine version.
+          Vos réponses nous aident à améliorer XP Client Academy pour la prochaine version.
         </p>
         <button
           onClick={() => router.push('/dashboard')}

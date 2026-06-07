@@ -182,7 +182,7 @@ export default function HomePage() {
                   Une expertise locale, une approche concr&egrave;te
                 </h2>
                 <p className="text-cx-gray leading-relaxed mb-4">
-                  SmileyCX Academy est n&eacute; d&apos;un constat simple&nbsp;: les formations en exp&eacute;rience client disponibles sur le march&eacute;
+                  XP Client Academy est n&eacute; d&apos;un constat simple&nbsp;: les formations en exp&eacute;rience client disponibles sur le march&eacute;
                   ne refl&egrave;tent pas les r&eacute;alit&eacute;s du contexte s&eacute;n&eacute;galais et ouest-africain.
                 </p>
                 <p className="text-cx-gray leading-relaxed mb-6">
@@ -207,7 +207,7 @@ export default function HomePage() {
                 <div className="relative w-full aspect-[4/3] rounded-2xl overflow-hidden shadow-md">
                   <Image
                     src="/images/Picture2.jpg"
-                    alt="Fondatrice SmileyCX Academy"
+                    alt="Fondatrice XP Client Academy"
                     fill
                     className="object-cover"
                   />

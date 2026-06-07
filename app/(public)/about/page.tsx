@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: 'À propos',
-  description: 'Découvrez SmileyCX Academy, la plateforme de formations en expérience client adaptée au contexte sénégalais et africain.',
+  description: 'Découvrez XP Client Academy, la plateforme de formations en expérience client adaptée au contexte sénégalais et africain.',
 }
 
 export default function AboutPage() {
@@ -10,9 +10,9 @@ export default function AboutPage() {
     <section className="cx-section">
       <div className="cx-container max-w-4xl text-dark">
         <div className="cx-card p-8">
-          <h1 className="text-3xl font-extrabold mb-4">À propos de SmileyCX Academy</h1>
+          <h1 className="text-3xl font-extrabold mb-4">À propos de XP Client Academy</h1>
           <p className="text-base text-cx-gray leading-relaxed mb-4">
-            SmileyCX Academy forme les leaders et les équipes à offrir une expérience client exceptionnelle.
+            XP Client Academy forme les leaders et les équipes à offrir une expérience client exceptionnelle.
             Notre plateforme simplifie l&apos;accès aux formations certifiantes, aux parcours pratiques et aux outils de suivi.
           </p>
           <p className="text-base text-cx-gray leading-relaxed mb-4">
@@ -36,7 +36,7 @@ export default function AboutPage() {
 
           <div className="mt-10 pt-8 border-t border-black/[0.06]">
             <p className="text-sm text-cx-gray leading-relaxed">
-              SmileyCX Academy est une plateforme de formation développée par{' '}
+              XP Client Academy est une plateforme de formation développée par{' '}
               <a
                 href="https://terangatechnologies.com"
                 target="_blank"

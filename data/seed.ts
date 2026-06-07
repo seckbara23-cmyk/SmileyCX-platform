@@ -409,7 +409,7 @@ export const COURSE_COPY = {
   },
   testimonials: [
     {
-      text:    '"SmileyCX Academy a transformé la façon dont notre équipe aborde les clients. En 3 mois, notre taux de satisfaction a augmenté de 28 points."',
+      text:    '"XP Client Academy a transformé la façon dont notre équipe aborde les clients. En 3 mois, notre taux de satisfaction a augmenté de 28 points."',
       author:  'Aminata Mbaye',
       role:    'Directrice Marketing, Telecom Sénégal',
       initials:'AM',
@@ -421,7 +421,7 @@ export const COURSE_COPY = {
       initials:'KD',
     },
     {
-      text:    '"Nos équipes peuvent maintenant mesurer et améliorer l\'expérience client de façon concrète. Je recommande vivement SmileyCX."',
+      text:    '"Nos équipes peuvent maintenant mesurer et améliorer l\'expérience client de façon concrète. Je recommande vivement XP Client."',
       author:  'Fatou Fall',
       role:    'DRH, Groupe Bancaire Côte d\'Ivoire',
       initials:'FF',

@@ -109,7 +109,7 @@ export default function Header() {
             onClick={(e) => handleNavClick(e, 'accueil')}
             className="text-2xl font-extrabold text-primary tracking-tight shrink-0"
           >
-            Smiley<span className="text-secondary">CX</span>{' '}
+            XP<span className="text-secondary"> Client</span>{' '}
             <span className="text-lg font-semibold text-cx-gray">Academy</span>
           </a>
 

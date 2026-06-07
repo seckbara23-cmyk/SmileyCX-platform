@@ -3,7 +3,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { CheckCircle, XCircle, Award, Calendar, Hash } from 'lucide-react'
 import type { Metadata } from 'next'
 
-export const metadata: Metadata = { title: 'Vérification de certificat — SmileyCX Academy' }
+export const metadata: Metadata = { title: 'Vérification de certificat — XP Client Academy' }
 
 interface Props { params: Promise<{ certificateId: string }> }
 
@@ -41,7 +41,7 @@ export default async function VerifyCertificatePage({ params }: Props) {
         <div className="text-center mb-8">
           <Link href="/" className="inline-block">
             <p className="text-2xl font-extrabold text-primary">
-              Smiley<span className="text-secondary">CX</span>{' '}
+              XP<span className="text-secondary"> Client</span>{' '}
               <span className="text-base font-semibold text-cx-gray">Academy</span>
             </p>
           </Link>
@@ -88,7 +88,7 @@ export default async function VerifyCertificatePage({ params }: Props) {
             </div>
 
             <p className="text-xs text-cx-gray mt-6">
-              Ce certificat a été émis par SmileyCX Academy et son authenticité est vérifiée.
+              Ce certificat a été émis par XP Client Academy et son authenticité est vérifiée.
             </p>
           </div>
         ) : (
@@ -122,7 +122,7 @@ export default async function VerifyCertificatePage({ params }: Props) {
         )}
 
         <p className="text-center text-xs text-cx-gray mt-6">
-          SmileyCX Academy · Formation professionnelle en expérience client
+          XP Client Academy · Formation professionnelle en expérience client
         </p>
       </div>
     </div>

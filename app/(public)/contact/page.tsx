@@ -4,7 +4,7 @@ import { Mail, Phone, MapPin } from 'lucide-react'
 
 export const metadata: Metadata = {
   title: 'Contact',
-  description: 'Contactez SmileyCX Academy pour toute question sur nos formations en expérience client.',
+  description: 'Contactez XP Client Academy pour toute question sur nos formations en expérience client.',
 }
 
 interface Props { searchParams: Promise<{ service?: string }> }

@@ -15,7 +15,7 @@ export default function Footer() {
           {/* Brand */}
           <div>
             <p className="text-2xl font-extrabold text-white mb-3 tracking-tight">
-              Smiley<span className="text-secondary">CX</span>{' '}
+              XP<span className="text-secondary"> Client</span>{' '}
               <span className="text-lg font-semibold text-white/60">Academy</span>
             </p>
             <p className="text-sm text-white/60 leading-relaxed mb-5">
@@ -117,7 +117,7 @@ export default function Footer() {
 
         <hr className="border-white/10 mt-12 mb-6" />
         <div className="flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-white/40">
-          <p>© 2025 SmileyCX Consulting. Tous droits réservés.</p>
+          <p>© 2025 XP Client Consulting. Tous droits réservés.</p>
           <div className="flex gap-4">
             <Link href="/privacy"    className="hover:text-white/70 transition-colors">Confidentialité</Link>
             <Link href="/terms"      className="hover:text-white/70 transition-colors">CGU</Link>

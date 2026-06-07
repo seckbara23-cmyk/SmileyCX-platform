@@ -46,7 +46,7 @@ export async function sendContactMessage(
       from,
       to,
       reply_to: email,
-      subject: `[Contact SmileyCX] ${subject}`,
+      subject: `[Contact XP Client] ${subject}`,
       html: `
         <p><strong>Nom :</strong> ${name}</p>
         <p><strong>Email :</strong> ${email}</p>

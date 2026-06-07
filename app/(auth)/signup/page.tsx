@@ -56,7 +56,7 @@ function SignupForm() {
       <div className="w-full max-w-md px-2 sm:px-0">
         <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-8 text-center">
           <CheckCircle className="w-16 h-16 text-success mx-auto mb-5" />
-          <h2 className="text-2xl font-extrabold text-dark mb-2">Bienvenue dans SmileyCX Academy !</h2>
+          <h2 className="text-2xl font-extrabold text-dark mb-2">Bienvenue dans XP Client Academy !</h2>
           <p className="text-cx-gray text-sm mb-4">
             Un email de confirmation a été envoyé à{' '}
             <strong className="text-dark">{form.email}</strong>.
@@ -97,7 +97,7 @@ function SignupForm() {
       <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-5 sm:p-8">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-extrabold text-dark mb-1">Créer un compte</h1>
-          <p className="text-sm text-cx-gray">Accédez à toutes les formations SmileyCX</p>
+          <p className="text-sm text-cx-gray">Accédez à toutes les formations XP Client</p>
         </div>
 
         {errors.general && (

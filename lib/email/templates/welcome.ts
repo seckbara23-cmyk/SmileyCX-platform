@@ -9,7 +9,7 @@ export function welcomeEmailHtml({ fullName, loginUrl }: WelcomeEmailData): stri
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Bienvenue sur SmileyCX</title>
+  <title>Bienvenue sur XP Client</title>
   <style>
     body { margin: 0; padding: 0; background: #f4f6fb; font-family: Inter, Arial, sans-serif; color: #1e2235; }
     .wrapper { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
@@ -26,12 +26,12 @@ export function welcomeEmailHtml({ fullName, loginUrl }: WelcomeEmailData): stri
 <body>
   <div class="wrapper">
     <div class="header">
-      <h1>SmileyCX</h1>
+      <h1>XP Client</h1>
       <p>La plateforme de formation en expérience client</p>
     </div>
     <div class="body">
       <h2>Bienvenue, ${escHtml(fullName)} !</h2>
-      <p>Nous sommes ravis de vous accueillir sur SmileyCX. Votre compte est maintenant actif et prêt à l'emploi.</p>
+      <p>Nous sommes ravis de vous accueillir sur XP Client. Votre compte est maintenant actif et prêt à l'emploi.</p>
       <p>Découvrez nos formations et commencez votre parcours vers l'excellence en expérience client.</p>
       <p style="text-align:center">
         <a class="btn" href="${escHtml(loginUrl)}">Accéder à la plateforme</a>
@@ -39,7 +39,7 @@ export function welcomeEmailHtml({ fullName, loginUrl }: WelcomeEmailData): stri
       <p style="font-size:13px;color:#aaa">Si vous n'avez pas créé ce compte, ignorez cet email.</p>
     </div>
     <div class="footer">
-      © ${new Date().getFullYear()} SmileyCX. Tous droits réservés.
+      © ${new Date().getFullYear()} XP Client. Tous droits réservés.
     </div>
   </div>
 </body>
@@ -47,14 +47,14 @@ export function welcomeEmailHtml({ fullName, loginUrl }: WelcomeEmailData): stri
 }
 
 export function welcomeEmailText({ fullName, loginUrl }: WelcomeEmailData): string {
-  return `Bienvenue sur SmileyCX, ${fullName} !
+  return `Bienvenue sur XP Client, ${fullName} !
 
 Votre compte est maintenant actif. Accédez à la plateforme ici :
 ${loginUrl}
 
 Si vous n'avez pas créé ce compte, ignorez cet email.
 
-© ${new Date().getFullYear()} SmileyCX`
+© ${new Date().getFullYear()} XP Client`
 }
 
 function escHtml(s: string): string {

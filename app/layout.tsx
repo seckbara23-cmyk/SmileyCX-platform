@@ -1,22 +1,22 @@
 import type { Metadata } from 'next'
 import './globals.css'
 
-const SITE_TITLE       = 'SmileyCX Academy — Formations en expérience client au Sénégal'
+const SITE_TITLE       = 'XP Client Academy — Formations en expérience client au Sénégal'
 const SITE_DESCRIPTION = 'Formations pratiques en expérience client, service client et relation client adaptées au contexte africain.'
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL ?? 'https://academy.smileycx.com'),
   title: {
-    template: '%s | SmileyCX Academy',
+    template: '%s | XP Client Academy',
     default:  SITE_TITLE,
   },
   description: SITE_DESCRIPTION,
-  keywords: ['expérience client', 'formation CX', 'service client', 'relation client', 'Sénégal', 'Afrique', 'SmileyCX'],
-  authors: [{ name: 'SmileyCX Consulting' }],
+  keywords: ['expérience client', 'formation CX', 'service client', 'relation client', 'Sénégal', 'Afrique', 'XP Client'],
+  authors: [{ name: 'XP Client Consulting' }],
   openGraph: {
     type:        'website',
     locale:      'fr_FR',
-    siteName:    'SmileyCX Academy',
+    siteName:    'XP Client Academy',
     title:       SITE_TITLE,
     description: SITE_DESCRIPTION,
   },

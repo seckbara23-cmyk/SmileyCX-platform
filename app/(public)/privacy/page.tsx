@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
   title: 'Politique de confidentialité',
-  description: 'Politique de confidentialité de SmileyCX Academy — comment nous traitons vos données personnelles.',
+  description: 'Politique de confidentialité de XP Client Academy — comment nous traitons vos données personnelles.',
 }
 
 export default function PrivacyPage() {
@@ -12,7 +12,7 @@ export default function PrivacyPage() {
         <div className="cx-card p-8">
           <h1 className="text-3xl font-extrabold mb-4">Politique de confidentialité</h1>
           <p className="text-base text-cx-gray leading-relaxed mb-4">
-            SmileyCX Academy collecte et traite uniquement les données nécessaires à votre inscription,
+            XP Client Academy collecte et traite uniquement les données nécessaires à votre inscription,
             à votre facturation et à l’accès aux formations. Nous ne partageons pas vos informations personnelles
             avec des tiers sans votre consentement.
           </p>

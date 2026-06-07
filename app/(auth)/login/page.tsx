@@ -48,7 +48,7 @@ function LoginForm() {
       <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-5 sm:p-8">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-extrabold text-dark mb-1">Connexion</h1>
-          <p className="text-sm text-cx-gray">Accédez à votre espace SmileyCX Academy</p>
+          <p className="text-sm text-cx-gray">Accédez à votre espace XP Client Academy</p>
         </div>
 
         {/* Error from auth callback (e.g. expired reset link) */}

@@ -41,7 +41,7 @@ export default async function AdminDashboardPage() {
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-extrabold text-dark">Tableau de bord</h1>
-          <p className="text-cx-gray text-sm">Vue d&apos;ensemble de la plateforme SmileyCX Academy</p>
+          <p className="text-cx-gray text-sm">Vue d&apos;ensemble de la plateforme XP Client Academy</p>
         </div>
       </div>
 

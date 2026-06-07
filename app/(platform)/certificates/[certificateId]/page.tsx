@@ -4,7 +4,7 @@ import { PILOT_MODE } from '@/lib/pilot'
 import CertificateView from './CertificateView'
 import type { Metadata } from 'next'
 
-export const metadata: Metadata = { title: 'Certificat de réussite — SmileyCX Academy' }
+export const metadata: Metadata = { title: 'Certificat de réussite — XP Client Academy' }
 
 interface Props { params: Promise<{ certificateId: string }> }
 

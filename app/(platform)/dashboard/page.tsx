@@ -91,7 +91,7 @@ export default async function DashboardPage() {
           <h1 className="text-2xl md:text-3xl font-extrabold text-dark">
             Bonjour, {firstName} 👋
           </h1>
-          <p className="text-cx-gray mt-1">Votre espace d&apos;apprentissage SmileyCX Academy</p>
+          <p className="text-cx-gray mt-1">Votre espace d&apos;apprentissage XP Client Academy</p>
         </div>
 
         {/* Stats */}

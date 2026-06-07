@@ -19,7 +19,7 @@ export default async function ConfirmPage({ searchParams }: Props) {
   const supabase = await createClient()
 
   let payment = null
-  let courseName = 'Votre formation SmileyCX'
+  let courseName = 'Votre formation XP Client'
 
   if (paymentId) {
     const { data } = await supabase

@@ -66,7 +66,7 @@ export function AppSidebar({ org, role, collapsed = false, onToggle, onMobileClo
           <>
             <div className="min-w-0 flex-1">
               <p className="text-[13px] font-bold text-white leading-tight truncate">
-                Smiley<span className="text-secondary">CX</span>
+                XP<span className="text-secondary"> Client</span>
               </p>
               <p className="text-[10px] text-white/40 leading-tight truncate">{org.name}</p>
             </div>

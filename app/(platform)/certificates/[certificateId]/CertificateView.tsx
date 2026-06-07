@@ -59,14 +59,14 @@ export default function CertificateView({
     'https://www.linkedin.com/profile/add',
     '?startTask=CERTIFICATION_NAME',
     `&name=${encodeURIComponent(`Certificat — ${courseTitle}`)}`,
-    `&organizationName=${encodeURIComponent('SmileyCX Academy')}`,
+    `&organizationName=${encodeURIComponent('XP Client Academy')}`,
     `&issueYear=${issueYear}`,
     `&issueMonth=${issueMonth}`,
     `&certId=${encodeURIComponent(certNumber)}`,
     `&certUrl=${encodeURIComponent(certPageUrl)}`,
   ].join('')
 
-  const shareText = `Je viens de compléter la formation "${courseTitle}" sur SmileyCX Academy 🎓 Certificat : ${certPageUrl}`
+  const shareText = `Je viens de compléter la formation "${courseTitle}" sur XP Client Academy 🎓 Certificat : ${certPageUrl}`
 
   const twitterUrl   = `https://twitter.com/intent/tweet?text=${encodeURIComponent(shareText)}`
   const whatsappUrl  = `https://wa.me/?text=${encodeURIComponent(shareText)}`
@@ -83,7 +83,7 @@ export default function CertificateView({
           {pdfUrl ? (
             <a
               href={pdfUrl}
-              download={`certificat-smileycx-${certNumber}.pdf`}
+              download={`certificat-xpclient-${certNumber}.pdf`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 px-4 py-2 bg-success text-white text-sm font-semibold rounded-xl hover:bg-success/90 transition-colors shadow-sm"
@@ -138,7 +138,7 @@ export default function CertificateView({
           {/* Header */}
           <div className="cert-header">
             <p className="cert-brand">
-              Smiley<span className="cert-brand-cx">CX</span>{' '}
+              XP<span className="cert-brand-cx"> Client</span>{' '}
               <span className="cert-brand-academy">Academy</span>
             </p>
             <div className="cert-divider" />
@@ -173,7 +173,7 @@ export default function CertificateView({
           <div className="cert-signatures">
             <div className="cert-sig-block">
               <div className="cert-sig-line" />
-              <p className="cert-sig-name">SmileyCX Consulting</p>
+              <p className="cert-sig-name">XP Client Consulting</p>
               <p className="cert-sig-role">Organisation</p>
             </div>
             <div className="cert-sig-block">

@@ -28,7 +28,7 @@ import {
 
 const log = createLogger('email')
 
-const FROM = process.env.EMAIL_FROM ?? 'SmileyCX <noreply@smileycx.com>'
+const FROM = process.env.EMAIL_FROM ?? 'XP Client <noreply@smileycx.com>'
 const DRY_RUN =
   process.env.EMAIL_DRY_RUN === 'true' || !process.env.RESEND_API_KEY
 
@@ -86,7 +86,7 @@ export async function sendWelcomeEmail(
 ): Promise<SendResult> {
   return sendEmail({
     to,
-    subject: 'Bienvenue sur SmileyCX !',
+    subject: 'Bienvenue sur XP Client !',
     html:    welcomeEmailHtml(data),
     text:    welcomeEmailText(data),
   })
