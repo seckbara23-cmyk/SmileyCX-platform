@@ -67,9 +67,9 @@ export default function FounderPage() {
     <div>
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
-      <section className="bg-white py-10 md:py-14">
+      <section className="bg-white py-16 lg:py-20">
         <div className="cx-container max-w-5xl">
-          <div className="grid grid-cols-1 lg:grid-cols-[0.85fr_1.15fr] gap-10 items-center">
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.1fr] gap-8 lg:gap-10 items-center">
 
             {/* Left: text */}
             <div>
@@ -78,20 +78,20 @@ export default function FounderPage() {
               </h1>
               <div className="w-10 h-1 bg-amber-400 rounded-full mb-6" />
 
-              <p className="text-cx-gray leading-relaxed mb-3 max-w-lg">
+              <p className="text-cx-gray leading-relaxed mb-3">
                 Certifi&eacute;e en exp&eacute;rience client, elle accompagne depuis plus de 10 ans
                 l&apos;am&eacute;lioration des parcours clients au S&eacute;n&eacute;gal.
               </p>
-              <p className="text-cx-gray leading-relaxed mb-8 max-w-lg">
+              <p className="text-cx-gray leading-relaxed mb-8">
                 De conseill&egrave;re client &agrave; responsable exp&eacute;rience client, son parcours
                 s&apos;est construit sur le terrain, au contact des clients, des &eacute;quipes et des
                 r&eacute;alit&eacute;s op&eacute;rationnelles.
               </p>
 
-              <div className="flex flex-wrap gap-3">
+              <div className="flex items-center gap-4">
                 <Link
                   href="/courses"
-                  className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:bg-primary-dark transition-all hover:-translate-y-0.5"
+                  className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:bg-primary/90 transition-all hover:-translate-y-0.5"
                 >
                   D&eacute;couvrir XP Client Academy <ArrowRight className="w-4 h-4" />
                 </Link>
@@ -106,7 +106,7 @@ export default function FounderPage() {
 
             {/* Right: portrait */}
             <div className="w-full">
-              <div className="relative w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-xl">
+              <div className="relative w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-lg">
                 <Image
                   src="/images/Marieme.png"
                   alt="Marieme Ba — Fondatrice XP Client Academy"
