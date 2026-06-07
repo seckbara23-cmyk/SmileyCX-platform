@@ -156,7 +156,7 @@ export default function LessonNavigation({
   return (
     <>
       {/* ── Inline bottom navigation ────────────────────────────────────── */}
-      <div className="mt-10 pt-6 border-t border-white/10 space-y-5">
+      <div className="mt-6 pt-5 border-t border-white/10 space-y-4">
         {renderPrimaryCTA()}
 
         <div className="flex items-center gap-3 flex-wrap">

@@ -472,7 +472,7 @@ export default function LessonPlayerPage() {
         <div className="flex-1 overflow-y-auto bg-[#0f1117]">
 
           {/* Video */}
-          <div className="lesson-video-wrapper max-w-4xl mx-auto mt-6">
+          <div className="lesson-video-wrapper max-w-4xl mx-auto mt-4">
             {lesson.video_url ? (
               /\.(mp4|webm|mov|ogg)(\?|$)/i.test(lesson.video_url) || lesson.video_url.startsWith('/') ? (
                 <>

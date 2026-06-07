@@ -199,7 +199,7 @@ export default function FinalExamPage() {
 
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
-        <div className="max-w-2xl mx-auto px-4 py-10">
+        <div className="max-w-2xl mx-auto px-4 py-7">
 
           {alreadyPassed && !submitted && (
             <div className="mb-8 flex flex-wrap items-center gap-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
@@ -251,7 +251,7 @@ export default function FinalExamPage() {
                 </div>
               )}
 
-              <div className="flex flex-col gap-8">
+              <div className="flex flex-col gap-6">
                 {questions.map((q, qi) => {
                   const qType = q.question_type
 
@@ -427,7 +427,7 @@ export default function FinalExamPage() {
               </div>
 
               {!submitted ? (
-                <div className="mt-10 flex flex-col gap-3">
+                <div className="mt-8 flex flex-col gap-3">
                   {submitError && <p className="text-sm text-red-400">{submitError}</p>}
                   <button onClick={handleSubmit} disabled={submitting || !allAnswered}
                     className="px-6 py-3 bg-gradient-to-r from-amber-600 to-amber-400 text-white text-sm font-bold rounded-xl hover:opacity-90 transition-opacity disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2 w-fit shadow-lg shadow-amber-500/20">
@@ -436,7 +436,7 @@ export default function FinalExamPage() {
                   </button>
                 </div>
               ) : (
-                <div className="mt-10 p-6 rounded-2xl bg-amber-500/5 border border-amber-500/20">
+                <div className="mt-8 p-5 rounded-2xl bg-amber-500/5 border border-amber-500/20">
                   <p className="text-base font-bold text-white">
                     Score&nbsp;: {correctCount}&nbsp;/&nbsp;{totalQuestions}&nbsp;
                     <span className="text-white/50 font-normal">({scorePercent}&nbsp;%)</span>

@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
 import Image from 'next/image'
-import { CheckCircle, Clock, BookOpen, Users, Award, Play, Lock, ChevronDown } from 'lucide-react'
+import { CheckCircle, Clock, BookOpen, Users, Award, Play, Lock, ChevronDown, ClipboardList, Star } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
 import { FLAGSHIP_COURSE, COURSE_MODULES, COURSE_COPY } from '@/data/seed'
@@ -149,6 +149,69 @@ export default async function CourseDetailPage({ params }: Props) {
     isEnrolled = !!enroll
   }
 
+  // For enrolled users: load progress to drive smart CTA and progress card
+  type CourseProgress = {
+    completedLessons: number; totalLessons: number
+    completedSteps: number;  totalSteps: number
+    percentage: number; continueUrl: string
+    nextStep: 'lesson' | 'quiz' | 'final-exam' | 'certificate'
+  }
+  let enrolledProgress: CourseProgress | null = null
+
+  if (isEnrolled && user && dbCourse) {
+    const allLessonPairs = modules.flatMap((m: any) =>
+      (m.lessons ?? []).map((l: any) => ({ lessonId: l.id as string, moduleId: m.id as string }))
+    )
+    const allLessonIds = allLessonPairs.map(x => x.lessonId)
+    const moduleIds    = modules.map((m: any) => m.id as string)
+    const lessonHrefFallback = `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
+
+    const [{ data: lessonProgress }, { data: modQuizRaw }, { data: finalExamQ }] = await Promise.all([
+      supabase.from('lesson_progress').select('lesson_id')
+        .eq('user_id', user.id).eq('is_completed', true)
+        .in('lesson_id', allLessonIds.length > 0 ? allLessonIds : ['__none__']),
+      moduleIds.length > 0
+        ? supabase.from('quizzes').select('id, module_id').in('module_id', moduleIds)
+        : Promise.resolve({ data: [] as { id: string; module_id: string }[] }),
+      supabase.from('quizzes').select('id').eq('course_id', dbCourse.id).is('module_id', null).limit(1).maybeSingle(),
+    ])
+
+    const completedSet = new Set((lessonProgress ?? []).map(r => r.lesson_id as string))
+    const modQuizzes   = ((modQuizRaw ?? []) as { id: string; module_id: string }[])
+    const allQuizIds   = [...modQuizzes.map(q => q.id), ...(finalExamQ ? [finalExamQ.id] : [])]
+    let passedIds      = new Set<string>()
+
+    if (allQuizIds.length > 0) {
+      const { data: passed } = await supabase.from('quiz_attempts').select('quiz_id')
+        .eq('user_id', user.id).eq('passed', true).in('quiz_id', allQuizIds)
+      passedIds = new Set((passed ?? []).map((a: { quiz_id: string }) => a.quiz_id))
+    }
+
+    const completedLessons = completedSet.size
+    const totalSteps    = allLessonIds.length + allQuizIds.length
+    const completedSteps = completedLessons + allQuizIds.filter(id => passedIds.has(id)).length
+    const percentage    = totalSteps > 0 ? Math.round((completedSteps / totalSteps) * 100) : 0
+
+    let continueUrl: string = lessonHrefFallback
+    let nextStep: CourseProgress['nextStep'] = 'lesson'
+
+    if (allLessonIds.every(id => completedSet.has(id))) {
+      const pendingModQuiz = modQuizzes.find(q => !passedIds.has(q.id))
+      if (pendingModQuiz) {
+        continueUrl = `/learn/${slug}/${pendingModQuiz.module_id}/quiz`; nextStep = 'quiz'
+      } else if (finalExamQ && !passedIds.has(finalExamQ.id)) {
+        continueUrl = `/learn/${slug}/final-exam`; nextStep = 'final-exam'
+      } else {
+        continueUrl = `/certificate/${slug}`; nextStep = 'certificate'
+      }
+    } else {
+      const first = allLessonPairs.find(x => !completedSet.has(x.lessonId))
+      if (first) continueUrl = `/learn/${slug}/${first.moduleId}/${first.lessonId}`
+    }
+
+    enrolledProgress = { completedLessons, totalLessons: allLessonIds.length, completedSteps, totalSteps, percentage, continueUrl, nextStep }
+  }
+
   const totalLessons   = modules.reduce((n: number, m: typeof COURSE_MODULES[number]) => n + m.lessons.length, 0)
   const price          = dbCourse?.price          ?? FLAGSHIP_COURSE.price
   const currency       = dbCourse?.currency       ?? FLAGSHIP_COURSE.currency
@@ -164,7 +227,7 @@ export default async function CourseDetailPage({ params }: Props) {
   const learnHref = PILOT_MODE
     ? lessonHref
     : isEnrolled
-      ? lessonHref
+      ? (enrolledProgress?.continueUrl ?? lessonHref)
       : PLATFORM_MODE === 'private'
         ? '/signup'
         : user
@@ -236,10 +299,17 @@ export default async function CourseDetailPage({ params }: Props) {
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
                 {isEnrolled ? (
                   <Link
-                    href={lessonHref}
+                    href={enrolledProgress?.continueUrl ?? lessonHref}
                     className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-success text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm"
                   >
-                    <Play className="w-4 h-4" /> Continuer la formation
+                    {enrolledProgress?.nextStep === 'quiz'        ? <ClipboardList className="w-4 h-4" />
+                    : enrolledProgress?.nextStep === 'final-exam' ? <Star className="w-4 h-4" />
+                    : enrolledProgress?.nextStep === 'certificate'? <Award className="w-4 h-4" />
+                    : <Play className="w-4 h-4" />}
+                    {enrolledProgress?.nextStep === 'quiz'        ? 'Passer le quiz'
+                    : enrolledProgress?.nextStep === 'final-exam' ? 'Passer l\'examen final'
+                    : enrolledProgress?.nextStep === 'certificate'? 'Obtenir le certificat'
+                    : 'Continuer la formation'}
                   </Link>
                 ) : (
                   <Link
@@ -285,6 +355,35 @@ export default async function CourseDetailPage({ params }: Props) {
                 <p className="text-xs text-cx-gray">
                   <Link href="/login" className="text-primary hover:underline">Connexion</Link> requise avant l&apos;achat
                 </p>
+              )}
+
+              {/* Enrolled progress card */}
+              {isEnrolled && enrolledProgress && enrolledProgress.totalSteps > 0 && (
+                <div className="bg-white rounded-xl border border-black/[0.06] p-4 mt-1">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-dark">Ma progression</span>
+                    <span className="text-sm font-extrabold text-primary">{enrolledProgress.percentage}%</span>
+                  </div>
+                  <div className="cx-progress-bar mb-2.5">
+                    <div className="cx-progress-bar-fill" style={{ width: `${enrolledProgress.percentage}%` }} />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                    <span className="text-xs text-cx-gray">
+                      {enrolledProgress.completedLessons} / {enrolledProgress.totalLessons} leçon{enrolledProgress.totalLessons !== 1 ? 's' : ''}
+                    </span>
+                    {enrolledProgress.nextStep !== 'lesson' && (
+                      <span className={`text-xs font-semibold ${
+                        enrolledProgress.nextStep === 'quiz'       ? 'text-secondary'
+                        : enrolledProgress.nextStep === 'final-exam' ? 'text-amber-600'
+                        : 'text-success'
+                      }`}>
+                        {enrolledProgress.nextStep === 'quiz'       ? '→ Quiz du module requis'
+                        : enrolledProgress.nextStep === 'final-exam' ? '→ Examen final disponible'
+                        : '→ Prêt pour le certificat'}
+                      </span>
+                    )}
+                  </div>
+                </div>
               )}
             </div>
 
@@ -383,7 +482,7 @@ export default async function CourseDetailPage({ params }: Props) {
       )}
 
       {/* ══ Curriculum ═════════════════════════════════════════════════ */}
-      <section id="curriculum" className="cx-section">
+      <section id="curriculum" className="py-10 md:py-14">
         <div className="cx-container max-w-3xl">
           <h2 className="text-xl font-extrabold text-dark mb-6">Programme de la formation</h2>
 

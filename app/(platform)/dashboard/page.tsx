@@ -1,6 +1,6 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { BookOpen, Award, Clock, ArrowRight, Play, CheckCircle, TrendingUp, ExternalLink } from 'lucide-react'
+import { BookOpen, Award, ArrowRight, Play, CheckCircle, ClipboardList, Star, ExternalLink } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
 import type { Metadata } from 'next'
@@ -10,6 +10,8 @@ export const metadata: Metadata = { title: 'Mon Espace' }
 function formatDateFR(dateStr: string) {
   return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium' }).format(new Date(dateStr))
 }
+
+type NextStep = 'lesson' | 'quiz' | 'final-exam' | 'certificate' | 'done'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -28,7 +30,6 @@ export default async function DashboardPage() {
 
   if (!profile) redirect('/login')
 
-  // Compute progress for each enrollment
   const progressData = await Promise.all(
     (enrollments ?? []).map(async (e: {
       id: string
@@ -37,7 +38,7 @@ export default async function DashboardPage() {
       courses: { id: string; slug: string; title: string; cover_url?: string; modules: { id: string; lessons: { id: string }[] }[] } | null
     }) => {
       if (!e.courses) {
-        return { enrollment: e, total: 0, completed: 0, percentage: 0, continueUrl: '/courses' }
+        return { enrollment: e, total: 0, completed: 0, percentage: 0, continueUrl: '/courses', nextStep: 'lesson' as NextStep }
       }
 
       const lessonIds = (e.courses.modules ?? []).flatMap(m =>
@@ -55,127 +56,160 @@ export default async function DashboardPage() {
       const completedSet = new Set((completedRows ?? []).map(r => r.lesson_id))
       let total     = lessonIdList.length
       let completed = completedSet.size
+      let smartContinueUrl: string | null = null
+      let nextStep: NextStep = 'lesson'
 
-      // In authenticated mode, include quiz + final exam in progress totals
       if (!PILOT_MODE && total > 0) {
         const modIds = (e.courses.modules ?? []).map((m: { id: string }) => m.id)
         const modQuizData = modIds.length > 0
-          ? (await supabase.from('quizzes').select('id').in('module_id', modIds)).data
+          ? (await supabase.from('quizzes').select('id, module_id').in('module_id', modIds)).data
           : []
         const { data: finalExamData } = await supabase
           .from('quizzes').select('id').eq('course_id', e.courses.id).is('module_id', null).limit(1).maybeSingle()
 
+        const modQuizzes = (modQuizData ?? []) as { id: string; module_id: string }[]
         const allQuizIds = [
-          ...((modQuizData ?? []).map((q: { id: string }) => q.id)),
+          ...modQuizzes.map(q => q.id),
           ...(finalExamData ? [finalExamData.id] : []),
         ]
+
         if (allQuizIds.length > 0) {
           const { data: passedAttempts } = await supabase
             .from('quiz_attempts').select('quiz_id').eq('user_id', user.id).eq('passed', true).in('quiz_id', allQuizIds)
           const passedIds = new Set((passedAttempts ?? []).map((a: { quiz_id: string }) => a.quiz_id))
           total     += allQuizIds.length
           completed += allQuizIds.filter(id => passedIds.has(id)).length
+
+          if (lessonIdList.every(id => completedSet.has(id))) {
+            const pendingModQuiz = modQuizzes.find(q => !passedIds.has(q.id))
+            if (pendingModQuiz) {
+              smartContinueUrl = `/learn/${e.courses.slug}/${pendingModQuiz.module_id}/quiz`
+              nextStep = 'quiz'
+            } else if (finalExamData && !passedIds.has(finalExamData.id)) {
+              smartContinueUrl = `/learn/${e.courses.slug}/final-exam`
+              nextStep = 'final-exam'
+            } else {
+              smartContinueUrl = `/certificate/${e.courses.slug}`
+              nextStep = 'certificate'
+            }
+          }
         }
       }
 
       const firstIncomplete = lessonIds.find(x => !completedSet.has(x.lessonId))
       const targetLesson    = firstIncomplete ?? lessonIds[0]
-      const continueUrl = targetLesson
+      const continueUrl = smartContinueUrl ?? (targetLesson
         ? `/learn/${e.courses.slug}/${targetLesson.moduleId}/${targetLesson.lessonId}`
-        : `/courses/${e.courses.slug}`
+        : `/courses/${e.courses.slug}`)
 
-      return { enrollment: e, total, completed, percentage: total > 0 ? Math.round((completed / total) * 100) : 0, continueUrl }
+      return {
+        enrollment: e,
+        total,
+        completed,
+        percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+        continueUrl,
+        nextStep,
+      }
     })
   )
 
-  // Load certificates
   const { data: certs } = await supabase
     .from('certificates')
     .select('id, certificate_number, issued_at, pdf_url, courses(title, slug)')
     .eq('user_id', user.id)
     .order('issued_at', { ascending: false })
 
-  const firstName     = (profile.full_name || profile.email).split(' ')[0]
-  const inProgress    = progressData.filter(p => p.percentage < 100)
-  const completed     = progressData.filter(p => p.percentage === 100)
-  const totalCompleted = completedRows(progressData)
-
-  function completedRows(data: typeof progressData) {
-    return data.reduce((n, p) => n + p.completed, 0)
-  }
+  const firstName         = (profile.full_name || profile.email).split(' ')[0]
+  const inProgress        = progressData.filter(p => p.percentage < 100)
+  const completedCourses  = progressData.filter(p => p.percentage === 100)
+  const totalStepsDone    = progressData.reduce((n, p) => n + p.completed, 0)
 
   return (
-    <div className="cx-section bg-light min-h-screen">
-      <div className="cx-container">
+    <div className="bg-light min-h-screen py-8 md:py-10">
+      <div className="cx-container max-w-5xl">
 
         {/* Welcome */}
-        <div className="mb-8">
-          <h1 className="text-2xl md:text-3xl font-extrabold text-dark">
-            Bonjour, {firstName} 👋
-          </h1>
-          <p className="text-cx-gray mt-1">Votre espace d&apos;apprentissage XP Client Academy</p>
+        <div className="mb-6">
+          <h1 className="text-xl md:text-2xl font-extrabold text-dark">Bonjour, {firstName} 👋</h1>
+          <p className="text-sm text-cx-gray mt-0.5">Votre espace d&apos;apprentissage XP Client Academy</p>
         </div>
 
-        {/* Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-10">
-          {[
-            { icon: BookOpen,    value: enrollments?.length ?? 0,    label: 'Formation(s)', color: 'text-primary bg-primary/10' },
-            { icon: Play,        value: totalCompleted,               label: 'Leçons complétées', color: 'text-secondary bg-secondary/10' },
-            { icon: Award,       value: certs?.length ?? 0,          label: 'Certificat(s)', color: 'text-success bg-success/10' },
-            { icon: TrendingUp,  value: completed.length > 0 ? `${completed.length}/${enrollments?.length ?? 0}` : (enrollments?.length ?? 0) > 0 ? 'En cours' : '—',
-              label: 'Formations terminées', color: 'text-amber-600 bg-amber-100' },
-          ].map(({ icon: Icon, value, label, color }) => (
-            <div key={label} className="cx-card p-5">
-              <div className={`w-10 h-10 rounded-cx flex items-center justify-center mb-3 ${color}`}>
-                <Icon className="w-5 h-5" />
+        {/* Stats strip */}
+        <div className="cx-card flex divide-x divide-black/[0.06] mb-7 overflow-hidden">
+          {([
+            { Icon: BookOpen,    value: enrollments?.length ?? 0, label: 'Formation(s)',      color: 'text-primary' },
+            { Icon: Play,        value: totalStepsDone,            label: 'Étapes complétées', color: 'text-secondary' },
+            { Icon: Award,       value: certs?.length ?? 0,        label: 'Certificat(s)',     color: 'text-amber-500' },
+            { Icon: CheckCircle, value: completedCourses.length,   label: 'Terminée(s)',       color: 'text-success' },
+          ] as const).map(({ Icon, value, label, color }) => (
+            <div key={label} className="flex-1 flex items-center gap-2.5 px-3 sm:px-5 py-4 min-w-0">
+              <Icon className={`w-4 h-4 shrink-0 ${color}`} />
+              <div className="min-w-0">
+                <p className="text-base font-extrabold text-dark leading-none">{value}</p>
+                <p className="text-[11px] text-cx-gray mt-0.5 truncate">{label}</p>
               </div>
-              <p className="text-2xl font-extrabold text-dark">{value}</p>
-              <p className="text-xs text-cx-gray mt-0.5">{label}</p>
             </div>
           ))}
         </div>
 
         {/* ── In Progress ────────────────────────────────────────── */}
         {inProgress.length > 0 && (
-          <section className="mb-10">
-            <div className="flex items-center justify-between mb-5">
-              <h2 className="text-lg font-extrabold text-dark flex items-center gap-2">
-                <Play className="w-4 h-4 text-primary" /> En cours
+          <section className="mb-7">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-extrabold text-dark flex items-center gap-1.5">
+                <Play className="w-3.5 h-3.5 text-primary" /> En cours
               </h2>
-              <Link href="/courses" className="text-sm text-primary font-semibold hover:underline flex items-center gap-1">
-                Explorer <ArrowRight className="w-4 h-4" />
+              <Link href="/courses" className="text-xs text-primary font-semibold hover:underline flex items-center gap-1">
+                Voir les formations <ArrowRight className="w-3 h-3" />
               </Link>
             </div>
-            <div className="grid md:grid-cols-2 gap-5">
-              {inProgress.map(({ enrollment, total, completed: done, percentage, continueUrl }) => {
+            <div className="grid md:grid-cols-2 gap-3">
+              {inProgress.map(({ enrollment, total, completed: done, percentage, continueUrl, nextStep }) => {
                 const c = enrollment.courses
                 if (!c) return null
+
+                const CtaIcon = nextStep === 'quiz'          ? ClipboardList
+                              : nextStep === 'final-exam'    ? Star
+                              : nextStep === 'certificate'   ? Award
+                              : Play
+                const ctaLabel = percentage === 0              ? 'Commencer'
+                               : nextStep === 'quiz'           ? 'Passer le quiz'
+                               : nextStep === 'final-exam'     ? 'Passer l\'examen final'
+                               : nextStep === 'certificate'    ? 'Obtenir le certificat'
+                               : 'Continuer'
+                const ctaClass = nextStep === 'quiz'        ? 'bg-secondary'
+                               : nextStep === 'final-exam'  ? 'bg-gradient-to-r from-amber-600 to-amber-400'
+                               : nextStep === 'certificate' ? 'bg-success'
+                               : 'bg-primary'
+                const stepChip = nextStep === 'quiz'        ? { label: 'Quiz requis',          cls: 'text-secondary bg-secondary/10' }
+                               : nextStep === 'final-exam'  ? { label: 'Examen final',          cls: 'text-amber-600 bg-amber-100' }
+                               : nextStep === 'certificate' ? { label: 'Certificat prêt',       cls: 'text-success bg-green-50' }
+                               : percentage === 0           ? { label: 'Non commencée',         cls: 'text-cx-gray bg-light border border-black/[0.08]' }
+                               :                              { label: 'En cours',               cls: 'text-primary bg-primary/10' }
+
                 return (
-                  <div key={enrollment.id} className="cx-card p-5">
-                    <div className="flex gap-3 mb-4">
-                      <div className="w-12 h-12 rounded-cx bg-primary/10 flex items-center justify-center text-primary font-extrabold text-sm shrink-0">
-                        CX
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-bold text-dark text-sm leading-tight">{c.title}</p>
-                        <p className="text-xs text-cx-gray mt-0.5">{done}/{total} leçons</p>
-                      </div>
+                  <div key={enrollment.id} className="cx-card p-4">
+                    <div className="flex items-start gap-2 mb-2.5">
+                      <p className="font-bold text-dark text-sm leading-snug flex-1 min-w-0">{c.title}</p>
+                      <span className={`shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full ${stepChip.cls}`}>
+                        {stepChip.label}
+                      </span>
                     </div>
-                    <div className="mb-4">
-                      <div className="flex justify-between text-xs text-cx-gray mb-1.5">
-                        <span>Progression</span>
+                    <div className="mb-3">
+                      <div className="flex justify-between text-xs text-cx-gray mb-1">
+                        <span>{done} / {total} étapes</span>
                         <span className="font-semibold text-primary">{percentage}%</span>
                       </div>
                       <div className="cx-progress-bar">
-                        <div className="cx-progress-bar-fill transition-all duration-500" style={{ width: `${percentage}%` }} />
+                        <div className="cx-progress-bar-fill" style={{ width: `${percentage}%` }} />
                       </div>
                     </div>
                     <Link
                       href={continueUrl}
-                      className="flex items-center justify-center gap-2 px-4 py-2.5 bg-primary text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm w-full"
+                      className={`flex items-center justify-center gap-2 px-4 py-2 text-white font-semibold rounded-cx hover:opacity-90 transition-opacity text-sm w-full ${ctaClass}`}
                     >
-                      <Play className="w-4 h-4" />
-                      {percentage === 0 ? 'Commencer' : 'Continuer'}
+                      <CtaIcon className="w-3.5 h-3.5" />
+                      {ctaLabel}
                     </Link>
                   </div>
                 )
@@ -185,13 +219,13 @@ export default async function DashboardPage() {
         )}
 
         {/* ── Completed ──────────────────────────────────────────── */}
-        {completed.length > 0 && (
-          <section className="mb-10">
-            <h2 className="text-lg font-extrabold text-dark flex items-center gap-2 mb-5">
-              <CheckCircle className="w-4 h-4 text-success" /> Formations terminées
+        {completedCourses.length > 0 && (
+          <section className="mb-7">
+            <h2 className="text-sm font-extrabold text-dark flex items-center gap-1.5 mb-3">
+              <CheckCircle className="w-3.5 h-3.5 text-success" /> Formations terminées
             </h2>
-            <div className="grid md:grid-cols-2 gap-5">
-              {completed.map(({ enrollment, total, completed: done, continueUrl }) => {
+            <div className="grid md:grid-cols-2 gap-3">
+              {completedCourses.map(({ enrollment, total, completed: done, continueUrl }) => {
                 const c = enrollment.courses
                 if (!c) return null
                 const cert = (certs ?? []).find(ct => {
@@ -199,39 +233,34 @@ export default async function DashboardPage() {
                   return ctCourses?.slug === c.slug
                 })
                 return (
-                  <div key={enrollment.id} className="cx-card p-5 border-success/20">
-                    <div className="flex gap-3 mb-4">
-                      <div className="w-12 h-12 rounded-cx bg-success/10 flex items-center justify-center text-success font-extrabold text-sm shrink-0">
-                        <CheckCircle className="w-6 h-6" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="font-bold text-dark text-sm leading-tight">{c.title}</p>
-                        <p className="text-xs text-success font-semibold mt-0.5">✓ Terminée — {done}/{total} leçons</p>
-                      </div>
+                  <div key={enrollment.id} className="cx-card p-4 border-success/25">
+                    <div className="flex items-start gap-2 mb-2.5">
+                      <p className="font-bold text-dark text-sm leading-snug flex-1">{c.title}</p>
+                      <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full text-success bg-green-50">
+                        Terminée
+                      </span>
                     </div>
-                    <div className="cx-progress-bar mb-4">
-                      <div className="cx-progress-bar-fill bg-success" style={{ width: '100%' }} />
-                    </div>
+                    <p className="text-xs text-success font-medium mb-3">{done} / {total} étapes complétées</p>
                     <div className="flex gap-2">
                       <Link
                         href={continueUrl}
-                        className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-light border border-black/[0.08] text-cx-gray font-semibold rounded-cx hover:bg-white transition-colors text-sm"
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-light border border-black/[0.08] text-cx-gray font-semibold rounded-cx hover:bg-white transition-colors text-sm"
                       >
                         Revoir
                       </Link>
                       {cert ? (
                         <Link
                           href={`/certificates/${cert.id}`}
-                          className="flex items-center gap-1.5 px-4 py-2.5 bg-success/10 text-success font-semibold rounded-cx hover:bg-success/20 transition-colors text-sm"
+                          className="flex items-center gap-1.5 px-3 py-2 bg-success/10 text-success font-semibold rounded-cx hover:bg-success/20 transition-colors text-sm"
                         >
-                          <Award className="w-4 h-4" /> Certificat
+                          <Award className="w-3.5 h-3.5" /> Certificat
                         </Link>
                       ) : (
                         <Link
                           href={`/certificate/${c.slug}`}
-                          className="flex items-center gap-1.5 px-4 py-2.5 bg-success text-white font-semibold rounded-cx hover:bg-success/90 transition-colors text-sm"
+                          className="flex items-center gap-1.5 px-3 py-2 bg-success text-white font-semibold rounded-cx hover:bg-success/90 transition-colors text-sm"
                         >
-                          <Award className="w-4 h-4" /> Obtenir
+                          <Award className="w-3.5 h-3.5" /> Obtenir
                         </Link>
                       )}
                     </div>
@@ -244,15 +273,15 @@ export default async function DashboardPage() {
 
         {/* Empty state */}
         {progressData.length === 0 && (
-          <div className="cx-card p-10 text-center mb-10">
-            <BookOpen className="w-12 h-12 text-primary/30 mx-auto mb-4" />
-            <h3 className="font-bold text-dark mb-2">Vous n&apos;êtes inscrit à aucune formation</h3>
-            <p className="text-sm text-cx-gray mb-5">
-              Découvrez notre catalogue et commencez votre parcours CX dès aujourd&apos;hui.
+          <div className="cx-card p-8 text-center mb-7">
+            <BookOpen className="w-10 h-10 text-primary/30 mx-auto mb-3" />
+            <h3 className="font-bold text-dark mb-1.5">Aucune formation en cours</h3>
+            <p className="text-sm text-cx-gray mb-4">
+              Découvrez le catalogue et commencez votre parcours CX.
             </p>
             <Link
               href="/courses"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all"
+              className="inline-flex items-center gap-2 px-5 py-2.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all text-sm"
             >
               Voir les formations <ArrowRight className="w-4 h-4" />
             </Link>
@@ -262,58 +291,56 @@ export default async function DashboardPage() {
         {/* ── Certificates ───────────────────────────────────────── */}
         {(certs ?? []).length > 0 && (
           <section>
-            <h2 className="text-lg font-extrabold text-dark mb-5 flex items-center gap-2">
-              <Award className="w-4 h-4 text-amber-500" /> Mes certificats
+            <h2 className="text-sm font-extrabold text-dark mb-3 flex items-center gap-1.5">
+              <Award className="w-3.5 h-3.5 text-amber-500" /> Mes certificats
             </h2>
-            <div className="grid md:grid-cols-2 gap-4">
+            <div className="grid md:grid-cols-2 gap-3">
               {(certs ?? []).map((certRaw) => {
                 const cert = certRaw as unknown as {
-                  id: string
-                  certificate_number: string
-                  issued_at: string
-                  pdf_url?: string | null
+                  id: string; certificate_number: string; issued_at: string; pdf_url?: string | null
                   courses: { title: string; slug: string }
                 }
                 return (
-                <div key={cert.id} className="cx-card p-5">
-                  <div className="flex items-start gap-4 mb-4">
-                    <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shrink-0 shadow-sm">
-                      <Award className="w-6 h-6 text-white" />
+                  <div key={cert.id} className="cx-card p-4">
+                    <div className="flex items-start gap-3 mb-3">
+                      <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-amber-600 flex items-center justify-center shrink-0">
+                        <Award className="w-4 h-4 text-white" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-semibold text-dark text-sm leading-tight truncate">{cert.courses?.title}</p>
+                        <p className="text-[11px] text-cx-gray mt-0.5 font-mono">{cert.certificate_number}</p>
+                        <p className="text-[11px] text-cx-gray">Délivré le {formatDateFR(cert.issued_at)}</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-dark text-sm leading-tight">{cert.courses?.title}</p>
-                      <p className="text-xs text-cx-gray mt-0.5 font-mono">{cert.certificate_number}</p>
-                      <p className="text-xs text-cx-gray mt-0.5">Délivré le {formatDateFR(cert.issued_at)}</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Link
-                      href={`/certificates/${cert.id}`}
-                      className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition-colors"
-                    >
-                      <Award className="w-3.5 h-3.5" /> Voir le certificat
-                    </Link>
-                    <Link
-                      href={`/verify-certificate/${cert.id}`}
-                      target="_blank"
-                      className="flex items-center gap-1.5 px-3 py-2 bg-light border border-black/[0.08] text-cx-gray text-xs font-semibold rounded-lg hover:bg-white transition-colors"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" /> Vérifier
-                    </Link>
-                    {cert.pdf_url && (
-                      <a
-                        href={cert.pdf_url}
-                        download
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="flex items-center gap-1.5 px-3 py-2 bg-success/10 text-success text-xs font-semibold rounded-lg hover:bg-success/20 transition-colors"
+                    <div className="flex gap-1.5">
+                      <Link
+                        href={`/certificates/${cert.id}`}
+                        className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-primary text-white text-xs font-semibold rounded-lg hover:bg-primary/90 transition-colors"
                       >
-                        PDF
-                      </a>
-                    )}
+                        <Award className="w-3 h-3" /> Voir
+                      </Link>
+                      <Link
+                        href={`/verify-certificate/${cert.id}`}
+                        target="_blank"
+                        className="flex items-center gap-1 px-3 py-1.5 bg-light border border-black/[0.08] text-cx-gray text-xs font-semibold rounded-lg hover:bg-white transition-colors"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Vérifier
+                      </Link>
+                      {cert.pdf_url && (
+                        <a
+                          href={cert.pdf_url}
+                          download
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex items-center gap-1 px-3 py-1.5 bg-success/10 text-success text-xs font-semibold rounded-lg hover:bg-success/20 transition-colors"
+                        >
+                          PDF
+                        </a>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )})}
+                )
+              })}
             </div>
           </section>
         )}
