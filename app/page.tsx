@@ -218,6 +218,44 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* ── Founder CTA ───────────────────────────────────────────────── */}
+        <section className="py-10 md:py-14 bg-white border-t border-black/[0.06]">
+          <div className="cx-container max-w-4xl">
+            <div className="cx-card rounded-2xl p-6 md:p-8 flex flex-col md:flex-row gap-6 items-center">
+
+              {/* Photo */}
+              <div className="relative w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden ring-2 ring-primary/10 shrink-0">
+                <Image
+                  src="/images/Picture2.jpg"
+                  alt="Mariame Ify — Fondatrice XP Client Academy"
+                  fill
+                  className="object-cover object-top"
+                />
+              </div>
+
+              {/* Text */}
+              <div className="flex-1 text-center md:text-left">
+                <p className="text-xs font-bold text-primary uppercase tracking-widest mb-1">La fondatrice</p>
+                <h3 className="text-lg font-extrabold text-dark mb-1">Mariame Ify</h3>
+                <p className="text-sm text-cx-gray leading-relaxed max-w-md">
+                  Professionnelle de l&apos;exp&eacute;rience client avec +10 ans d&apos;expertise en
+                  t&eacute;l&eacute;communications, e-commerce et sant&eacute;. D&eacute;couvrez l&apos;histoire
+                  derri&egrave;re XP Client Academy.
+                </p>
+              </div>
+
+              {/* CTA */}
+              <a
+                href="/about/founder"
+                className="shrink-0 inline-flex items-center gap-2 px-5 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:bg-primary/90 transition-all hover:-translate-y-0.5 whitespace-nowrap"
+              >
+                D&eacute;couvrir son parcours <ArrowRight className="w-4 h-4" />
+              </a>
+
+            </div>
+          </div>
+        </section>
+
         {/* ── Contact ───────────────────────────────────────────────────── */}
         <section id="contact" className="cx-section bg-white">
           <div className="cx-container max-w-4xl">
