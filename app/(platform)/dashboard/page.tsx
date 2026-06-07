@@ -53,8 +53,30 @@ export default async function DashboardPage() {
         .in('lesson_id', lessonIdList.length > 0 ? lessonIdList : ['__none__'])
 
       const completedSet = new Set((completedRows ?? []).map(r => r.lesson_id))
-      const total     = lessonIdList.length
-      const completed = completedSet.size
+      let total     = lessonIdList.length
+      let completed = completedSet.size
+
+      // In authenticated mode, include quiz + final exam in progress totals
+      if (!PILOT_MODE && total > 0) {
+        const modIds = (e.courses.modules ?? []).map((m: { id: string }) => m.id)
+        const modQuizData = modIds.length > 0
+          ? (await supabase.from('quizzes').select('id').in('module_id', modIds)).data
+          : []
+        const { data: finalExamData } = await supabase
+          .from('quizzes').select('id').eq('course_id', e.courses.id).is('module_id', null).limit(1).maybeSingle()
+
+        const allQuizIds = [
+          ...((modQuizData ?? []).map((q: { id: string }) => q.id)),
+          ...(finalExamData ? [finalExamData.id] : []),
+        ]
+        if (allQuizIds.length > 0) {
+          const { data: passedAttempts } = await supabase
+            .from('quiz_attempts').select('quiz_id').eq('user_id', user.id).eq('passed', true).in('quiz_id', allQuizIds)
+          const passedIds = new Set((passedAttempts ?? []).map((a: { quiz_id: string }) => a.quiz_id))
+          total     += allQuizIds.length
+          completed += allQuizIds.filter(id => passedIds.has(id)).length
+        }
+      }
 
       const firstIncomplete = lessonIds.find(x => !completedSet.has(x.lessonId))
       const targetLesson    = firstIncomplete ?? lessonIds[0]

@@ -94,6 +94,30 @@ export default async function CertificatePage({ params }: Props) {
         }
       }
     }
+
+    // Verify final exam was passed (course-level quiz with no module_id)
+    const { data: finalExamQuiz } = await supabase
+      .from('quizzes')
+      .select('id')
+      .eq('course_id', course.id)
+      .is('module_id', null)
+      .limit(1)
+      .maybeSingle()
+
+    if (finalExamQuiz) {
+      const { data: finalAttempt } = await supabase
+        .from('quiz_attempts')
+        .select('id')
+        .eq('user_id', user.id)
+        .eq('quiz_id', finalExamQuiz.id)
+        .eq('passed', true)
+        .limit(1)
+        .maybeSingle()
+
+      if (!finalAttempt) {
+        redirect(`/learn/${courseSlug}/final-exam`)
+      }
+    }
   }
 
   // Look up or create certificate (only after verifying completion)
@@ -109,7 +133,7 @@ export default async function CertificatePage({ params }: Props) {
   }
 
   const year   = new Date().getFullYear()
-  const certNum = `SCX-${year}-${String(Math.floor(100000 + Math.random() * 900000))}`
+  const certNum = `XPC-${year}-${String(Math.floor(100000 + Math.random() * 900000))}`
   const { data: newCert } = await supabase
     .from('certificates')
     .insert({

@@ -2,7 +2,7 @@
 import { useEffect, useState, useCallback } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
-import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Award } from 'lucide-react'
+import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Award, Star } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { submitQuizAnswers } from '@/app/actions/quiz'
@@ -60,6 +60,7 @@ export default function ModuleQuizPage() {
   const [questions,        setQuestions]         = useState<QuestionRow[]>([])
   const [nextModFirst,     setNextModFirst]      = useState<{ modId: string; lessonId: string } | null>(null)
   const [isLastModule,     setIsLastModule]      = useState(false)
+  const [hasFinalExam,     setHasFinalExam]      = useState(false)
 
   const [answers,          setAnswers]           = useState<AnswerMap>({})
   const [submitted,        setSubmitted]         = useState(false)
@@ -76,6 +77,16 @@ export default function ModuleQuizPage() {
       .maybeSingle()
 
     if (!course) { router.push('/courses'); return }
+
+    // Check if this course has a final exam (course-level quiz with no module_id)
+    const { data: finalExamQuiz } = await supabase
+      .from('quizzes')
+      .select('id')
+      .eq('course_id', course.id)
+      .is('module_id', null)
+      .limit(1)
+      .maybeSingle()
+    setHasFinalExam(!!finalExamQuiz)
 
     const { data: rawMods } = await supabase
       .from('modules')
@@ -267,7 +278,13 @@ export default function ModuleQuizPage() {
                   Module suivant <ChevronRight className="w-3.5 h-3.5" />
                 </Link>
               )}
-              {isLastModule && (
+              {isLastModule && hasFinalExam && (
+                <Link href={`/learn/${courseSlug}/final-exam`}
+                  className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-600 to-amber-400 text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity">
+                  <Star className="w-3.5 h-3.5" /> Passer l&apos;examen final
+                </Link>
+              )}
+              {isLastModule && !hasFinalExam && (
                 <Link href={`/certificate/${courseSlug}`}
                   className="shrink-0 flex items-center gap-1.5 px-4 py-2 bg-gradient-to-r from-amber-500 to-yellow-400 text-white text-xs font-bold rounded-lg hover:opacity-90 transition-opacity">
                   <Award className="w-3.5 h-3.5" /> Obtenir mon certificat
@@ -509,7 +526,13 @@ export default function ModuleQuizPage() {
                         Passer au module suivant <ChevronRight className="w-4 h-4" />
                       </Link>
                     )}
-                    {isPassed && isLastModule && (
+                    {isPassed && isLastModule && hasFinalExam && (
+                      <Link href={`/learn/${courseSlug}/final-exam`}
+                        className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-amber-600 to-amber-400 text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity shadow-md shadow-amber-500/30">
+                        <Star className="w-4 h-4" /> Passer l&apos;examen final
+                      </Link>
+                    )}
+                    {isPassed && isLastModule && !hasFinalExam && (
                       <Link href={`/certificate/${courseSlug}`}
                         className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-amber-500 to-yellow-400 text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity shadow-md shadow-amber-500/30 animate-pulse-once">
                         <Award className="w-4 h-4" /> 🎉 Obtenir mon certificat
