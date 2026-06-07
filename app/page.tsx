@@ -235,7 +235,7 @@ export default function HomePage() {
               <div className="w-full md:w-[340px] lg:w-[420px] shrink-0">
                 <div className="relative w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-lg">
                   <Image
-                    src="/images/Elearning.jpeg"
+                    src="/images/A propos de laptop.png"
                     alt="Formation en ligne XP Client Academy — expérience client"
                     fill
                     className="object-cover"
