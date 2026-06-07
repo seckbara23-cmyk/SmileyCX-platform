@@ -1,4 +1,3 @@
-import Image from 'next/image'
 import Link from 'next/link'
 import {
   ArrowRight, CheckCircle, MapPin, Award, BookOpen,
@@ -70,20 +69,7 @@ export default function FounderPage() {
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
       <section className="cx-hero-gradient text-white py-14 md:py-20">
         <div className="cx-container">
-          <div className="flex flex-col md:flex-row gap-8 md:gap-14 items-center">
-
-            {/* Photo */}
-            <div className="shrink-0">
-              <div className="relative w-32 h-32 md:w-44 md:h-44 rounded-2xl overflow-hidden ring-4 ring-white/20 shadow-xl">
-                <Image
-                  src="/images/Picture2.jpg"
-                  alt="Marieme Ba — Fondatrice XP Client Academy"
-                  fill
-                  className="object-cover object-top"
-                  priority
-                />
-              </div>
-            </div>
+          <div className="flex flex-col gap-5">
 
             {/* Text */}
             <div className="flex-1">
