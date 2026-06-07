@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { PLATFORM_MODE } from '@/lib/pilot'
+import { isPrivateMode, isAllowedPrivateUser } from '@/lib/access-control'
 
 // Routes requiring authentication (prefix match).
 // In pilot mode, learner content becomes public; only /app (platform CRM)
@@ -84,11 +85,16 @@ export async function middleware(request: NextRequest) {
 
   // ── Auth-required routes ───────────────────────────────────────────
   const isProtected = AUTH_REQUIRED.some(r => pathname.startsWith(r))
-  if (isProtected && !user) {
-    const loginUrl = new URL('/login', request.url)
-    const fullPath = pathname + request.nextUrl.search
-    loginUrl.searchParams.set('next', fullPath)
-    return applySecurityHeaders(NextResponse.redirect(loginUrl))
+  if (isProtected) {
+    if (!user) {
+      const loginUrl = new URL('/login', request.url)
+      loginUrl.searchParams.set('next', pathname + request.nextUrl.search)
+      return applySecurityHeaders(NextResponse.redirect(loginUrl))
+    }
+    // Private mode: allowlist gate — only permitted emails can proceed
+    if (isPrivateMode && !isAllowedPrivateUser(user.email ?? '')) {
+      return applySecurityHeaders(NextResponse.redirect(new URL('/access-restricted', request.url)))
+    }
   }
 
   // ── Learner auth pages ─────────────────────────────────────────────
@@ -99,6 +105,10 @@ export async function middleware(request: NextRequest) {
     }
     // Private/public: authenticated users don't need to see login/signup
     if (user) {
+      // Private mode: non-allowlisted users land on the restricted page, not dashboard
+      if (isPrivateMode && !isAllowedPrivateUser(user.email ?? '')) {
+        return applySecurityHeaders(NextResponse.redirect(new URL('/access-restricted', request.url)))
+      }
       return applySecurityHeaders(NextResponse.redirect(new URL('/dashboard', request.url)))
     }
   }
