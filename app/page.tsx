@@ -216,7 +216,7 @@ export default function HomePage() {
                     <UserCircle className="w-5 h-5 text-primary" />
                   </div>
                   <p className="text-sm text-cx-gray leading-relaxed">
-                    Fond&eacute;e par <strong className="text-dark">Mariame Ba</strong>, certifi&eacute;e
+                    Fond&eacute;e par <strong className="text-dark">Marieme Ba</strong>, certifi&eacute;e
                     en exp&eacute;rience client et passionn&eacute;e par l&apos;am&eacute;lioration des
                     parcours clients au S&eacute;n&eacute;gal.
                   </p>
