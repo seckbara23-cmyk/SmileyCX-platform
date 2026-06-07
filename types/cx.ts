@@ -1,5 +1,5 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// SmileyCX — Core CX SaaS Type Definitions
+// XP Client Academy — Core CX SaaS Type Definitions
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Platform roles (global, not org-specific) ────────────────────────────────

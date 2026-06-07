@@ -94,7 +94,7 @@ export default function OnboardingPage() {
               />
               {slug && (
                 <p className="text-xs text-gray-400">
-                  URL: <span className="font-mono text-gray-600">smileycx.com/app/{slug}</span>
+                  URL: <span className="font-mono text-gray-600">xpclientacademy.com/app/{slug}</span>
                 </p>
               )}
             </div>

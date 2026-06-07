@@ -1,4 +1,4 @@
-# SmileyCX Platform — Pilot Deployment Guide
+# XP Client Academy Platform — Pilot Deployment Guide
 
 This document covers everything needed to deploy and run the free pilot program on Vercel.
 

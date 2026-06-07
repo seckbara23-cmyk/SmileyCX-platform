@@ -1,5 +1,5 @@
 /**
- * SmileyCX Academy — Payment Service Layer (Pilot Mode)
+ * XP Client Academy — Payment Service Layer (Pilot Mode)
  *
  * ⚠️ PILOT MODE: No real payment gateways are wired yet.
  * All payment methods currently return explicit errors.

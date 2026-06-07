@@ -9,7 +9,7 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // SmileyCX brand system
+        // XP Client Academy brand system
         primary: {
           DEFAULT: '#4a6de5',
           dark:    '#3557c7',

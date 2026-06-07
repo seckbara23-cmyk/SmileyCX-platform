@@ -1,5 +1,5 @@
 /**
- * SmileyCX Platform — Seed Data
+ * XP Client Academy Platform — Seed Data
  * Flagship course: "Understand the Customer to Deliver a Quality Experience"
  *
  * Use this to populate the database via Supabase dashboard or a seed script.
