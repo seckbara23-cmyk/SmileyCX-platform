@@ -1,19 +1,19 @@
 import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
-import { PILOT_MODE } from '@/lib/pilot'
+import { PLATFORM_MODE } from '@/lib/pilot'
 
 // Routes requiring authentication (prefix match).
-// In PILOT_MODE, learner content routes become public; only /app (platform CRM)
-// stays auth-gated. /admin/* is handled separately below.
-const AUTH_REQUIRED = PILOT_MODE
+// In pilot mode, learner content becomes public; only /app (platform CRM)
+// stays auth-gated. In private/public mode, all learning routes are protected.
+const AUTH_REQUIRED = PLATFORM_MODE === 'pilot'
   ? ['/app']
   : ['/app', '/dashboard', '/learn', '/checkout', '/certificate']
 
-// Platform admin routes — always protected regardless of pilot mode
+// Platform admin routes — always protected regardless of platform mode
 const ADMIN_ROUTES = ['/admin']
 
-// Learner auth pages. In normal mode: authenticated users are redirected away.
-// In PILOT_MODE: ALL visitors are redirected to /courses (no auth needed).
+// Learner auth pages. Authenticated users are redirected away.
+// In pilot mode: ALL visitors are redirected to /courses (no auth needed).
 const LEARNER_AUTH_PAGES = ['/login', '/signup', '/forgot-password']
 
 /**
@@ -93,11 +93,11 @@ export async function middleware(request: NextRequest) {
 
   // ── Learner auth pages ─────────────────────────────────────────────
   if (LEARNER_AUTH_PAGES.some(p => pathname === p)) {
-    if (PILOT_MODE) {
+    if (PLATFORM_MODE === 'pilot') {
       // Pilot: no accounts needed — send everyone to the catalog
       return applySecurityHeaders(NextResponse.redirect(new URL('/courses', request.url)))
     }
-    // Normal: authenticated users don't need to see login/signup
+    // Private/public: authenticated users don't need to see login/signup
     if (user) {
       return applySecurityHeaders(NextResponse.redirect(new URL('/dashboard', request.url)))
     }

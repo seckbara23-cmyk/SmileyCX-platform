@@ -17,6 +17,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { EnrollSchema } from '@/lib/validation/schemas'
 import { sendEnrollmentEmail } from '@/lib/email'
 import { createLogger } from '@/lib/logger'
+import { FREE_ACCESS_MODE } from '@/lib/pilot'
 
 const log = createLogger('actions/enrollment')
 
@@ -24,7 +25,7 @@ export async function enrollForFree(
   courseId: string
 ): Promise<{ error?: string }> {
   // TEMP_FREE_ACCESS: Guard — only available in pilot mode
-  if (process.env.NEXT_PUBLIC_FREE_ACCESS_MODE !== 'true') {
+  if (!FREE_ACCESS_MODE) {
     return { error: 'Free enrollment is not available outside pilot mode.' }
   }
 

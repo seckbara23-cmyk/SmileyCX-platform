@@ -1,39 +1,39 @@
 /**
- * TEMP_FREE_ACCESS: Free-enrollment pilot flag.
+ * PLATFORM_MODE: Single source of truth for platform access level.
  *
- * Controls whether payment is required to access courses.
- * When true, all authenticated users can enroll and learn for free.
+ *  private — End-of-pilot lockdown. Signup disabled; all learning routes
+ *            require auth; new enrollment paused; waitlist CTA shown to
+ *            visitors. Existing enrolled users retain access.
+ *  pilot   — Open pilot. Anonymous access to published content; no account
+ *            required; free enrollment active.
+ *  public  — Production. Auth + payments required; signup open.
  *
- * To re-enable payments:
- *   1. Set NEXT_PUBLIC_FREE_ACCESS_MODE=false in .env.local (or remove it)
- *   2. Search for // TEMP_FREE_ACCESS in the codebase and revert those blocks
- *   3. Run migration 005_free_pilot_access.sql rollback
+ * Set NEXT_PUBLIC_PLATFORM_MODE in .env.local.
+ * Defaults to 'private' when unset (safe closed default).
  */
-export const FREE_ACCESS_MODE =
-  process.env.NEXT_PUBLIC_FREE_ACCESS_MODE === 'true'
+export type PlatformMode = 'private' | 'pilot' | 'public'
+
+const RAW = process.env.NEXT_PUBLIC_PLATFORM_MODE ?? ''
+export const PLATFORM_MODE: PlatformMode =
+  RAW === 'pilot' || RAW === 'public' ? (RAW as PlatformMode) : 'private'
+
+// ── Derived flags — kept for backward compatibility with existing imports ──
 
 /**
- * PILOT_MODE: Anonymous-access pilot flag.
- *
- * When true, published course content is fully accessible without an account.
- * Auth pages (/login, /signup) redirect to the course catalog.
- * Admin routes remain protected. Progress tracking and certificates are hidden.
- *
- * To disable:
- *   1. Set NEXT_PUBLIC_PILOT_MODE=false in .env.local (or remove it)
- *   2. Run migration 008_pilot_anon_access.sql rollback to restore RLS policies
+ * PILOT_MODE: true when PLATFORM_MODE === 'pilot'.
+ * When true, published course content is accessible without an account.
  */
-export const PILOT_MODE =
-  process.env.NEXT_PUBLIC_PILOT_MODE === 'true'
+export const PILOT_MODE = PLATFORM_MODE === 'pilot'
 
 /**
- * PAYMENTS_ENABLED: Payment gateway flag.
- *
- * When false (default during pilot), the checkout page bypasses all payment UI
- * and the createPaymentRecord server action refuses to create records.
- *
- * Set NEXT_PUBLIC_PAYMENTS_ENABLED=true only after payment gateways are
- * fully integrated, tested, and webhook handlers are deployed.
+ * FREE_ACCESS_MODE: true when PLATFORM_MODE === 'pilot'.
+ * When true, authenticated users can enroll for free (no payment required).
+ */
+export const FREE_ACCESS_MODE = PLATFORM_MODE === 'pilot'
+
+/**
+ * PAYMENTS_ENABLED: true only when explicitly set via env override.
+ * Set NEXT_PUBLIC_PAYMENTS_ENABLED=true after payment gateways are live.
  */
 export const PAYMENTS_ENABLED =
   process.env.NEXT_PUBLIC_PAYMENTS_ENABLED === 'true'

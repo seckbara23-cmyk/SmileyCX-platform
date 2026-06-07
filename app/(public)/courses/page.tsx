@@ -2,6 +2,7 @@ import { createClient } from '@/lib/supabase/server'
 import Link from 'next/link'
 import Image from 'next/image'
 import { ArrowRight, Clock, CheckCircle, MapPin, GraduationCap, Layers } from 'lucide-react'
+import { PLATFORM_MODE } from '@/lib/pilot'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
@@ -100,10 +101,18 @@ export default async function CoursesPage() {
       {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="cx-hero-gradient text-white py-16">
         <div className="cx-container">
-          <div className="inline-flex items-center gap-2 bg-white/15 border border-white/25 text-white text-xs font-semibold px-4 py-2 rounded-full mb-6">
-            <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse shrink-0" />
-            Phase pilote — Vos retours nous aident &agrave; am&eacute;liorer l&apos;exp&eacute;rience
-          </div>
+          {PLATFORM_MODE === 'pilot' && (
+            <div className="inline-flex items-center gap-2 bg-white/15 border border-white/25 text-white text-xs font-semibold px-4 py-2 rounded-full mb-6">
+              <span className="w-1.5 h-1.5 rounded-full bg-secondary animate-pulse shrink-0" />
+              Phase pilote — Vos retours nous aident &agrave; am&eacute;liorer l&apos;exp&eacute;rience
+            </div>
+          )}
+          {PLATFORM_MODE === 'private' && (
+            <div className="inline-flex items-center gap-2 bg-white/15 border border-white/25 text-white text-xs font-semibold px-4 py-2 rounded-full mb-6">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse shrink-0" />
+              Accès sur invitation &middot; <a href="/signup" className="underline underline-offset-2 hover:text-white/80 transition-colors">Rejoindre la liste d&apos;attente</a>
+            </div>
+          )}
           <h1 className="text-3xl md:text-4xl font-extrabold mb-3">Nos formations</h1>
           <p className="text-white/80 text-base max-w-xl">
             D&eacute;veloppez vos comp&eacute;tences. Offrez une exp&eacute;rience client d&apos;exception.

@@ -5,7 +5,7 @@ import { CheckCircle, Clock, BookOpen, Users, Award, Play, Lock, ChevronDown } f
 import { createClient } from '@/lib/supabase/server'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
 import { FLAGSHIP_COURSE, COURSE_MODULES, COURSE_COPY } from '@/data/seed'
-import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
+import { FREE_ACCESS_MODE, PILOT_MODE, PLATFORM_MODE } from '@/lib/pilot'
 import type { Metadata } from 'next'
 
 const COURSE_META: Record<string, { number: number; objectives: string[]; image: string }> = {
@@ -160,11 +160,16 @@ export default async function CourseDetailPage({ params }: Props) {
   const coverImage     = dbCourse?.cover_url      ?? meta?.image ?? null
   const introVideoUrl  = (dbCourse as Record<string, unknown> | null)?.intro_video_url as string | null ?? null
 
+  const lessonHref = `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
   const learnHref = PILOT_MODE
-    ? `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
-    : user
-      ? `/checkout?course=${dbCourse?.id ?? slug}`
-      : `/login?next=/checkout?course=${dbCourse?.id ?? slug}`
+    ? lessonHref
+    : isEnrolled
+      ? lessonHref
+      : PLATFORM_MODE === 'private'
+        ? '/signup'
+        : user
+          ? `/checkout?course=${dbCourse?.id ?? slug}`
+          : `/login?next=/checkout?course=${dbCourse?.id ?? slug}`
 
   return (
     <div>
@@ -190,6 +195,11 @@ export default async function CourseDetailPage({ params }: Props) {
                 {(PILOT_MODE || FREE_ACCESS_MODE) && (
                   <span className="bg-green-100 text-green-700 text-xs font-bold px-3 py-1 rounded-full">
                     Accès gratuit
+                  </span>
+                )}
+                {PLATFORM_MODE === 'private' && (
+                  <span className="bg-amber-100 text-amber-700 text-xs font-bold px-3 py-1 rounded-full">
+                    Accès sur invitation
                   </span>
                 )}
               </div>
@@ -224,9 +234,9 @@ export default async function CourseDetailPage({ params }: Props) {
 
               {/* CTAs */}
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
-                {isEnrolled && !PILOT_MODE ? (
+                {isEnrolled ? (
                   <Link
-                    href={`/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`}
+                    href={lessonHref}
                     className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-success text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm"
                   >
                     <Play className="w-4 h-4" /> Continuer la formation
@@ -237,7 +247,11 @@ export default async function CourseDetailPage({ params }: Props) {
                     className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-sm"
                   >
                     <Play className="w-4 h-4" />
-                    {PILOT_MODE || FREE_ACCESS_MODE ? 'Commencer gratuitement' : COURSE_COPY.enrollment_cta}
+                    {PILOT_MODE || FREE_ACCESS_MODE
+                      ? 'Commencer gratuitement'
+                      : PLATFORM_MODE === 'private'
+                        ? "Rejoindre la liste d'attente"
+                        : COURSE_COPY.enrollment_cta}
                   </Link>
                 )}
                 <a
@@ -261,7 +275,13 @@ export default async function CourseDetailPage({ params }: Props) {
                   Accès gratuit · Certificat inclus · Phase pilote
                 </p>
               )}
-              {!PILOT_MODE && !FREE_ACCESS_MODE && !user && (
+              {PLATFORM_MODE === 'private' && !isEnrolled && (
+                <p className="text-xs text-cx-gray flex items-center gap-1.5">
+                  <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  Accès sur invitation uniquement · <Link href="/signup" className="text-primary hover:underline">Rejoindre la liste d&apos;attente</Link>
+                </p>
+              )}
+              {!PILOT_MODE && !FREE_ACCESS_MODE && PLATFORM_MODE !== 'private' && !user && (
                 <p className="text-xs text-cx-gray">
                   <Link href="/login" className="text-primary hover:underline">Connexion</Link> requise avant l&apos;achat
                 </p>
@@ -318,6 +338,11 @@ export default async function CourseDetailPage({ params }: Props) {
                     <div className="flex items-baseline gap-2">
                       <span className="text-lg font-extrabold text-dark">Gratuit</span>
                       <span className="text-xs text-cx-gray">— phase pilote</span>
+                    </div>
+                  ) : PLATFORM_MODE === 'private' ? (
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-lg font-extrabold text-dark">Sur invitation</span>
+                      <span className="text-xs text-cx-gray">— accès limité</span>
                     </div>
                   ) : (
                     <>
@@ -413,26 +438,33 @@ export default async function CourseDetailPage({ params }: Props) {
                 ? 'Accès libre · Phase pilote · Aucun compte requis'
                 : FREE_ACCESS_MODE
                 ? 'Accès gratuit · Certificat inclus · Phase pilote'
+                : PLATFORM_MODE === 'private'
+                ? 'Accès sur invitation · La plateforme est en cours de lancement'
                 : 'Accès immédiat après paiement · Orange Money · Wave · Carte'}
             </p>
-            <Link
-              href={
-                PILOT_MODE
-                  ? `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
-                  : user
-                    ? `/checkout?course=${dbCourse?.id ?? slug}`
-                    : `/login?next=/checkout?course=${dbCourse?.id ?? slug}`
-              }
-              className="inline-flex items-center gap-2 px-10 py-4 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
-            >
-              <Play className="w-5 h-5" />
-              {PILOT_MODE
-                ? 'Commencer maintenant'
-                : FREE_ACCESS_MODE
-                ? 'Commencer gratuitement'
-                : COURSE_COPY.payment_cta}
-            </Link>
-            {!PILOT_MODE && !FREE_ACCESS_MODE && !user && (
+            {isEnrolled ? (
+              <Link
+                href={lessonHref}
+                className="inline-flex items-center gap-2 px-10 py-4 bg-success text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-base"
+              >
+                <Play className="w-5 h-5" /> Continuer la formation
+              </Link>
+            ) : (
+              <Link
+                href={learnHref}
+                className="inline-flex items-center gap-2 px-10 py-4 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
+              >
+                <Play className="w-5 h-5" />
+                {PILOT_MODE
+                  ? 'Commencer maintenant'
+                  : FREE_ACCESS_MODE
+                  ? 'Commencer gratuitement'
+                  : PLATFORM_MODE === 'private'
+                  ? "Rejoindre la liste d'attente"
+                  : COURSE_COPY.payment_cta}
+              </Link>
+            )}
+            {!PILOT_MODE && !FREE_ACCESS_MODE && PLATFORM_MODE !== 'private' && !user && (
               <p className="text-xs text-cx-gray mt-4">
                 <Link href={`/login?next=/checkout?course=${dbCourse?.id ?? slug}`} className="text-primary hover:underline">Connectez-vous</Link>
                 {' '}ou{' '}
