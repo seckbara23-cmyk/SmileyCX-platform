@@ -1,5 +1,5 @@
 import Image from 'next/image'
-import { ArrowRight, CheckCircle, Monitor, MapPin, Mail, Phone, BookOpen, Award, Users } from 'lucide-react'
+import { ArrowRight, CheckCircle, Monitor, MapPin, Mail, Phone, BookOpen, Award, Users, UserCircle } from 'lucide-react'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
 import ContactForm from '@/app/(public)/contact/ContactForm'
@@ -169,7 +169,7 @@ export default function HomePage() {
         </section>
 
         {/* ── À propos ──────────────────────────────────────────────────── */}
-        <section id="a-propos" className="cx-section bg-light">
+        <section id="a-propos" className="cx-section bg-white">
           <div className="cx-container max-w-5xl">
             <div className="flex flex-col md:flex-row gap-10 lg:gap-16 items-center">
 
@@ -178,79 +178,70 @@ export default function HomePage() {
                 <span className="inline-block text-xs font-bold text-primary uppercase tracking-widest mb-3">
                   &Agrave; propos
                 </span>
-                <h2 className="text-2xl md:text-3xl font-extrabold text-dark mb-4 leading-tight">
-                  Une expertise locale, une approche concr&egrave;te
+                <h2 className="text-2xl md:text-3xl font-extrabold text-dark mb-5 leading-tight">
+                  Une approche pratique de l&apos;exp&eacute;rience client
                 </h2>
-                <p className="text-cx-gray leading-relaxed mb-4">
-                  XP Client Academy est n&eacute; d&apos;un constat simple&nbsp;: les formations en exp&eacute;rience client disponibles sur le march&eacute;
-                  ne refl&egrave;tent pas les r&eacute;alit&eacute;s du contexte s&eacute;n&eacute;galais et ouest-africain.
+
+                <p className="text-cx-gray leading-relaxed mb-3">
+                  XP Client Academy propose des formations con&ccedil;ues pour les r&eacute;alit&eacute;s
+                  du march&eacute; s&eacute;n&eacute;galais.
                 </p>
-                <p className="text-cx-gray leading-relaxed mb-6">
-                  Nos programmes sont construits &agrave; partir de cas r&eacute;els, avec une p&eacute;dagogie adapt&eacute;e aux professionnels
-                  de la relation client en Afrique de l&apos;Ouest &mdash; agents, managers, entrepreneurs.
+                <p className="text-cx-gray leading-relaxed mb-3">
+                  &Agrave; travers des cas pratiques, des mises en situation et des exemples concrets,
+                  la plateforme aide les professionnels &agrave; d&eacute;velopper une exp&eacute;rience
+                  client plus simple, plus humaine et plus efficace.
                 </p>
-                <div className="flex flex-col gap-3">
+                <p className="text-cx-gray leading-relaxed mb-7">
+                  Les contenus sont pens&eacute;s pour &ecirc;tre directement applicables sur le terrain,
+                  quel que soit le secteur d&apos;activit&eacute;.
+                </p>
+
+                {/* Checklist */}
+                <div className="flex flex-col gap-3 mb-8">
                   {[
-                    "10+ années d'expertise en expérience client",
-                    'Formations adaptées au marché local',
-                    'Approche pratique et immédiatement applicable',
+                    'Cas pratiques et mises en situation',
+                    'Formations adaptées au contexte local',
+                    'Apprentissage concret et applicable immédiatement',
                   ].map(item => (
-                    <div key={item} className="flex items-start gap-2 text-sm text-dark">
-                      <CheckCircle className="w-4 h-4 text-success shrink-0 mt-0.5" /> {item}
+                    <div key={item} className="flex items-center gap-2.5 text-sm text-dark">
+                      <CheckCircle className="w-4 h-4 text-success shrink-0" />
+                      {item}
                     </div>
                   ))}
                 </div>
+
+                {/* Founder credibility card */}
+                <div className="flex items-start gap-3 bg-light rounded-xl p-4 mb-5 border border-black/[0.06]">
+                  <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
+                    <UserCircle className="w-5 h-5 text-primary" />
+                  </div>
+                  <p className="text-sm text-cx-gray leading-relaxed">
+                    Fond&eacute;e par <strong className="text-dark">Mariame Ba</strong>, certifi&eacute;e
+                    en exp&eacute;rience client et passionn&eacute;e par l&apos;am&eacute;lioration des
+                    parcours clients au S&eacute;n&eacute;gal.
+                  </p>
+                </div>
+
+                {/* CTA */}
+                <a
+                  href="/about/founder"
+                  className="inline-flex items-center gap-1.5 text-sm font-semibold text-primary hover:underline"
+                >
+                  D&eacute;couvrir le parcours de la fondatrice <ArrowRight className="w-4 h-4" />
+                </a>
               </div>
 
-              {/* Right: photo */}
-              <div className="w-full md:w-[340px] lg:w-[400px] shrink-0">
-                <div className="relative w-full aspect-[4/3] rounded-2xl overflow-hidden shadow-md">
+              {/* Right: image */}
+              <div className="w-full md:w-[340px] lg:w-[420px] shrink-0">
+                <div className="relative w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-lg">
                   <Image
-                    src="/images/Picture2.jpg"
-                    alt="Fondatrice XP Client Academy"
+                    src="/images/Elearning.jpeg"
+                    alt="Formation en ligne XP Client Academy — expérience client"
                     fill
                     className="object-cover"
                   />
                 </div>
               </div>
-
-            </div>
-          </div>
-        </section>
-
-        {/* ── Founder CTA ───────────────────────────────────────────────── */}
-        <section className="py-10 md:py-14 bg-white border-t border-black/[0.06]">
-          <div className="cx-container max-w-4xl">
-            <div className="cx-card rounded-2xl p-6 md:p-8 flex flex-col md:flex-row gap-6 items-center">
-
-              {/* Photo */}
-              <div className="relative w-20 h-20 md:w-24 md:h-24 rounded-2xl overflow-hidden ring-2 ring-primary/10 shrink-0">
-                <Image
-                  src="/images/Picture2.jpg"
-                  alt="Mariame Ify — Fondatrice XP Client Academy"
-                  fill
-                  className="object-cover object-top"
-                />
-              </div>
-
-              {/* Text */}
-              <div className="flex-1 text-center md:text-left">
-                <p className="text-xs font-bold text-primary uppercase tracking-widest mb-1">La fondatrice</p>
-                <h3 className="text-lg font-extrabold text-dark mb-1">Mariame Ify</h3>
-                <p className="text-sm text-cx-gray leading-relaxed max-w-md">
-                  Professionnelle de l&apos;exp&eacute;rience client avec +10 ans d&apos;expertise en
-                  t&eacute;l&eacute;communications, e-commerce et sant&eacute;. D&eacute;couvrez l&apos;histoire
-                  derri&egrave;re XP Client Academy.
-                </p>
-              </div>
-
-              {/* CTA */}
-              <a
-                href="/about/founder"
-                className="shrink-0 inline-flex items-center gap-2 px-5 py-3 bg-primary text-white text-sm font-bold rounded-xl hover:bg-primary/90 transition-all hover:-translate-y-0.5 whitespace-nowrap"
-              >
-                D&eacute;couvrir son parcours <ArrowRight className="w-4 h-4" />
-              </a>
 
             </div>
           </div>
