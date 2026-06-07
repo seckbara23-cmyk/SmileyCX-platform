@@ -106,12 +106,12 @@ export default function FounderPage() {
 
             {/* Right: portrait */}
             <div className="relative mx-auto w-full max-w-[360px] lg:max-w-none">
-              <div className="relative w-full aspect-[3/4] rounded-3xl overflow-hidden shadow-lg">
+              <div className="relative w-full aspect-[3/4] rounded-3xl overflow-hidden shadow-lg bg-light">
                 <Image
                   src="/images/Marieme.png"
                   alt="Marieme Ba — Fondatrice XP Client Academy"
                   fill
-                  className="object-cover object-top"
+                  className="object-contain"
                   priority
                 />
               </div>
