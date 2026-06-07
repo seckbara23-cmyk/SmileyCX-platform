@@ -67,9 +67,9 @@ export default function FounderPage() {
     <div>
 
       {/* ── Hero ─────────────────────────────────────────────────────────── */}
-      <section className="bg-white py-14 md:py-20">
-        <div className="cx-container">
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-10 lg:gap-16 items-center">
+      <section className="bg-white py-10 md:py-14">
+        <div className="cx-container max-w-5xl">
+          <div className="grid grid-cols-1 lg:grid-cols-[0.85fr_1.15fr] gap-10 items-center">
 
             {/* Left: text */}
             <div>
@@ -105,19 +105,15 @@ export default function FounderPage() {
             </div>
 
             {/* Right: portrait */}
-            <div className="relative mx-auto w-full max-w-[360px] lg:max-w-none">
-              <div className="relative w-full aspect-[3/4] rounded-3xl overflow-hidden shadow-lg bg-light">
+            <div className="w-full">
+              <div className="relative w-full aspect-[4/3] rounded-3xl overflow-hidden shadow-xl">
                 <Image
                   src="/images/Marieme.png"
                   alt="Marieme Ba — Fondatrice XP Client Academy"
                   fill
-                  className="object-contain"
+                  className="object-cover object-[center_35%]"
                   priority
                 />
-              </div>
-              {/* Name badge */}
-              <div className="absolute bottom-4 right-4 bg-white rounded-xl px-4 py-2.5 shadow-md border border-black/[0.06]">
-                <p className="text-sm font-extrabold text-dark tracking-wide">Mari&egrave;me BA</p>
               </div>
             </div>
 
