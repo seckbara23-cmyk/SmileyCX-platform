@@ -7,9 +7,9 @@ import {
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = {
-  title: 'Fondatrice — Mariame Ify | XP Client Academy',
+  title: 'Fondatrice — Marieme Ba | XP Client Academy',
   description:
-    "Découvrez le parcours de Mariame Ify, professionnelle de l'expérience client et fondatrice de XP Client Academy — une plateforme créée pour rendre la formation CX accessible et pratique en Afrique de l'Ouest.",
+    "Découvrez le parcours de Marieme Ba, professionnelle de l'expérience client et fondatrice de XP Client Academy — une plateforme créée pour rendre la formation CX accessible et pratique en Afrique de l'Ouest.",
 }
 
 // ── Sector cards ──────────────────────────────────────────────────────────────
@@ -77,7 +77,7 @@ export default function FounderPage() {
               <div className="relative w-32 h-32 md:w-44 md:h-44 rounded-2xl overflow-hidden ring-4 ring-white/20 shadow-xl">
                 <Image
                   src="/images/Picture2.jpg"
-                  alt="Mariame Ify — Fondatrice XP Client Academy"
+                  alt="Marieme Ba — Fondatrice XP Client Academy"
                   fill
                   className="object-cover object-top"
                   priority
@@ -91,7 +91,7 @@ export default function FounderPage() {
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0" />
                 Fondatrice &amp; Formatrice CX
               </div>
-              <h1 className="text-3xl md:text-4xl font-extrabold mb-2 leading-tight">Mariame Ify</h1>
+              <h1 className="text-3xl md:text-4xl font-extrabold mb-2 leading-tight">Marieme Ba</h1>
               <p className="text-white/80 text-base mb-4 leading-relaxed max-w-xl">
                 Professionnelle de l&apos;exp&eacute;rience client — Formatrice — Fondatrice de XP&nbsp;Client&nbsp;Academy
               </p>

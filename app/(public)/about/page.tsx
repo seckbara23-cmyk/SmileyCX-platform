@@ -97,7 +97,7 @@ export default function AboutPage() {
               <div className="relative w-28 h-28 md:w-36 md:h-36 rounded-2xl overflow-hidden ring-4 ring-primary/10 shadow-md">
                 <Image
                   src="/images/Picture2.jpg"
-                  alt="Mariame Ify — Fondatrice XP Client Academy"
+                  alt="Marieme Ba — Fondatrice XP Client Academy"
                   fill
                   className="object-cover object-top"
                 />
@@ -107,7 +107,7 @@ export default function AboutPage() {
             {/* Text */}
             <div className="flex-1">
               <span className="text-xs font-bold text-primary uppercase tracking-widest">Fondatrice</span>
-              <h2 className="text-xl font-extrabold text-dark mt-1 mb-1">Mariame Ify</h2>
+              <h2 className="text-xl font-extrabold text-dark mt-1 mb-1">Marieme Ba</h2>
               <p className="text-sm text-cx-gray mb-3">
                 Professionnelle de l&apos;exp&eacute;rience client &middot; +10 ans d&apos;expertise &middot; Dakar, S&eacute;n&eacute;gal
               </p>
