@@ -1,5 +1,5 @@
 'use client'
-import { Suspense, useState } from 'react'
+import { Suspense, useState, useMemo } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Eye, EyeOff } from 'lucide-react'
@@ -22,7 +22,9 @@ function LoginForm() {
       ? rawNext
       : '/dashboard'
   const callbackError = searchParams.get('error') ?? ''
-  const supabase     = createClient()
+
+  // Stable client — do not recreate on every render
+  const supabase = useMemo(() => createClient(), [])
 
   const [email,    setEmail]    = useState('')
   const [password, setPassword] = useState('')
@@ -30,21 +32,45 @@ function LoginForm() {
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
 
+  // ── TEMPORARY DEBUG STATE ────────────────────────────────────────────────
+  const [debugLines, setDebugLines] = useState<string[]>([])
+  function dbg(msg: string) {
+    const ts = new Date().toISOString().slice(11, 23)
+    console.log('[LOGIN]', msg)
+    setDebugLines(prev => [...prev, `${ts} ${msg}`])
+  }
+  // ────────────────────────────────────────────────────────────────────────
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
+    dbg(`submit fired — email="${email}" nextUrl="${nextUrl}"`)
     setError('')
     setLoading(true)
 
-    const { error: authError } = await supabase.auth.signInWithPassword({ email, password })
-    setLoading(false)
+    try {
+      dbg('calling signInWithPassword…')
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password })
+      setLoading(false)
 
-    if (authError) {
-      setError('Email ou mot de passe incorrect. Vérifiez vos identifiants.')
-    } else {
-      // Hard redirect: ensures fresh session cookies are sent with the next
-      // request so the middleware sees the authenticated user immediately.
-      // router.push + router.refresh() races and can cancel the navigation.
+      if (authError) {
+        dbg(`auth error: ${authError.message}`)
+        setError('Email ou mot de passe incorrect. Vérifiez vos identifiants.')
+        return
+      }
+
+      const hasSession = !!data?.session
+      dbg(`success — session=${hasSession} user=${data?.user?.email ?? 'none'}`)
+      dbg(`redirecting → ${nextUrl}`)
+
+      // Hard redirect: full-page load so middleware receives fresh session
+      // cookies — avoids router.push / router.refresh race condition.
       window.location.href = nextUrl
+
+    } catch (err) {
+      setLoading(false)
+      const msg = err instanceof Error ? err.message : String(err)
+      dbg(`caught exception: ${msg}`)
+      setError(`Erreur inattendue : ${msg}`)
     }
   }
 
@@ -55,6 +81,15 @@ function LoginForm() {
           <h1 className="text-2xl font-extrabold text-dark mb-1">Connexion</h1>
           <p className="text-sm text-cx-gray">Accédez à votre espace XP Client Academy</p>
         </div>
+
+        {/* ── TEMPORARY DEBUG PANEL ─────────────────────────────────────── */}
+        {debugLines.length > 0 && (
+          <div className="mb-4 px-3 py-2.5 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed">
+            <p className="font-bold mb-1 text-xs">⚙ Debug (temporaire)</p>
+            {debugLines.map((line, i) => <p key={i}>{line}</p>)}
+          </div>
+        )}
+        {/* ────────────────────────────────────────────────────────────────── */}
 
         {/* Error from auth callback (e.g. expired reset link) */}
         {callbackError && AUTH_ERROR_MESSAGES[callbackError] && (
@@ -114,7 +149,7 @@ function LoginForm() {
           </div>
 
           <Button type="submit" loading={loading} fullWidth className="mt-1">
-            Se connecter
+            {loading ? 'Connexion en cours…' : 'Se connecter'}
           </Button>
         </form>
 
