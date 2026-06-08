@@ -14,43 +14,70 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
 }
 
 function LoginForm() {
-  const searchParams = useSearchParams()
-  const rawNext      = searchParams.get('next') || '/dashboard'
-  // Sanitise: must be a relative path, must not loop back to /login
-  const nextUrl      =
+  const searchParams  = useSearchParams()
+  const rawNext       = searchParams.get('next') || '/dashboard'
+  const nextUrl       =
     rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login')
       ? rawNext
       : '/dashboard'
   const callbackError = searchParams.get('error') ?? ''
 
+  // ── TEMP: log env vars on mount ────────────────────────────────────
+  const supabaseUrl  = process.env.NEXT_PUBLIC_SUPABASE_URL  ?? '(undefined)'
+  const anonKeyExists = !!(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
+  console.log('[LOGIN] NEXT_PUBLIC_SUPABASE_URL =', supabaseUrl)
+  console.log('[LOGIN] NEXT_PUBLIC_SUPABASE_ANON_KEY exists =', anonKeyExists)
+  // ────────────────────────────────────────────────────────────────────
+
   // Stable client — do not recreate on every render
-  const supabase = useMemo(() => createClient(), [])
+  const supabase = useMemo(() => {
+    console.log('[LOGIN] createClient() called')
+    try {
+      const c = createClient()
+      console.log('[LOGIN] createClient() succeeded')
+      return c
+    } catch (err) {
+      console.error('[LOGIN] createClient() threw:', err)
+      throw err
+    }
+  }, [])
 
-  const [email,    setEmail]    = useState('')
-  const [password, setPassword] = useState('')
-  const [showPass, setShowPass] = useState(false)
-  const [error,    setError]    = useState('')
-  const [loading,  setLoading]  = useState(false)
-
-  // ── TEMPORARY DEBUG STATE ────────────────────────────────────────────────
+  const [email,      setEmail]      = useState('')
+  const [password,   setPassword]   = useState('')
+  const [showPass,   setShowPass]   = useState(false)
+  const [error,      setError]      = useState('')
+  const [loading,    setLoading]    = useState(false)
   const [debugLines, setDebugLines] = useState<string[]>([])
+
   function dbg(msg: string) {
     const ts = new Date().toISOString().slice(11, 23)
     console.log('[LOGIN]', msg)
-    setDebugLines(prev => [...prev, `${ts} ${msg}`])
+    setDebugLines(prev => [...prev, `${ts}  ${msg}`])
   }
-  // ────────────────────────────────────────────────────────────────────────
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     dbg(`submit fired — email="${email}" nextUrl="${nextUrl}"`)
+    dbg(`supabaseUrl=${supabaseUrl}  anonKeyExists=${anonKeyExists}`)
     setError('')
     setLoading(true)
 
     try {
       dbg('calling signInWithPassword…')
-      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password })
+
+      const timeout = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Auth timeout after 10 s — Supabase URL or key may be wrong')), 10_000)
+      )
+
+      const result = await Promise.race([
+        supabase.auth.signInWithPassword({ email, password }),
+        timeout,
+      ])
+
       setLoading(false)
+
+      const { data, error: authError } = result as Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>
+      dbg(`signInWithPassword returned — authError=${authError?.message ?? 'null'} session=${!!data?.session} user=${data?.user?.email ?? 'none'}`)
 
       if (authError) {
         dbg(`auth error: ${authError.message}`)
@@ -58,19 +85,14 @@ function LoginForm() {
         return
       }
 
-      const hasSession = !!data?.session
-      dbg(`success — session=${hasSession} user=${data?.user?.email ?? 'none'}`)
       dbg(`redirecting → ${nextUrl}`)
-
-      // Hard redirect: full-page load so middleware receives fresh session
-      // cookies — avoids router.push / router.refresh race condition.
       window.location.href = nextUrl
 
     } catch (err) {
       setLoading(false)
       const msg = err instanceof Error ? err.message : String(err)
-      dbg(`caught exception: ${msg}`)
-      setError(`Erreur inattendue : ${msg}`)
+      dbg(`caught: ${msg}`)
+      setError(msg)
     }
   }
 
@@ -82,16 +104,16 @@ function LoginForm() {
           <p className="text-sm text-cx-gray">Accédez à votre espace XP Client Academy</p>
         </div>
 
-        {/* ── TEMPORARY DEBUG PANEL ─────────────────────────────────────── */}
-        {debugLines.length > 0 && (
-          <div className="mb-4 px-3 py-2.5 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed">
-            <p className="font-bold mb-1 text-xs">⚙ Debug (temporaire)</p>
-            {debugLines.map((line, i) => <p key={i}>{line}</p>)}
-          </div>
-        )}
-        {/* ────────────────────────────────────────────────────────────────── */}
+        {/* ── TEMP DEBUG PANEL ──────────────────────────────────────────── */}
+        <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed break-all">
+          <p className="font-bold text-xs mb-1">⚙ Debug (temporaire)</p>
+          <p>URL: {supabaseUrl}</p>
+          <p>Anon key: {anonKeyExists ? '✓ present' : '✗ MISSING'}</p>
+          {debugLines.map((line, i) => <p key={i}>{line}</p>)}
+        </div>
+        {/* ──────────────────────────────────────────────────────────────── */}
 
-        {/* Error from auth callback (e.g. expired reset link) */}
+        {/* Callback error */}
         {callbackError && AUTH_ERROR_MESSAGES[callbackError] && (
           <div className="mb-4 px-4 py-3 rounded-cx bg-amber-50 border border-amber-200 text-sm text-amber-800">
             {AUTH_ERROR_MESSAGES[callbackError]}
@@ -101,9 +123,9 @@ function LoginForm() {
           </div>
         )}
 
-        {/* Error from login attempt */}
+        {/* Login error */}
         {error && (
-          <div className="mb-4 px-4 py-3 rounded-cx bg-red-50 border border-red-200 text-sm text-red-700">
+          <div className="mb-4 px-4 py-3 rounded-cx bg-red-50 border border-red-200 text-sm text-red-700 break-all">
             {error}
           </div>
         )}
