@@ -1,5 +1,5 @@
 'use client'
-import { Suspense, useState, useMemo } from 'react'
+import { Suspense, useState, useMemo, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { Eye, EyeOff } from 'lucide-react'
@@ -7,7 +7,6 @@ import { createClient } from '@/lib/supabase/client'
 import { Input } from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 
-// Map callback error codes to human-readable French messages
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   reset_expired: 'Votre lien de réinitialisation a expiré. Demandez-en un nouveau ci-dessous.',
   auth_error:    "Le lien de confirmation est invalide ou a déjà été utilisé. Essayez de vous connecter.",
@@ -22,24 +21,12 @@ function LoginForm() {
       : '/dashboard'
   const callbackError = searchParams.get('error') ?? ''
 
-  // ── TEMP: log env vars on mount ────────────────────────────────────
-  const supabaseUrl  = process.env.NEXT_PUBLIC_SUPABASE_URL  ?? '(undefined)'
+  const supabaseUrl   = process.env.NEXT_PUBLIC_SUPABASE_URL  ?? '(undefined)'
   const anonKeyExists = !!(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
-  console.log('[LOGIN] NEXT_PUBLIC_SUPABASE_URL =', supabaseUrl)
-  console.log('[LOGIN] NEXT_PUBLIC_SUPABASE_ANON_KEY exists =', anonKeyExists)
-  // ────────────────────────────────────────────────────────────────────
 
-  // Stable client — do not recreate on every render
   const supabase = useMemo(() => {
-    console.log('[LOGIN] createClient() called')
-    try {
-      const c = createClient()
-      console.log('[LOGIN] createClient() succeeded')
-      return c
-    } catch (err) {
-      console.error('[LOGIN] createClient() threw:', err)
-      throw err
-    }
+    console.log('[LOGIN] createClient()')
+    return createClient()
   }, [])
 
   const [email,      setEmail]      = useState('')
@@ -48,6 +35,7 @@ function LoginForm() {
   const [error,      setError]      = useState('')
   const [loading,    setLoading]    = useState(false)
   const [debugLines, setDebugLines] = useState<string[]>([])
+  const formRef = useRef<HTMLFormElement>(null)
 
   function dbg(msg: string) {
     const ts = new Date().toISOString().slice(11, 23)
@@ -55,10 +43,23 @@ function LoginForm() {
     setDebugLines(prev => [...prev, `${ts}  ${msg}`])
   }
 
+  // Confirm React hydration succeeded and event listeners are attached
+  useEffect(() => {
+    dbg('component mounted — React hydration OK')
+    if (formRef.current) {
+      dbg(`form element found: ${formRef.current.tagName}`)
+    } else {
+      dbg('WARNING: formRef.current is null')
+    }
+  }, [])
+
+  function handleButtonClick() {
+    dbg('button onClick fired')
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     dbg(`submit fired — email="${email}" nextUrl="${nextUrl}"`)
-    dbg(`supabaseUrl=${supabaseUrl}  anonKeyExists=${anonKeyExists}`)
     setError('')
     setLoading(true)
 
@@ -66,7 +67,7 @@ function LoginForm() {
       dbg('calling signInWithPassword…')
 
       const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Auth timeout after 10 s — Supabase URL or key may be wrong')), 10_000)
+        setTimeout(() => reject(new Error('Auth timeout after 10 s — check Supabase URL')), 10_000)
       )
 
       const result = await Promise.race([
@@ -77,10 +78,9 @@ function LoginForm() {
       setLoading(false)
 
       const { data, error: authError } = result as Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>
-      dbg(`signInWithPassword returned — authError=${authError?.message ?? 'null'} session=${!!data?.session} user=${data?.user?.email ?? 'none'}`)
+      dbg(`result — error=${authError?.message ?? 'null'} session=${!!data?.session} user=${data?.user?.email ?? 'none'}`)
 
       if (authError) {
-        dbg(`auth error: ${authError.message}`)
         setError('Email ou mot de passe incorrect. Vérifiez vos identifiants.')
         return
       }
@@ -98,22 +98,23 @@ function LoginForm() {
 
   return (
     <div className="w-full max-w-md px-2 sm:px-0">
+
+      {/* ── TEMP DEBUG PANEL (always visible) ──────────────────────────── */}
+      <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed break-all">
+        <p className="font-bold text-xs mb-1">⚙ Debug (temporaire)</p>
+        <p>URL: {supabaseUrl}</p>
+        <p>Anon key: {anonKeyExists ? '✓ present' : '✗ MISSING'}</p>
+        <p>nextUrl: {nextUrl}</p>
+        {debugLines.map((line, i) => <p key={i}>{line}</p>)}
+      </div>
+      {/* ──────────────────────────────────────────────────────────────── */}
+
       <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-5 sm:p-8">
         <div className="text-center mb-8">
           <h1 className="text-2xl font-extrabold text-dark mb-1">Connexion</h1>
           <p className="text-sm text-cx-gray">Accédez à votre espace XP Client Academy</p>
         </div>
 
-        {/* ── TEMP DEBUG PANEL ──────────────────────────────────────────── */}
-        <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed break-all">
-          <p className="font-bold text-xs mb-1">⚙ Debug (temporaire)</p>
-          <p>URL: {supabaseUrl}</p>
-          <p>Anon key: {anonKeyExists ? '✓ present' : '✗ MISSING'}</p>
-          {debugLines.map((line, i) => <p key={i}>{line}</p>)}
-        </div>
-        {/* ──────────────────────────────────────────────────────────────── */}
-
-        {/* Callback error */}
         {callbackError && AUTH_ERROR_MESSAGES[callbackError] && (
           <div className="mb-4 px-4 py-3 rounded-cx bg-amber-50 border border-amber-200 text-sm text-amber-800">
             {AUTH_ERROR_MESSAGES[callbackError]}
@@ -123,14 +124,13 @@ function LoginForm() {
           </div>
         )}
 
-        {/* Login error */}
         {error && (
           <div className="mb-4 px-4 py-3 rounded-cx bg-red-50 border border-red-200 text-sm text-red-700 break-all">
             {error}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
+        <form ref={formRef} onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
           <Input
             label="Email"
             type="email"
@@ -170,9 +170,25 @@ function LoginForm() {
             </div>
           </div>
 
-          <Button type="submit" loading={loading} fullWidth className="mt-1">
+          {/* Custom Button with direct onClick to detect click vs submit split */}
+          <Button
+            type="submit"
+            loading={loading}
+            fullWidth
+            className="mt-1"
+            onClick={handleButtonClick}
+          >
             {loading ? 'Connexion en cours…' : 'Se connecter'}
           </Button>
+
+          {/* Fallback plain submit button — bypass custom Button component entirely */}
+          <button
+            type="submit"
+            style={{ marginTop: 4, padding: '10px', background: '#4a6de5', color: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}
+            onClick={() => dbg('plain button onClick fired')}
+          >
+            Se connecter (fallback)
+          </button>
         </form>
 
         <p className="text-center text-sm text-cx-gray mt-6">
