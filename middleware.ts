@@ -141,7 +141,14 @@ export async function middleware(request: NextRequest) {
           NextResponse.redirect(new URL('/access-restricted', request.url))
         )
       }
-      return applySecurityHeaders(NextResponse.redirect(new URL('/dashboard', request.url)))
+      // Respect the ?next= param so the middleware redirect is consistent with
+      // the login form's own post-login destination.
+      const rawNext = request.nextUrl.searchParams.get('next') ?? ''
+      const target =
+        rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login')
+          ? rawNext
+          : '/dashboard'
+      return applySecurityHeaders(NextResponse.redirect(new URL(target, request.url)))
     }
   }
 

@@ -1,7 +1,7 @@
 'use client'
 import { Suspense, useState } from 'react'
 import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useSearchParams } from 'next/navigation'
 import { Eye, EyeOff } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { Input } from '@/components/ui/Input'
@@ -14,10 +14,13 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
 }
 
 function LoginForm() {
-  const router       = useRouter()
   const searchParams = useSearchParams()
   const rawNext      = searchParams.get('next') || '/dashboard'
-  const nextUrl      = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard'
+  // Sanitise: must be a relative path, must not loop back to /login
+  const nextUrl      =
+    rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login')
+      ? rawNext
+      : '/dashboard'
   const callbackError = searchParams.get('error') ?? ''
   const supabase     = createClient()
 
@@ -38,8 +41,10 @@ function LoginForm() {
     if (authError) {
       setError('Email ou mot de passe incorrect. Vérifiez vos identifiants.')
     } else {
-      router.push(nextUrl)
-      router.refresh()
+      // Hard redirect: ensures fresh session cookies are sent with the next
+      // request so the middleware sees the authenticated user immediately.
+      // router.push + router.refresh() races and can cancel the navigation.
+      window.location.href = nextUrl
     }
   }
 
