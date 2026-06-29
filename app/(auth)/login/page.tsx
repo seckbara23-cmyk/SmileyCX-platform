@@ -2,10 +2,9 @@
 import { Suspense, useState, useMemo, useEffect, useRef } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { Input } from '@/components/ui/Input'
-import Button from '@/components/ui/Button'
 
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   reset_expired: 'Votre lien de réinitialisation a expiré. Demandez-en un nouveau ci-dessous.',
@@ -23,13 +22,7 @@ function LoginForm() {
       : '/dashboard'
   const callbackError = searchParams.get('error') ?? ''
 
-  const supabaseUrl   = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '(undefined)'
-  const anonKeyExists = !!(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
-
-  const supabase = useMemo(() => {
-    console.log('[LOGIN] createClient()')
-    return createClient()
-  }, [])
+  const supabase = useMemo(() => createClient(), [])
 
   const [email,      setEmail]      = useState('')
   const [password,   setPassword]   = useState('')
@@ -40,27 +33,22 @@ function LoginForm() {
   const formRef = useRef<HTMLFormElement>(null)
 
   function dbg(msg: string) {
-    const ts = new Date().toISOString().slice(11, 23)
     console.log('[LOGIN]', msg)
-    if (isDev) setDebugLines(prev => [...prev, `${ts}  ${msg}`])
+    if (isDev) {
+      const ts = new Date().toISOString().slice(11, 23)
+      setDebugLines(prev => [...prev, `${ts}  ${msg}`])
+    }
   }
 
   useEffect(() => {
-    dbg('component mounted — React hydration OK')
-    if (formRef.current) {
-      dbg(`form element found: ${formRef.current.tagName}`)
-    } else {
-      dbg('WARNING: formRef.current is null')
-    }
+    dbg('component mounted')
+    dbg(`formRef=${formRef.current ? 'OK' : 'NULL'}`)
   }, [])
 
-  function handleButtonClick() {
-    dbg('button onClick fired')
-  }
-
   async function handleSubmit(e: React.FormEvent) {
+    console.log('[LOGIN] submit fired')  // first line, unconditional
     e.preventDefault()
-    dbg(`submit fired — email="${email}" nextUrl="${nextUrl}"`)
+    dbg(`submit — email="${email}" nextUrl="${nextUrl}"`)
     setError('')
     setLoading(true)
 
@@ -68,7 +56,7 @@ function LoginForm() {
       dbg('calling signInWithPassword…')
 
       const timeout = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('Auth timeout after 10 s — check Supabase URL')), 10_000)
+        setTimeout(() => reject(new Error('Auth timeout 10 s — check Supabase URL')), 10_000)
       )
 
       const result = await Promise.race([
@@ -79,7 +67,7 @@ function LoginForm() {
       setLoading(false)
 
       const { data, error: authError } = result as Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>
-      dbg(`result — error=${authError?.message ?? 'null'} session=${!!data?.session} user=${data?.user?.email ?? 'none'}`)
+      dbg(`result — err=${authError?.message ?? 'null'} session=${!!data?.session}`)
 
       if (authError) {
         setError('Email ou mot de passe incorrect. Vérifiez vos identifiants.')
@@ -100,12 +88,10 @@ function LoginForm() {
   return (
     <div className="w-full max-w-md px-2 sm:px-0">
 
-      {/* Debug panel — development only, tree-shaken from production build */}
+      {/* Dev-only debug panel — tree-shaken from production bundle */}
       {isDev && (
         <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed break-all">
           <p className="font-bold text-xs mb-1">⚙ Debug (dev only)</p>
-          <p>URL: {supabaseUrl}</p>
-          <p>Anon key: {anonKeyExists ? '✓ present' : '✗ MISSING'}</p>
           <p>nextUrl: {nextUrl}</p>
           {debugLines.map((line, i) => <p key={i}>{line}</p>)}
         </div>
@@ -145,7 +131,9 @@ function LoginForm() {
 
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between items-center">
-              <label htmlFor="password" className="text-sm font-semibold text-dark">Mot de passe</label>
+              <label htmlFor="password" className="text-sm font-semibold text-dark">
+                Mot de passe
+              </label>
               <Link href="/forgot-password" className="text-xs text-primary hover:underline">
                 Mot de passe oublié ?
               </Link>
@@ -172,31 +160,31 @@ function LoginForm() {
             </div>
           </div>
 
-          <Button
+          {/*
+            Native <button type="submit"> — no custom component wrapper.
+            Avoids any possible pointer-events / disabled-state hydration
+            mismatch that could silently block form submission.
+            Styling matches the existing Button primary variant exactly.
+          */}
+          <button
             type="submit"
-            loading={loading}
-            fullWidth
-            className="mt-1"
-            onClick={handleButtonClick}
+            disabled={loading}
+            className="mt-1 w-full inline-flex items-center justify-center gap-2 font-semibold rounded-cx px-6 py-3 text-base transition-all duration-300 select-none bg-secondary text-white border-2 border-secondary hover:bg-secondary-dark hover:border-secondary-dark hover:-translate-y-0.5 hover:shadow-btn active:translate-y-0 disabled:opacity-60 disabled:cursor-not-allowed"
           >
-            {loading ? 'Connexion en cours…' : 'Se connecter'}
-          </Button>
-
-          {/* Fallback submit button — development only, bypasses custom Button */}
-          {isDev && (
-            <button
-              type="submit"
-              style={{ marginTop: 4, padding: '10px', background: '#4a6de5', color: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}
-              onClick={() => dbg('plain button onClick fired')}
-            >
-              Se connecter (fallback)
-            </button>
-          )}
+            {loading ? (
+              <><Loader2 className="w-4 h-4 animate-spin" /> Connexion en cours…</>
+            ) : (
+              'Se connecter'
+            )}
+          </button>
         </form>
 
         <p className="text-center text-sm text-cx-gray mt-6">
           Pas encore de compte ?{' '}
-          <Link href={`/signup?next=${encodeURIComponent(nextUrl)}`} className="text-primary font-semibold hover:underline">
+          <Link
+            href={`/signup?next=${encodeURIComponent(nextUrl)}`}
+            className="text-primary font-semibold hover:underline"
+          >
             S&apos;inscrire gratuitement
           </Link>
         </p>
