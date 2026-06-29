@@ -12,6 +12,8 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   auth_error:    "Le lien de confirmation est invalide ou a déjà été utilisé. Essayez de vous connecter.",
 }
 
+const isDev = process.env.NODE_ENV === 'development'
+
 function LoginForm() {
   const searchParams  = useSearchParams()
   const rawNext       = searchParams.get('next') || '/dashboard'
@@ -21,7 +23,7 @@ function LoginForm() {
       : '/dashboard'
   const callbackError = searchParams.get('error') ?? ''
 
-  const supabaseUrl   = process.env.NEXT_PUBLIC_SUPABASE_URL  ?? '(undefined)'
+  const supabaseUrl   = process.env.NEXT_PUBLIC_SUPABASE_URL ?? '(undefined)'
   const anonKeyExists = !!(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 
   const supabase = useMemo(() => {
@@ -40,10 +42,9 @@ function LoginForm() {
   function dbg(msg: string) {
     const ts = new Date().toISOString().slice(11, 23)
     console.log('[LOGIN]', msg)
-    setDebugLines(prev => [...prev, `${ts}  ${msg}`])
+    if (isDev) setDebugLines(prev => [...prev, `${ts}  ${msg}`])
   }
 
-  // Confirm React hydration succeeded and event listeners are attached
   useEffect(() => {
     dbg('component mounted — React hydration OK')
     if (formRef.current) {
@@ -99,15 +100,16 @@ function LoginForm() {
   return (
     <div className="w-full max-w-md px-2 sm:px-0">
 
-      {/* ── TEMP DEBUG PANEL (always visible) ──────────────────────────── */}
-      <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed break-all">
-        <p className="font-bold text-xs mb-1">⚙ Debug (temporaire)</p>
-        <p>URL: {supabaseUrl}</p>
-        <p>Anon key: {anonKeyExists ? '✓ present' : '✗ MISSING'}</p>
-        <p>nextUrl: {nextUrl}</p>
-        {debugLines.map((line, i) => <p key={i}>{line}</p>)}
-      </div>
-      {/* ──────────────────────────────────────────────────────────────── */}
+      {/* Debug panel — development only, tree-shaken from production build */}
+      {isDev && (
+        <div className="mb-4 px-3 py-2 rounded-lg bg-yellow-50 border border-yellow-300 text-[11px] font-mono text-yellow-900 leading-relaxed break-all">
+          <p className="font-bold text-xs mb-1">⚙ Debug (dev only)</p>
+          <p>URL: {supabaseUrl}</p>
+          <p>Anon key: {anonKeyExists ? '✓ present' : '✗ MISSING'}</p>
+          <p>nextUrl: {nextUrl}</p>
+          {debugLines.map((line, i) => <p key={i}>{line}</p>)}
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-5 sm:p-8">
         <div className="text-center mb-8">
@@ -170,7 +172,6 @@ function LoginForm() {
             </div>
           </div>
 
-          {/* Custom Button with direct onClick to detect click vs submit split */}
           <Button
             type="submit"
             loading={loading}
@@ -181,14 +182,16 @@ function LoginForm() {
             {loading ? 'Connexion en cours…' : 'Se connecter'}
           </Button>
 
-          {/* Fallback plain submit button — bypass custom Button component entirely */}
-          <button
-            type="submit"
-            style={{ marginTop: 4, padding: '10px', background: '#4a6de5', color: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}
-            onClick={() => dbg('plain button onClick fired')}
-          >
-            Se connecter (fallback)
-          </button>
+          {/* Fallback submit button — development only, bypasses custom Button */}
+          {isDev && (
+            <button
+              type="submit"
+              style={{ marginTop: 4, padding: '10px', background: '#4a6de5', color: '#fff', borderRadius: 8, cursor: 'pointer', fontSize: 13 }}
+              onClick={() => dbg('plain button onClick fired')}
+            >
+              Se connecter (fallback)
+            </button>
+          )}
         </form>
 
         <p className="text-center text-sm text-cx-gray mt-6">
