@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import Link from 'next/link'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
@@ -30,14 +30,8 @@ export default function LoginForm({ next, error: callbackErrorProp }: Props) {
   const [showPass, setShowPass] = useState(false)
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
-  const formRef = useRef<HTMLFormElement>(null)
-
-  useEffect(() => {
-    console.log('[LOGIN] component mounted, formRef=', formRef.current?.tagName)
-  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
-    console.log('[LOGIN] submit fired')
     e.preventDefault()
     setError('')
     setLoading(true)
@@ -61,14 +55,11 @@ export default function LoginForm({ next, error: callbackErrorProp }: Props) {
         return
       }
 
-      console.log('[LOGIN] auth OK, redirecting →', nextUrl)
       window.location.href = nextUrl
 
     } catch (err) {
       setLoading(false)
-      const msg = err instanceof Error ? err.message : String(err)
-      console.error('[LOGIN] caught:', msg)
-      setError(msg)
+      setError(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -95,7 +86,7 @@ export default function LoginForm({ next, error: callbackErrorProp }: Props) {
           </div>
         )}
 
-        <form ref={formRef} onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
           <Input
             label="Email"
             type="email"
