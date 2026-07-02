@@ -2,6 +2,7 @@
 import Link from 'next/link'
 import { Check, CheckCircle, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
+import { buildSidebarStructure } from './sidebarStructure'
 
 export interface SidebarLessonRow {
   id: string; slug: string; title: string; order_index: number
@@ -35,13 +36,64 @@ export default function LessonSidebar({
   hasFinalExam, finalExamPassed, isFinalExamActive,
   pilotMode, sideOpen, onClose,
 }: Props) {
-  const totalLessons     = modules.reduce((s, m) => s + m.lessons.length + (modulesWithQuiz.has(m.id) ? 1 : 0), 0) + (hasFinalExam ? 1 : 0)
-  const completedLessons = modules.reduce((s, m) => {
-    const lessons = m.lessons.filter(l => !!progress[l.id]).length
-    const quiz    = modulesWithQuiz.has(m.id) && validatedModules.has(m.id) ? 1 : 0
-    return s + lessons + quiz
-  }, 0) + (hasFinalExam && finalExamPassed ? 1 : 0)
-  const progressPct      = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
+  // Split into a standalone intro section + numbered modules. Progress totals
+  // are computed from this same structure so the standalone lessons stay counted
+  // exactly as before (they are only relocated in the UI, not removed).
+  const { standalone, modules: numberedModules } = buildSidebarStructure(modules)
+
+  const totalLessons =
+    standalone.length +
+    numberedModules.reduce((s, m) => s + m.lessons.length + (modulesWithQuiz.has(m.id) ? 1 : 0), 0) +
+    (hasFinalExam ? 1 : 0)
+  const completedLessons =
+    standalone.filter(s => !!progress[s.lesson.id]).length +
+    numberedModules.reduce((s, m) => {
+      const lessons = m.lessons.filter(l => !!progress[l.id]).length
+      const quiz    = modulesWithQuiz.has(m.id) && validatedModules.has(m.id) ? 1 : 0
+      return s + lessons + quiz
+    }, 0) +
+    (hasFinalExam && finalExamPassed ? 1 : 0)
+  const progressPct = totalLessons > 0 ? Math.round((completedLessons / totalLessons) * 100) : 0
+
+  // ── Shared lesson-link renderer (used by both the standalone section and the
+  //    numbered modules) ─────────────────────────────────────────────────────
+  function renderLessonLink(les: SidebarLessonRow, moduleId: string) {
+    const isActive = les.id === activeLessonId
+    const isDone   = !!progress[les.id]
+    return (
+      <Link
+        key={les.id}
+        href={`/learn/${courseSlug}/${moduleId}/${les.id}`}
+        onClick={onClose}
+        className={cn(
+          'flex items-start gap-3 px-5 py-3 transition-all duration-150 border-l-2',
+          isActive
+            ? 'bg-primary/[0.12] border-primary'
+            : 'border-transparent hover:bg-white/[0.06] hover:border-white/20'
+        )}
+      >
+        {/* State indicator */}
+        {isDone ? (
+          <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0 mt-0.5">
+            <Check className="w-3 h-3 text-white" strokeWidth={3} />
+          </div>
+        ) : isActive ? (
+          <div className="w-5 h-5 rounded-full border-2 border-primary bg-primary/20 ring-2 ring-primary/20 shrink-0 mt-0.5" />
+        ) : (
+          <div className="w-5 h-5 rounded-full border-2 border-white/35 shrink-0 mt-0.5" />
+        )}
+
+        <span className={cn(
+          'leading-snug line-clamp-2 text-[0.9375rem]',
+          isActive  ? 'text-white font-semibold'
+          : isDone  ? 'text-white/85 font-medium'
+                    : 'text-white/80 font-medium'
+        )}>
+          {les.title}
+        </span>
+      </Link>
+    )
+  }
 
   return (
     <>
@@ -64,7 +116,7 @@ export default function LessonSidebar({
         <div className="px-5 py-4 border-b border-white/[0.08]">
           <Link
             href={pilotMode ? '/courses' : '/dashboard'}
-            className="text-xs text-white/50 hover:text-white/80 transition-colors"
+            className="text-xs text-white/60 hover:text-white transition-colors"
           >
             ← {pilotMode ? 'Les formations' : 'Mon espace'}
           </Link>
@@ -72,7 +124,7 @@ export default function LessonSidebar({
           {totalLessons > 0 && (
             <div className="mt-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-bold text-white/40 uppercase tracking-widest">
+                <span className="text-[10px] font-bold text-white/50 uppercase tracking-widest">
                   {pilotMode ? 'Progression' : 'Ma progression'}
                 </span>
                 <span className="text-[11px] font-bold text-primary tabular-nums">
@@ -85,22 +137,29 @@ export default function LessonSidebar({
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
-              <p className="text-[10px] text-white/35 mt-1.5 tabular-nums">
+              <p className="text-[10px] text-white/45 mt-1.5 tabular-nums">
                 {completedLessons}&nbsp;/&nbsp;{totalLessons} leçon{totalLessons > 1 ? 's' : ''} complétée{completedLessons > 1 ? 's' : ''}
               </p>
             </div>
           )}
 
           {pilotMode && totalLessons === 0 && (
-            <p className="text-[10px] text-white/25 mt-2 leading-tight">
+            <p className="text-[10px] text-white/30 mt-2 leading-tight">
               Explorez librement toutes les leçons.
             </p>
           )}
         </div>
 
-        {/* ── Module list ─────────────────────────────────────────────────── */}
         <nav className="pb-6">
-          {modules.map((mod, mi) => {
+          {/* ── Standalone intro lessons (before all modules) ──────────────── */}
+          {standalone.length > 0 && (
+            <div className="border-b border-white/[0.08]">
+              {standalone.map(s => renderLessonLink(s.lesson, s.moduleId))}
+            </div>
+          )}
+
+          {/* ── Numbered modules ────────────────────────────────────────────── */}
+          {numberedModules.map((mod, mi) => {
             const isValidated = validatedModules.has(mod.id)
             const hasQuiz     = modulesWithQuiz.has(mod.id)
             const modDone     = mod.lessons.filter(l => !!progress[l.id]).length + (isValidated ? 1 : 0)
@@ -112,7 +171,7 @@ export default function LessonSidebar({
                 {/* Module header */}
                 <div className="px-5 pt-4 pb-2.5 bg-white/[0.03] border-t border-white/[0.06]">
                   <div className="flex items-start justify-between gap-2 mb-2">
-                    <p className="text-[11px] font-bold text-white/55 uppercase tracking-wide leading-tight flex-1 [overflow-wrap:anywhere]">
+                    <p className="text-[11px] font-bold text-white/65 uppercase tracking-wide leading-tight flex-1 [overflow-wrap:anywhere]">
                       {mi + 1}. {mod.title}
                     </p>
                     {isValidated ? (
@@ -120,7 +179,7 @@ export default function LessonSidebar({
                         <CheckCircle className="w-3 h-3" /> Validé
                       </span>
                     ) : (
-                      <span className="text-[10px] text-white/30 shrink-0 mt-0.5 tabular-nums">
+                      <span className="text-[10px] text-white/40 shrink-0 mt-0.5 tabular-nums">
                         {modDone}/{modTotal}
                       </span>
                     )}
@@ -139,43 +198,7 @@ export default function LessonSidebar({
                 </div>
 
                 {/* Lesson list */}
-                {mod.lessons.map(les => {
-                  const isActive = les.id === activeLessonId
-                  const isDone   = !!progress[les.id]
-                  return (
-                    <Link
-                      key={les.id}
-                      href={`/learn/${courseSlug}/${mod.id}/${les.id}`}
-                      onClick={onClose}
-                      className={cn(
-                        'flex items-start gap-3 px-5 py-3 text-sm transition-all duration-150 border-l-2',
-                        isActive
-                          ? 'bg-primary/[0.12] border-primary'
-                          : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
-                      )}
-                    >
-                      {/* State indicator */}
-                      {isDone ? (
-                        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0 mt-0.5">
-                          <Check className="w-3 h-3 text-white" strokeWidth={3} />
-                        </div>
-                      ) : isActive ? (
-                        <div className="w-5 h-5 rounded-full border-2 border-primary bg-primary/20 ring-2 ring-primary/20 shrink-0 mt-0.5" />
-                      ) : (
-                        <div className="w-5 h-5 rounded-full border-2 border-white/20 shrink-0 mt-0.5" />
-                      )}
-
-                      <span className={cn(
-                        'leading-snug line-clamp-2 text-sm',
-                        isActive  ? 'text-white font-semibold'
-                        : isDone  ? 'text-white/65'
-                                  : 'text-white/50'
-                      )}>
-                        {les.title}
-                      </span>
-                    </Link>
-                  )
-                })}
+                {mod.lessons.map(les => renderLessonLink(les, mod.id))}
 
                 {/* Quiz link */}
                 {hasQuiz && (() => {
@@ -185,10 +208,10 @@ export default function LessonSidebar({
                       href={`/learn/${courseSlug}/${mod.id}/quiz`}
                       onClick={onClose}
                       className={cn(
-                        'flex items-center gap-3 px-5 py-2.5 text-sm transition-all duration-150 border-l-2',
+                        'flex items-center gap-3 px-5 py-2.5 transition-all duration-150 border-l-2',
                         isQuizActive
                           ? 'bg-secondary/[0.12] border-secondary'
-                          : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
+                          : 'border-transparent hover:bg-white/[0.06] hover:border-white/20'
                       )}
                     >
                       {/* 3-state indicator matching lessons */}
@@ -199,13 +222,13 @@ export default function LessonSidebar({
                       ) : isQuizActive ? (
                         <div className="w-5 h-5 rounded-full border-2 border-secondary bg-secondary/20 ring-2 ring-secondary/20 shrink-0" />
                       ) : (
-                        <ClipboardList className="w-4 h-4 shrink-0 text-white/40" />
+                        <ClipboardList className="w-4 h-4 shrink-0 text-white/50" />
                       )}
                       <span className={cn(
-                        'leading-snug text-sm italic',
+                        'leading-snug text-[0.9375rem] italic',
                         isQuizActive  ? 'text-secondary font-semibold'
-                        : isValidated ? 'text-white/65'
-                                      : 'text-white/50'
+                        : isValidated ? 'text-white/85 font-medium'
+                                      : 'text-white/80 font-medium'
                       )}>
                         Quiz du module
                       </span>
@@ -219,7 +242,7 @@ export default function LessonSidebar({
           {hasFinalExam && (
             <div className="border-t border-white/[0.08] mt-1">
               <div className="px-5 pt-4 pb-2.5 bg-white/[0.03]">
-                <p className="text-[11px] font-bold text-white/55 uppercase tracking-wide">
+                <p className="text-[11px] font-bold text-white/65 uppercase tracking-wide">
                   Examen final
                 </p>
               </div>
@@ -227,10 +250,10 @@ export default function LessonSidebar({
                 href={`/learn/${courseSlug}/final-exam`}
                 onClick={onClose}
                 className={cn(
-                  'flex items-center gap-3 px-5 py-3 text-sm transition-all duration-150 border-l-2',
+                  'flex items-center gap-3 px-5 py-3 transition-all duration-150 border-l-2',
                   isFinalExamActive
                     ? 'bg-amber-500/[0.12] border-amber-400'
-                    : 'border-transparent hover:bg-white/[0.04] hover:border-white/[0.12]'
+                    : 'border-transparent hover:bg-white/[0.06] hover:border-white/20'
                 )}
               >
                 {finalExamPassed ? (
@@ -240,13 +263,13 @@ export default function LessonSidebar({
                 ) : isFinalExamActive ? (
                   <div className="w-5 h-5 rounded-full border-2 border-amber-400 bg-amber-400/20 ring-2 ring-amber-400/20 shrink-0" />
                 ) : (
-                  <div className="w-5 h-5 rounded-full border-2 border-white/25 shrink-0" />
+                  <div className="w-5 h-5 rounded-full border-2 border-white/35 shrink-0" />
                 )}
                 <span className={cn(
-                  'leading-snug text-sm font-semibold',
+                  'leading-snug text-[0.9375rem] font-semibold',
                   isFinalExamActive ? 'text-amber-300'
-                  : finalExamPassed ? 'text-white/65'
-                                    : 'text-white/55'
+                  : finalExamPassed ? 'text-white/85'
+                                    : 'text-white/80'
                 )}>
                   Examen final
                 </span>

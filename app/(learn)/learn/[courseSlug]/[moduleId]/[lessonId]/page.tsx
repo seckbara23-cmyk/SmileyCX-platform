@@ -7,6 +7,7 @@ import { useParams, useRouter } from 'next/navigation'
 import { enrollForFree } from '@/app/actions/enrollment'
 import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
+import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
 import AutoAdvanceBanner from '@/components/lms/AutoAdvanceBanner'
 import ExerciseBlock, { type ExerciseData } from '@/components/lms/ExerciseBlock'
@@ -334,7 +335,17 @@ export default function LessonPlayerPage() {
   }
 
   // ── Derived navigation state ──────────────────────────────────────────────
-  const allLessons: FlatLesson[]  = modules.flatMap(m => m.lessons.map(l => ({ ...l, module: m })))
+  // Order lessons the same way the sidebar renders them: standalone intro
+  // lessons first, then the numbered modules' remaining lessons. Each lesson
+  // keeps its *raw* owning module (so its URL and quiz gating are unchanged).
+  const sidebarStructure = buildSidebarStructure(modules)
+  const rawModuleById     = new Map(modules.map(m => [m.id, m]))
+  const allLessons: FlatLesson[] = [
+    ...sidebarStructure.standalone.map(s => ({ ...s.lesson, module: rawModuleById.get(s.moduleId)! })),
+    ...sidebarStructure.modules.flatMap(m =>
+      m.lessons.map(l => ({ ...l, module: rawModuleById.get(m.id)! }))
+    ),
+  ]
   const currentIndex              = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
   const prevLesson                = currentIndex > 0                       ? allLessons[currentIndex - 1] : null
   const nextLesson                = currentIndex < allLessons.length - 1  ? allLessons[currentIndex + 1] : null
@@ -348,11 +359,16 @@ export default function LessonPlayerPage() {
   const nextIsBlocked      = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
 
   // ── Lesson metadata ────────────────────────────────────────────────────────
+  // moduleIndex is kept on the raw module list for the remaining-time / quiz math.
   const moduleIndex     = module ? modules.findIndex(m => m.id === module.id) : -1
-  const moduleNumber    = moduleIndex + 1
-  const lessonInModIdx  = lesson && module ? module.lessons.findIndex(l => l.id === lesson.id) : -1
+  // Display numbering follows the visible (standalone-partitioned) structure.
+  const activeIsStandalone = !!lesson && sidebarStructure.standalone.some(s => s.lesson.id === lesson.id)
+  const numberedIndex   = module ? sidebarStructure.modules.findIndex(m => m.id === module.id) : -1
+  const numberedModule  = numberedIndex >= 0 ? sidebarStructure.modules[numberedIndex] : undefined
+  const moduleNumber    = numberedIndex + 1
+  const lessonInModIdx  = lesson && numberedModule ? numberedModule.lessons.findIndex(l => l.id === lesson.id) : -1
   const lessonNumber    = lessonInModIdx + 1
-  const totalModLessons = module?.lessons.length ?? 0
+  const totalModLessons = numberedModule?.lessons.length ?? 0
   // videoDuration (from loadedmetadata) is more accurate than the DB field; fall back gracefully
   const displayDuration = videoDuration ?? lesson?.duration_minutes ?? null
 
@@ -457,7 +473,7 @@ export default function LessonPlayerPage() {
             <List className="w-5 h-5" />
           </button>
           <div className="flex-1 min-w-0">
-            <p className="text-xs text-white/45 truncate">{module?.title}</p>
+            <p className="text-xs text-white/45 truncate">{activeIsStandalone ? 'Introduction' : module?.title}</p>
             <p className="text-sm font-semibold text-white truncate">{lesson.title}</p>
           </div>
           {!PILOT_MODE && completed && (
@@ -545,7 +561,9 @@ export default function LessonPlayerPage() {
 
             {/* Lesson metadata strip */}
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 mb-6 text-[11px] text-white/35 font-medium select-none leading-relaxed">
-              {moduleNumber > 0 && (
+              {activeIsStandalone ? (
+                <span>Introduction</span>
+              ) : moduleNumber > 0 && (
                 <span>Module&nbsp;{moduleNumber}&ensp;·&ensp;Leçon&nbsp;{lessonNumber}&nbsp;/&nbsp;{totalModLessons}</span>
               )}
               {displayDuration !== null && displayDuration > 0 && (
