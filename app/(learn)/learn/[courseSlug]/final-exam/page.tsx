@@ -176,7 +176,7 @@ export default function FinalExamPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-3">
+      <div className="flex items-center justify-center h-[calc(100vh-48px)] bg-[#0f1117] text-white/40 gap-3">
         <Loader2 className="w-5 h-5 animate-spin" />
         <span className="text-sm">Chargement de l&apos;examen…</span>
       </div>
@@ -184,7 +184,7 @@ export default function FinalExamPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-72px)] flex flex-col bg-[#0f1117]">
+    <div className="h-[calc(100vh-48px)] flex flex-col bg-[#0f1117]">
 
       {/* Nav bar */}
       <div className="shrink-0 flex items-center gap-3 px-6 py-3 bg-[#1a1d27] border-b border-amber-500/20">

@@ -66,7 +66,7 @@ export default function LessonSidebar({
         href={`/learn/${courseSlug}/${moduleId}/${les.id}`}
         onClick={onClose}
         className={cn(
-          'flex items-start gap-3 px-6 py-3 transition-all duration-150 border-l-2',
+          'flex items-start gap-3 mx-2.5 px-3.5 py-3 rounded-lg transition-all duration-150 border-l-2',
           isActive
             ? 'bg-primary/[0.12] border-primary'
             : 'border-transparent hover:bg-white/[0.06] hover:border-white/20'
@@ -109,7 +109,7 @@ export default function LessonSidebar({
       <aside className={cn(
         'lms-sidebar bg-[#1a1d27] border-r border-white/10 overflow-y-auto overflow-x-hidden shrink-0',
         'transition-all duration-300 z-40',
-        'fixed md:static top-[72px] md:top-0 bottom-0 left-0 md:h-full',
+        'fixed md:static top-[48px] md:top-0 bottom-0 left-0 md:h-full',
         sideOpen ? 'w-[21.5rem] shadow-2xl shadow-black/50' : 'w-0 md:w-[21.5rem]',
       )}>
         {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -131,7 +131,7 @@ export default function LessonSidebar({
                   {progressPct}%
                 </span>
               </div>
-              <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">
+              <div className="w-full h-2.5 bg-white/10 rounded-full overflow-hidden">
                 <div
                   className="h-full bg-primary rounded-full transition-[width] duration-700 ease-out"
                   style={{ width: `${progressPct}%` }}
@@ -190,7 +190,7 @@ export default function LessonSidebar({
                     )}
                   </div>
                   {modTotal > 0 && (
-                    <div className="w-full h-1.5 bg-white/[0.08] rounded-full overflow-hidden">
+                    <div className="w-full h-2 bg-white/[0.08] rounded-full overflow-hidden">
                       <div
                         className={cn(
                           'h-full rounded-full transition-[width] duration-700 ease-out',
@@ -213,7 +213,7 @@ export default function LessonSidebar({
                       href={`/learn/${courseSlug}/${mod.id}/quiz`}
                       onClick={onClose}
                       className={cn(
-                        'flex items-center gap-3 px-6 py-2.5 transition-all duration-150 border-l-2',
+                        'flex items-center gap-3 mx-2.5 px-3.5 py-2.5 rounded-lg transition-all duration-150 border-l-2',
                         isQuizActive
                           ? 'bg-secondary/[0.12] border-secondary'
                           : 'border-transparent hover:bg-white/[0.06] hover:border-white/20'
@@ -255,7 +255,7 @@ export default function LessonSidebar({
                 href={`/learn/${courseSlug}/final-exam`}
                 onClick={onClose}
                 className={cn(
-                  'flex items-center gap-3 px-6 py-3 transition-all duration-150 border-l-2',
+                  'flex items-center gap-3 mx-2.5 px-3.5 py-3 rounded-lg transition-all duration-150 border-l-2',
                   isFinalExamActive
                     ? 'bg-amber-500/[0.12] border-amber-400'
                     : 'border-transparent hover:bg-white/[0.06] hover:border-white/20'

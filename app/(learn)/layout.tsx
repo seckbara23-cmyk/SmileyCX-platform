@@ -12,8 +12,8 @@ export default async function LearnLayout({ children }: { children: React.ReactN
 
   return (
     <>
-      <Header />
-      <main className="pt-[72px]">{children}</main>
+      <Header compact />
+      <main className="pt-[48px]">{children}</main>
     </>
   )
 }

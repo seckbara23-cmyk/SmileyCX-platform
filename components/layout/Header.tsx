@@ -15,7 +15,7 @@ const NAV_LINKS = [
   { id: 'contact',    label: 'Contact' },
 ]
 
-export default function Header() {
+export default function Header({ compact = false }: { compact?: boolean }) {
   const [scrolled,      setScrolled]      = useState(false)
   const [menuOpen,      setMenuOpen]      = useState(false)
   const [dropOpen,      setDropOpen]      = useState(false)
@@ -102,7 +102,10 @@ export default function Header() {
       <div id="scroll-progress" />
 
       <div className="cx-container">
-        <nav className="flex items-center justify-between py-4" aria-label="Navigation principale">
+        <nav
+          className={cn('flex items-center justify-between', compact ? 'py-1.5' : 'py-4')}
+          aria-label="Navigation principale"
+        >
           {/* Logo */}
           <a
             href="/#accueil"

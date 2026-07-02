@@ -424,7 +424,7 @@ export default function LessonPlayerPage() {
   // ── Loading / error ────────────────────────────────────────────────────────
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-3">
+      <div className="flex items-center justify-center h-[calc(100vh-48px)] bg-[#0f1117] text-white/40 gap-3">
         <Loader2 className="w-5 h-5 animate-spin" />
         <span className="text-sm">Chargement…</span>
       </div>
@@ -433,7 +433,7 @@ export default function LessonPlayerPage() {
 
   if (!lesson) {
     return (
-      <div className="flex flex-col items-center justify-center h-[calc(100vh-72px)] bg-[#0f1117] text-white/40 gap-4">
+      <div className="flex flex-col items-center justify-center h-[calc(100vh-48px)] bg-[#0f1117] text-white/40 gap-4">
         <p className="text-sm">Leçon introuvable.</p>
         <Link href="/courses" className="text-primary text-sm hover:underline">← Les formations</Link>
       </div>
@@ -441,7 +441,7 @@ export default function LessonPlayerPage() {
   }
 
   return (
-    <div className="relative flex h-[calc(100vh-72px)] bg-[#0f1117]">
+    <div className="relative flex h-[calc(100vh-48px)] bg-[#0f1117]">
 
       {/* ── Sidebar ──────────────────────────────────────────────────────── */}
       <LessonSidebar
