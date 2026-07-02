@@ -9,13 +9,13 @@
  *  public  — Production. Auth + payments required; signup open.
  *
  * Set NEXT_PUBLIC_PLATFORM_MODE in .env.local.
- * Defaults to 'private' when unset (safe closed default).
+ * Defaults to 'pilot' when unset (open pilot is current operating mode).
  */
 export type PlatformMode = 'private' | 'pilot' | 'public'
 
 const RAW = process.env.NEXT_PUBLIC_PLATFORM_MODE ?? ''
 export const PLATFORM_MODE: PlatformMode =
-  RAW === 'pilot' || RAW === 'public' ? (RAW as PlatformMode) : 'private'
+  RAW === 'private' || RAW === 'public' ? (RAW as PlatformMode) : 'pilot'
 
 // ── Derived flags — kept for backward compatibility with existing imports ──
 

@@ -134,10 +134,6 @@ export async function middleware(request: NextRequest) {
 
   // ── Learner auth pages ─────────────────────────────────────────────────
   if (LEARNER_AUTH_PAGES.some(p => pathname === p)) {
-    if (PLATFORM_MODE === 'pilot') {
-      // Pilot: no accounts needed — send everyone to the catalog
-      return applySecurityHeaders(NextResponse.redirect(new URL('/courses', request.url)))
-    }
     if (user) {
       // /login is exempt from the site-wide gate, so handle non-allowlisted
       // authenticated users explicitly here to avoid them reaching /dashboard.
