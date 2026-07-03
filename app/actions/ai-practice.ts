@@ -41,6 +41,13 @@ export interface VoiceScenario {
   situation:      string | null
   objectives:     string[]
   selfAssessment: SelfAssessmentQuestion[]
+  /**
+   * True when a live ElevenLabs voice session can be started: the scenario has
+   * an agent configured AND the server has an API key. Derived server-side —
+   * the agent id and API key are never sent to the browser. When false, the UI
+   * shows a French setup notice and keeps the self-assessment fallback.
+   */
+  voiceAvailable: boolean
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -114,15 +121,23 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
 
   try {
     const supabase = await createClient()
+    // agent_id and provider are read only to derive `voiceAvailable`; they are
+    // never returned to the browser.
     const { data, error } = await supabase
       .from('ai_scenarios')
-      .select('id, slug, title, persona_name, situation, objectives, self_assessment')
+      .select('id, slug, title, persona_name, situation, objectives, self_assessment, agent_id, provider')
       .eq('lesson_id', lessonId)
       .eq('is_published', true)
       .limit(1)
       .maybeSingle()
 
     if (error || !data) return null
+
+    const voiceAvailable =
+      data.provider === 'elevenlabs' &&
+      typeof data.agent_id === 'string' &&
+      data.agent_id.trim() !== '' &&
+      !!process.env.ELEVENLABS_API_KEY
 
     return {
       id:             data.id,
@@ -134,6 +149,7 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
       selfAssessment: Array.isArray(data.self_assessment)
         ? (data.self_assessment as SelfAssessmentQuestion[])
         : [],
+      voiceAvailable,
     }
   } catch (e) {
     log.error({ lessonId, error: (e as Error).message }, 'fetchVoiceScenario failed')
@@ -192,6 +208,90 @@ export async function createAiSession(
     return { sessionId: session.id }
   } catch (e) {
     log.error({ error: (e as Error).message }, 'createAiSession failed')
+    return { error: 'Service indisponible.' }
+  }
+}
+
+// ── Start a live ElevenLabs voice session ─────────────────────────────────────
+// Validates + rate-limits, exchanges the server-only ELEVENLABS_API_KEY for a
+// short-lived signed WebSocket URL (client-safe), then creates the session row.
+// The agent id and API key never reach the browser. `reason: 'not_configured'`
+// lets the UI show a French setup notice instead of an error.
+
+const SIGNED_URL_ENDPOINT =
+  'https://api.elevenlabs.io/v1/convai/conversation/get-signed-url'
+
+export async function startVoiceSession(
+  input: { scenarioId: string; anonId?: string }
+): Promise<{ sessionId?: string; signedUrl?: string; error?: string; reason?: 'not_configured' }> {
+  const parsed = CreateSessionSchema.safeParse(input)
+  if (!parsed.success) return { error: 'Données invalides.' }
+  const { scenarioId, anonId } = parsed.data
+
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user && !anonId) return { error: 'Session non identifiée.' }
+
+    // Throttle voice sessions per identity (voice is costly) — fails open.
+    const rlKey = `ai_voice:${user?.id ?? anonId}`
+    const rl = await rateLimitDb(rlKey, { limit: 10, windowMs: 10 * 60 * 1000 })
+    if (!rl.success) return { error: 'Trop de sessions. Réessayez dans quelques minutes.' }
+
+    const apiKey = process.env.ELEVENLABS_API_KEY
+    if (!apiKey) return { reason: 'not_configured', error: 'Pratique vocale indisponible.' }
+
+    const admin = createAdminClient()
+    const { data: scenario, error: scErr } = await admin
+      .from('ai_scenarios')
+      .select('id, is_published, provider, agent_id')
+      .eq('id', scenarioId)
+      .single()
+    if (scErr || !scenario || !scenario.is_published) {
+      return { error: 'Scénario indisponible.' }
+    }
+    if (scenario.provider !== 'elevenlabs' || !scenario.agent_id) {
+      return { reason: 'not_configured', error: 'Pratique vocale indisponible.' }
+    }
+
+    // Exchange the API key for a signed URL (server-only).
+    let signedUrl: string
+    try {
+      const res = await fetch(
+        `${SIGNED_URL_ENDPOINT}?agent_id=${encodeURIComponent(scenario.agent_id)}`,
+        { headers: { 'xi-api-key': apiKey }, cache: 'no-store' }
+      )
+      if (!res.ok) {
+        log.error({ scenarioId, status: res.status }, 'ElevenLabs signed-url request failed')
+        return { error: 'Connexion à la pratique vocale impossible.' }
+      }
+      const body = (await res.json()) as { signed_url?: string }
+      if (!body.signed_url) return { error: 'Connexion à la pratique vocale impossible.' }
+      signedUrl = body.signed_url
+    } catch (e) {
+      log.error({ scenarioId, error: (e as Error).message }, 'ElevenLabs signed-url fetch threw')
+      return { error: 'Connexion à la pratique vocale impossible.' }
+    }
+
+    // Signed URL obtained → create the session row.
+    const { data: session, error: insErr } = await admin
+      .from('ai_sessions')
+      .insert({
+        scenario_id: scenarioId,
+        user_id:     user ? user.id : null,
+        anon_id:     user ? null : anonId,
+        status:      'active',
+      })
+      .select('id')
+      .single()
+
+    if (insErr || !session) {
+      log.error({ scenarioId, error: insErr?.message }, 'startVoiceSession insert failed')
+      return { error: 'Impossible de démarrer la session.' }
+    }
+    return { sessionId: session.id, signedUrl }
+  } catch (e) {
+    log.error({ error: (e as Error).message }, 'startVoiceSession failed')
     return { error: 'Service indisponible.' }
   }
 }

@@ -8,6 +8,7 @@ import {
   saveSelfAssessment,
   type VoiceScenario,
 } from '@/app/actions/ai-practice'
+import VoicePracticeSession from './VoicePracticeSession'
 import SelfAssessmentForm from './SelfAssessmentForm'
 import SessionSummary from './SessionSummary'
 
@@ -27,7 +28,7 @@ function getAnonId(): string | undefined {
   }
 }
 
-type Phase = 'intro' | 'assessment' | 'summary'
+type Phase = 'intro' | 'voice' | 'assessment' | 'summary'
 
 interface Props {
   scenario:  VoiceScenario
@@ -47,7 +48,9 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
     if (pilotMode) setAnonId(getAnonId())
   }, [pilotMode])
 
-  function handleStart() {
+  // Self-assessment fallback path (no live voice): create a session up front so
+  // the self-assessment feedback has a session to attach to.
+  function handleStartSelfAssessment() {
     setError('')
     startTransition(async () => {
       const { sessionId: id, error: err } = await createAiSession({
@@ -62,6 +65,14 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
       setStartedAt(Date.now())
       setPhase('assessment')
     })
+  }
+
+  // Live voice completed → move to the same deterministic self-assessment.
+  function handleVoiceComplete(voiceSessionId: string) {
+    setSessionId(voiceSessionId)
+    setStartedAt(Date.now())
+    setError('')
+    setPhase('assessment')
   }
 
   function handleSubmit(submitted: Record<string, number | string>) {
@@ -131,28 +142,62 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
             </div>
           )}
 
-          {/* Phase 1a honesty: live voice arrives later; self-assessment is available now. */}
-          <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/10">
-            <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-            <p className="text-xs text-white/55 leading-relaxed">
-              La conversation vocale avec {scenario.personaName} arrive bientôt. En attendant,
-              préparez votre approche&nbsp;: imaginez comment vous géreriez cet échange, puis
-              évaluez-vous honnêtement ci-dessous.
-            </p>
-          </div>
-
-          <div>
-            <button
-              type="button"
-              onClick={handleStart}
-              disabled={isPending || (pilotMode && !anonId)}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
-            >
-              {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mic className="w-4 h-4" />}
-              Commencer l&apos;auto-évaluation
-            </button>
-          </div>
+          {scenario.voiceAvailable ? (
+            <>
+              <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/10">
+                <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                <p className="text-xs text-white/55 leading-relaxed">
+                  Vous allez parler avec {scenario.personaName} à voix haute. Autorisez votre
+                  microphone, gérez l&apos;échange, puis évaluez-vous. Cliquez sur «&nbsp;Terminer&nbsp;»
+                  quand vous avez fini.
+                </p>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={() => setPhase('voice')}
+                  disabled={pilotMode && !anonId}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  <Mic className="w-4 h-4" /> Commencer la conversation
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* No agent configured / voice unavailable → French setup notice + self-assessment fallback */}
+              <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/10">
+                <Info className="w-4 h-4 text-primary shrink-0 mt-0.5" />
+                <p className="text-xs text-white/55 leading-relaxed">
+                  La conversation vocale avec {scenario.personaName} est en cours de configuration.
+                  En attendant, préparez votre approche puis évaluez-vous ci-dessous.
+                </p>
+              </div>
+              <div>
+                <button
+                  type="button"
+                  onClick={handleStartSelfAssessment}
+                  disabled={isPending || (pilotMode && !anonId)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+                >
+                  {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mic className="w-4 h-4" />}
+                  Commencer l&apos;auto-évaluation
+                </button>
+              </div>
+            </>
+          )}
         </div>
+      )}
+
+      {phase === 'voice' && (
+        <VoicePracticeSession
+          scenarioId={scenario.id}
+          personaName={scenario.personaName}
+          pilotMode={pilotMode}
+          anonId={anonId}
+          onComplete={handleVoiceComplete}
+          onCancel={() => setPhase('intro')}
+        />
       )}
 
       {phase === 'assessment' && (

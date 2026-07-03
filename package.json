@@ -16,6 +16,7 @@
     "e2e:ui": "playwright test --ui"
   },
   "dependencies": {
+    "@11labs/client": "^0.2.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/utilities": "^3.2.2",
     "@react-pdf/renderer": "^4.5.1",
