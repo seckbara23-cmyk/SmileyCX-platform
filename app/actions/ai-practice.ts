@@ -21,6 +21,13 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { createLogger } from '@/lib/logger'
+import { AI_COACH_ENABLED } from '@/lib/ai/flags'
+import {
+  runCompetencyEngine,
+  type CompetencyConfig,
+  type EngineResult,
+  type EngineHint,
+} from '@/lib/ai/competency-engine'
 
 const log = createLogger('actions/ai-practice')
 
@@ -31,6 +38,15 @@ export interface SelfAssessmentQuestion {
   type:      'scale' | 'text'
   question:  string
   guidance?: string
+}
+
+/** Coach briefing config (ai_scenarios.briefing jsonb) — pure configuration, no AI. */
+export interface VoiceBriefing {
+  objective_fr?:        string
+  goals_fr?:            string[]
+  duration_min?:        number
+  difficulty?:          number   // 1–5
+  success_criteria_fr?: string[]
 }
 
 export interface VoiceScenario {
@@ -48,6 +64,12 @@ export interface VoiceScenario {
    * shows a French setup notice and keeps the self-assessment fallback.
    */
   voiceAvailable: boolean
+  /**
+   * Coach briefing (Phase 2A). Populated only when the coach flag is on AND
+   * the scenario has a briefing configured; null otherwise (UI falls back to
+   * the Phase 1 intro).
+   */
+  briefing: VoiceBriefing | null
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -98,7 +120,7 @@ async function authorizeSession(sessionId: string, anonId?: string) {
   const admin = createAdminClient()
   const { data: session, error } = await admin
     .from('ai_sessions')
-    .select('id, user_id, anon_id, status')
+    .select('id, user_id, anon_id, status, scenario_id')
     .eq('id', sessionId)
     .single()
 
@@ -121,11 +143,13 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
 
   try {
     const supabase = await createClient()
-    // agent_id and provider are read only to derive `voiceAvailable`; they are
-    // never returned to the browser.
+    // select('*') keeps this resilient to additive columns that may not exist
+    // yet (e.g. `briefing` before migration 025). This runs server-side only:
+    // agent_id / prompt_template are read to derive `voiceAvailable` but are
+    // never returned to the browser — the mapping below is the contract.
     const { data, error } = await supabase
       .from('ai_scenarios')
-      .select('id, slug, title, persona_name, situation, objectives, self_assessment, agent_id, provider')
+      .select('*')
       .eq('lesson_id', lessonId)
       .eq('is_published', true)
       .limit(1)
@@ -154,6 +178,10 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
         ? (data.self_assessment as SelfAssessmentQuestion[])
         : [],
       voiceAvailable,
+      briefing:
+        AI_COACH_ENABLED && data.briefing && typeof data.briefing === 'object'
+          ? (data.briefing as VoiceBriefing)
+          : null,
     }
   } catch (e) {
     log.error({ lessonId, error: (e as Error).message }, 'fetchVoiceScenario failed')
@@ -432,11 +460,100 @@ export async function completeAiSession(
       log.error({ sessionId, error: error.message }, 'completeAiSession failed')
       return { error: 'Mise à jour impossible.' }
     }
+
+    // Phase 2A: deterministic Competency Engine (no LLM). Gated on the coach
+    // flag and never fatal — completion succeeds even if the engine or its
+    // tables (migration 025) are unavailable.
+    if (AI_COACH_ENABLED && status === 'completed') {
+      try {
+        await runEngineForSession(sessionId, session.scenario_id as string)
+      } catch (e) {
+        log.error({ sessionId, error: (e as Error).message }, 'competency engine run failed (non-fatal)')
+      }
+    }
+
     return { ok: true }
   } catch (e) {
     log.error({ error: (e as Error).message }, 'completeAiSession failed')
     return { error: 'Service indisponible.' }
   }
+}
+
+// ── Deterministic Competency Engine hook (Phase 2A — no LLM) ──────────────────
+// Loads the transcript + admin-configured lexicons, runs the pure engine, and
+// stores the full result on the session (engine_signals) plus one ai_scores
+// row per competency (source='engine'). Called only from completeAiSession.
+
+async function runEngineForSession(sessionId: string, scenarioId: string): Promise<void> {
+  const admin = createAdminClient()
+
+  const { data: turns } = await admin
+    .from('ai_turns')
+    .select('speaker, transcript, turn_index')
+    .eq('session_id', sessionId)
+    .order('turn_index')
+  if (!turns || turns.length === 0) return // self-assessment-only sessions have no transcript
+
+  const { data: comps } = await admin
+    .from('ai_competencies')
+    .select('key, label_fr, signals')
+    .eq('is_active', true)
+    .order('order_index')
+  if (!comps || comps.length === 0) return
+
+  const { data: rubric } = await admin
+    .from('ai_rubrics')
+    .select('competency_key, weight')
+    .eq('scenario_id', scenarioId)
+
+  const rubricKeys = new Set((rubric ?? []).map(r => r.competency_key as string))
+  const weights = Object.fromEntries(
+    (rubric ?? []).map(r => [r.competency_key as string, Number(r.weight)])
+  )
+
+  const configs: CompetencyConfig[] = comps
+    .filter(c => rubricKeys.size === 0 || rubricKeys.has(c.key as string))
+    .map(c => ({
+      key:     c.key as string,
+      labelFr: c.label_fr as string,
+      signals: (c.signals ?? {}) as CompetencyConfig['signals'],
+    }))
+  if (configs.length === 0) return
+
+  const result = runCompetencyEngine(
+    turns.map(t => ({
+      turnIndex:  t.turn_index as number,
+      speaker:    t.speaker as 'learner' | 'agent',
+      transcript: t.transcript as string,
+    })),
+    configs,
+    weights,
+  )
+
+  // Full result on the session: one jsonb read powers replay + summary.
+  const { error: upErr } = await admin
+    .from('ai_sessions')
+    .update({ engine_signals: result })
+    .eq('id', sessionId)
+  if (upErr) log.error({ sessionId, error: upErr.message }, 'engine_signals update failed')
+
+  const { error: scErr } = await admin.from('ai_scores').upsert(
+    result.scores.map(s => ({
+      session_id:          sessionId,
+      competency_key:      s.key,
+      score:               s.score,
+      source:              'engine',
+      evidence_fr:         s.evidenceFr,
+      evidence_turn_index: s.evidenceTurnIndex,
+    })),
+    { onConflict: 'session_id,competency_key,source' }
+  )
+  if (scErr) log.error({ sessionId, error: scErr.message }, 'ai_scores upsert failed')
+
+  log.info(
+    { sessionId, scores: result.scores.length, hints: result.hints.length, overall: result.overallScore },
+    'competency engine stored'
+  )
 }
 
 // ── Save the deterministic self-assessment (Phase 1a) ─────────────────────────
@@ -469,5 +586,90 @@ export async function saveSelfAssessment(
   } catch (e) {
     log.error({ error: (e as Error).message }, 'saveSelfAssessment failed')
     return { error: 'Service indisponible.' }
+  }
+}
+
+// ── Read coaching data for the debrief (Phase 2A — pure DB read, no LLM) ──────
+
+export interface CoachingScoreView {
+  key:               string
+  labelFr:           string
+  score:             number
+  evidenceFr:        string | null
+  evidenceTurnIndex: number | null
+}
+
+export interface CoachingData {
+  turns:        { turnIndex: number; speaker: 'learner' | 'agent'; transcript: string }[]
+  overallScore: number
+  scores:       CoachingScoreView[]
+  hints:        EngineHint[]
+  /** Competencies scoring ≥ 7 (top 3) — deterministic strengths. */
+  strengths:    CoachingScoreView[]
+  /** Competencies scoring ≤ 5 (bottom 3) — deterministic areas to improve. */
+  improvements: CoachingScoreView[]
+}
+
+const GetCoachingSchema = z.object({
+  sessionId: Uuid,
+  anonId:    Uuid.optional(),
+})
+
+/**
+ * Returns the stored transcript + deterministic engine output for a session
+ * the caller owns. Null when the coach flag is off, the session is not owned,
+ * or the engine has no stored result (e.g. migration 025 not applied) — the
+ * UI then skips the coach debrief and goes straight to the self-assessment.
+ */
+export async function getSessionCoaching(
+  input: { sessionId: string; anonId?: string }
+): Promise<CoachingData | null> {
+  if (!AI_COACH_ENABLED) return null
+  const parsed = GetCoachingSchema.safeParse(input)
+  if (!parsed.success) return null
+  const { sessionId, anonId } = parsed.data
+
+  try {
+    const session = await authorizeSession(sessionId, anonId)
+    if (!session) return null
+
+    const admin = createAdminClient()
+    const [{ data: sessionRow }, { data: turns }] = await Promise.all([
+      admin.from('ai_sessions').select('engine_signals').eq('id', sessionId).single(),
+      admin.from('ai_turns')
+        .select('speaker, transcript, turn_index')
+        .eq('session_id', sessionId)
+        .order('turn_index'),
+    ])
+
+    const engine = sessionRow?.engine_signals as EngineResult | null | undefined
+    if (!engine || !Array.isArray(engine.scores) || !turns || turns.length === 0) return null
+
+    const scores: CoachingScoreView[] = engine.scores.map(s => ({
+      key:               s.key,
+      labelFr:           s.labelFr,
+      score:             s.score,
+      evidenceFr:        s.evidenceFr,
+      evidenceTurnIndex: s.evidenceTurnIndex,
+    }))
+
+    const strengths = scores.filter(s => s.score >= 7).sort((a, b) => b.score - a.score).slice(0, 3)
+    const improvements = scores.filter(s => s.score <= 5).sort((a, b) => a.score - b.score).slice(0, 3)
+
+    return {
+      turns: turns.map(t => ({
+        turnIndex:  t.turn_index as number,
+        speaker:    t.speaker as 'learner' | 'agent',
+        transcript: t.transcript as string,
+      })),
+      overallScore: engine.overallScore ?? 0,
+      scores,
+      hints: Array.isArray(engine.hints) ? engine.hints : [],
+      strengths,
+      improvements,
+    }
+  } catch (e) {
+    log.error({ error: (e as Error).message }, 'getSessionCoaching failed')
+    return null
   }
 }
