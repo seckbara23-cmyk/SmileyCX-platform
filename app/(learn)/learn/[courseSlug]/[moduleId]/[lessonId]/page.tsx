@@ -11,6 +11,9 @@ import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
 import AutoAdvanceBanner from '@/components/lms/AutoAdvanceBanner'
 import ExerciseBlock, { type ExerciseData } from '@/components/lms/ExerciseBlock'
+import VoicePracticeBlock from '@/components/ai/VoicePracticeBlock'
+import { AI_VOICE_ENABLED } from '@/lib/ai/flags'
+import { fetchVoiceScenario, type VoiceScenario } from '@/app/actions/ai-practice'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface LessonRow extends SidebarLessonRow {}
@@ -49,6 +52,7 @@ export default function LessonPlayerPage() {
   const [hasFinalExam,     setHasFinalExam]     = useState(false)
   const [finalExamPassed,  setFinalExamPassed]  = useState(false)
   const [exercises,        setExercises]        = useState<ExerciseData[]>([])
+  const [voiceScenario,    setVoiceScenario]    = useState<VoiceScenario | null>(null)
 
   // Auto-advance state — only active when completion fires in this session
   const [justCompleted,        setJustCompleted]        = useState(false)
@@ -265,8 +269,17 @@ export default function LessonPlayerPage() {
     setAutoAdvanceCancelled(false)
     setVideoDuration(null)
     setExercises([])
+    setVoiceScenario(null)
 
     if (!lesson?.id) return
+
+    // Voice Practice: only query when the feature flag is enabled, so lessons
+    // without the flag (i.e. production by default) make zero extra requests
+    // and render exactly as before. Fails safe to null (no block) on any error.
+    if (AI_VOICE_ENABLED) {
+      fetchVoiceScenario(lesson.id).then(setVoiceScenario).catch(() => setVoiceScenario(null))
+    }
+
     supabase
       .from('exercises')
       .select('id, title, instructions, exercise_categories(id, name, color, order_index), exercise_items(id, label, correct_category_id, order_index)')
@@ -590,6 +603,10 @@ export default function LessonPlayerPage() {
             {exercises.map(ex => (
               <ExerciseBlock key={ex.id} exercise={ex} pilotMode={PILOT_MODE} />
             ))}
+
+            {AI_VOICE_ENABLED && voiceScenario && (
+              <VoicePracticeBlock scenario={voiceScenario} pilotMode={PILOT_MODE} />
+            )}
 
             <LessonNavigation
               courseSlug={courseSlug}
