@@ -39,7 +39,9 @@ function applySecurityHeaders(response: NextResponse): NextResponse {
   h.set('X-Frame-Options', 'DENY')
   h.set('X-XSS-Protection', '1; mode=block')
   h.set('Referrer-Policy', 'strict-origin-when-cross-origin')
-  h.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+  // microphone=(self): required for Voice Practice (ElevenLabs) on our own
+  // origin. camera and geolocation stay fully disabled — not used anywhere.
+  h.set('Permissions-Policy', 'camera=(), microphone=(self), geolocation=()')
   h.set(
     'Strict-Transport-Security',
     'max-age=63072000; includeSubDomains; preload',
@@ -57,8 +59,9 @@ function applySecurityHeaders(response: NextResponse): NextResponse {
       "img-src 'self' data: blob: https://*.supabase.co https://images.unsplash.com",
       // Supabase Storage video/audio files
       "media-src 'self' https://*.supabase.co blob:",
-      // Supabase API + auth
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+      // Supabase API + auth; ElevenLabs Conversational AI (Voice Practice) —
+      // signed WebSocket + LiveKit WebRTC transport
+      "connect-src 'self' https://*.supabase.co wss://*.supabase.co https://api.elevenlabs.io wss://api.elevenlabs.io wss://livekit.rtc.elevenlabs.io",
       // iframe embeds: YouTube, Vimeo, Loom
       "frame-src https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com https://www.loom.com",
       "object-src 'none'",
