@@ -31,6 +31,24 @@ interface Conversation {
   endSession: () => Promise<void>
 }
 
+// Diagnostic logger for the voice startup flow. Always logs to the console
+// (works in production too — open DevTools to see the exact failing step).
+function vlog(step: string, data?: unknown) {
+  // eslint-disable-next-line no-console
+  console.log(`[voice] ${step}`, data ?? '')
+}
+function verror(step: string, data?: unknown) {
+  // eslint-disable-next-line no-console
+  console.error(`[voice] FAILED at ${step}`, data ?? '')
+}
+
+const IS_DEV = process.env.NODE_ENV === 'development'
+
+/** In dev, append the technical detail to the learner-facing message. */
+function withDetail(message: string, detail?: string): string {
+  return IS_DEV && detail ? `${message} [${detail}]` : message
+}
+
 interface Props {
   scenarioId:  string
   personaName: string
@@ -102,7 +120,9 @@ export default function VoicePracticeSession({
     setState('micro')
 
     // 1. Microphone permission / browser support.
+    vlog('1/4 getUserMedia: requesting microphone')
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      verror('getUserMedia', 'navigator.mediaDevices.getUserMedia unavailable (unsupported browser or insecure context)')
       setError('Votre navigateur ne prend pas en charge le microphone. Essayez Chrome, Edge ou Firefox à jour.')
       setState('erreur')
       return
@@ -110,34 +130,59 @@ export default function VoicePracticeSession({
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       stream.getTracks().forEach(t => t.stop())
-    } catch {
-      setError('Accès au micro refusé. Autorisez le microphone dans votre navigateur, puis réessayez.')
+      vlog('1/4 getUserMedia: OK (permission granted)')
+    } catch (e) {
+      const err = e as DOMException
+      verror('getUserMedia', { name: err.name, message: err.message })
+      setError(withDetail(
+        'Accès au micro refusé. Autorisez le microphone dans votre navigateur, puis réessayez.',
+        `${err.name}: ${err.message}`
+      ))
       setState('erreur')
       return
     }
 
     // 2. Server: create session + signed URL (API key never leaves the server).
+    vlog('2/4 startVoiceSession: calling server action', { scenarioId })
     const res = await startVoiceSession({ scenarioId, anonId: anon })
     if (res.error || !res.sessionId || !res.signedUrl) {
-      setError(
+      verror('startVoiceSession (server)', {
+        error:  res.error,
+        reason: res.reason,
+        detail: res.detail,
+        hasSessionId: !!res.sessionId,
+        hasSignedUrl: !!res.signedUrl,
+      })
+      setError(withDetail(
         res.reason === 'not_configured'
           ? "La pratique vocale n'est pas encore configurée pour cette leçon."
-          : (res.error ?? 'Connexion à la pratique vocale impossible.')
-      )
+          : (res.error ?? 'Connexion à la pratique vocale impossible.'),
+        res.detail
+      ))
       setState('erreur')
       return
     }
+    try {
+      const u = new URL(res.signedUrl)
+      vlog('2/4 startVoiceSession: OK', { sessionId: res.sessionId, wsHost: u.host, wsPath: u.pathname })
+    } catch { vlog('2/4 startVoiceSession: OK (signed URL unparseable for logging)') }
     sessionIdRef.current = res.sessionId
     startedAtRef.current = Date.now()
     setState('connexion')
 
     // 3. Connect the ElevenLabs conversation.
     try {
+      vlog('3/4 SDK: importing @11labs/client')
       const { Conversation } = await import('@11labs/client')
+      vlog('3/4 SDK: imported — starting session (WebSocket connect)')
       conversationRef.current = await Conversation.startSession({
         signedUrl: res.signedUrl,
-        onConnect:      () => { if (!unmountedRef.current) setState('ecoute') },
+        onConnect:      ({ conversationId }: { conversationId: string }) => {
+          vlog('4/4 WebSocket: connected', { conversationId })
+          if (!unmountedRef.current) setState('ecoute')
+        },
         onStatusChange: ({ status }: { status: string }) => {
+          vlog('WebSocket status', status)
           if (!unmountedRef.current && status === 'connecting') setState('connexion')
         },
         onModeChange:   ({ mode }: { mode: 'speaking' | 'listening' }) => {
@@ -146,19 +191,36 @@ export default function VoicePracticeSession({
         onMessage:      ({ message, source }: { message: string; source: 'user' | 'ai' }) => {
           addTurn(source === 'ai' ? 'agent' : 'learner', message)
         },
-        onError:        (message: string) => {
-          void finalize('abandoned', true, 'Une erreur est survenue pendant la conversation.')
-          if (message) console.error('[voice] onError:', message)
+        onError:        (message: string, context?: unknown) => {
+          verror('conversation onError', { message, context })
+          void finalize('abandoned', true, withDetail('Une erreur est survenue pendant la conversation.', message))
         },
-        onDisconnect:   () => {
+        onDisconnect:   (details: { reason: string; message?: string; context?: Event | CloseEvent }) => {
+          const closeEvent = details.context as CloseEvent | undefined
+          verror('onDisconnect', {
+            reason:      details.reason,
+            message:     details.message,
+            closeCode:   closeEvent?.code,
+            closeReason: closeEvent?.reason,
+            wasClean:    closeEvent?.wasClean,
+          })
           // Normal end (learner pressed Terminer) → completed; otherwise a drop.
           if (finalizedRef.current) return
           if (endingRef.current) void finalize('completed', false)
-          else void finalize('abandoned', true, 'La connexion a été interrompue.')
+          else void finalize('abandoned', true, withDetail(
+            'La connexion a été interrompue.',
+            `${details.reason}${closeEvent?.code ? ` ws-close ${closeEvent.code} ${closeEvent.reason ?? ''}` : ''}${details.message ? ` — ${details.message}` : ''}`
+          ))
         },
       }) as unknown as Conversation
-    } catch {
-      await finalize('abandoned', true, 'Connexion à la pratique vocale impossible.')
+      vlog('3/4 SDK: startSession resolved (conversation object ready)')
+    } catch (e) {
+      const err = e as Error
+      verror('SDK startSession threw', { name: err.name, message: err.message, stack: err.stack })
+      await finalize('abandoned', true, withDetail(
+        'Connexion à la pratique vocale impossible.',
+        `SDK: ${err.message}`
+      ))
     }
   }
 

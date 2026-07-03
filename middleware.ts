@@ -50,8 +50,11 @@ function applySecurityHeaders(response: NextResponse): NextResponse {
     'Content-Security-Policy',
     [
       "default-src 'self'",
-      // Next.js inline scripts + Supabase auth flows
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      // Next.js inline scripts + Supabase auth flows; blob: is required by the
+      // ElevenLabs SDK, which loads its AudioWorklet module from a blob URL
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+      // ElevenLabs SDK audio worklet/worker (blob URLs)
+      "worker-src 'self' blob:",
       // Tailwind inline styles
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
       // Google Fonts, Supabase storage, Unsplash

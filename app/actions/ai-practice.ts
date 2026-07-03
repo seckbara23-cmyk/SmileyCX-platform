@@ -131,7 +131,11 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
       .limit(1)
       .maybeSingle()
 
-    if (error || !data) return null
+    if (error) {
+      log.error({ lessonId, error: error.message }, 'fetchVoiceScenario query failed')
+      return null
+    }
+    if (!data) return null
 
     const voiceAvailable =
       data.provider === 'elevenlabs' &&
@@ -223,23 +227,44 @@ const SIGNED_URL_ENDPOINT =
 
 export async function startVoiceSession(
   input: { scenarioId: string; anonId?: string }
-): Promise<{ sessionId?: string; signedUrl?: string; error?: string; reason?: 'not_configured' }> {
+): Promise<{
+  sessionId?: string
+  signedUrl?: string
+  error?: string
+  reason?: 'not_configured'
+  /**
+   * Diagnostic detail for the exact failing step (HTTP status, provider
+   * response body, exception message). Never contains the API key. Logged
+   * to the browser console by the client; rendered in the UI in dev only.
+   */
+  detail?: string
+}> {
   const parsed = CreateSessionSchema.safeParse(input)
-  if (!parsed.success) return { error: 'Données invalides.' }
+  if (!parsed.success) return { error: 'Données invalides.', detail: 'input validation failed' }
   const { scenarioId, anonId } = parsed.data
 
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user && !anonId) return { error: 'Session non identifiée.' }
+    if (!user && !anonId) return { error: 'Session non identifiée.', detail: 'no user and no anonId' }
 
     // Throttle voice sessions per identity (voice is costly) — fails open.
     const rlKey = `ai_voice:${user?.id ?? anonId}`
     const rl = await rateLimitDb(rlKey, { limit: 10, windowMs: 10 * 60 * 1000 })
-    if (!rl.success) return { error: 'Trop de sessions. Réessayez dans quelques minutes.' }
+    if (!rl.success) return { error: 'Trop de sessions. Réessayez dans quelques minutes.', detail: 'rate limited' }
 
     const apiKey = process.env.ELEVENLABS_API_KEY
-    if (!apiKey) return { reason: 'not_configured', error: 'Pratique vocale indisponible.' }
+    log.info(
+      { scenarioId, hasApiKey: !!apiKey, apiKeyLength: apiKey?.length ?? 0 },
+      'startVoiceSession: begin'
+    )
+    if (!apiKey) {
+      return {
+        reason: 'not_configured',
+        error:  'Pratique vocale indisponible.',
+        detail: 'ELEVENLABS_API_KEY is not set in this environment',
+      }
+    }
 
     const admin = createAdminClient()
     const { data: scenario, error: scErr } = await admin
@@ -248,11 +273,20 @@ export async function startVoiceSession(
       .eq('id', scenarioId)
       .single()
     if (scErr || !scenario || !scenario.is_published) {
-      return { error: 'Scénario indisponible.' }
+      log.error({ scenarioId, dbError: scErr?.message, found: !!scenario }, 'startVoiceSession: scenario unavailable')
+      return {
+        error:  'Scénario indisponible.',
+        detail: `scenario lookup: ${scErr?.message ?? (scenario ? 'not published' : 'not found')}`,
+      }
     }
     if (scenario.provider !== 'elevenlabs' || !scenario.agent_id) {
-      return { reason: 'not_configured', error: 'Pratique vocale indisponible.' }
+      return {
+        reason: 'not_configured',
+        error:  'Pratique vocale indisponible.',
+        detail: `provider=${scenario.provider}, agent_id ${scenario.agent_id ? 'set' : 'missing'}`,
+      }
     }
+    log.info({ scenarioId, agentId: scenario.agent_id }, 'startVoiceSession: requesting signed URL')
 
     // Exchange the API key for a signed URL (server-only).
     let signedUrl: string
@@ -261,16 +295,55 @@ export async function startVoiceSession(
         `${SIGNED_URL_ENDPOINT}?agent_id=${encodeURIComponent(scenario.agent_id)}`,
         { headers: { 'xi-api-key': apiKey }, cache: 'no-store' }
       )
+      // Read the body as text first so error bodies are always captured.
+      const bodyText = await res.text()
+      log.info(
+        { scenarioId, status: res.status, ok: res.ok, bodyPreview: bodyText.slice(0, 500) },
+        'startVoiceSession: ElevenLabs signed-url response'
+      )
       if (!res.ok) {
-        log.error({ scenarioId, status: res.status }, 'ElevenLabs signed-url request failed')
-        return { error: 'Connexion à la pratique vocale impossible.' }
+        log.error(
+          { scenarioId, agentId: scenario.agent_id, status: res.status, body: bodyText.slice(0, 1000) },
+          'ElevenLabs signed-url request failed'
+        )
+        return {
+          error:  'Connexion à la pratique vocale impossible.',
+          detail: `ElevenLabs get-signed-url HTTP ${res.status} — ${bodyText.slice(0, 300)}`,
+        }
       }
-      const body = (await res.json()) as { signed_url?: string }
-      if (!body.signed_url) return { error: 'Connexion à la pratique vocale impossible.' }
+      let body: { signed_url?: string }
+      try {
+        body = JSON.parse(bodyText) as { signed_url?: string }
+      } catch {
+        log.error({ scenarioId, body: bodyText.slice(0, 500) }, 'ElevenLabs signed-url: non-JSON 200 response')
+        return {
+          error:  'Connexion à la pratique vocale impossible.',
+          detail: `ElevenLabs returned 200 but non-JSON body — ${bodyText.slice(0, 200)}`,
+        }
+      }
+      if (!body.signed_url) {
+        log.error({ scenarioId, body: bodyText.slice(0, 500) }, 'ElevenLabs signed-url: missing signed_url field')
+        return {
+          error:  'Connexion à la pratique vocale impossible.',
+          detail: `ElevenLabs 200 but no signed_url field — ${bodyText.slice(0, 200)}`,
+        }
+      }
       signedUrl = body.signed_url
+      // Log destination without the query string (the token lives there).
+      try {
+        const u = new URL(signedUrl)
+        log.info({ scenarioId, wsHost: u.host, wsPath: u.pathname }, 'startVoiceSession: signed URL obtained')
+      } catch { /* diagnostic only */ }
     } catch (e) {
-      log.error({ scenarioId, error: (e as Error).message }, 'ElevenLabs signed-url fetch threw')
-      return { error: 'Connexion à la pratique vocale impossible.' }
+      const err = e as Error
+      log.error(
+        { scenarioId, error: err.message, stack: err.stack?.slice(0, 800) },
+        'ElevenLabs signed-url fetch threw'
+      )
+      return {
+        error:  'Connexion à la pratique vocale impossible.',
+        detail: `fetch to ElevenLabs threw: ${err.message}`,
+      }
     }
 
     // Signed URL obtained → create the session row.
@@ -287,12 +360,14 @@ export async function startVoiceSession(
 
     if (insErr || !session) {
       log.error({ scenarioId, error: insErr?.message }, 'startVoiceSession insert failed')
-      return { error: 'Impossible de démarrer la session.' }
+      return { error: 'Impossible de démarrer la session.', detail: `ai_sessions insert: ${insErr?.message}` }
     }
+    log.info({ scenarioId, sessionId: session.id }, 'startVoiceSession: session created')
     return { sessionId: session.id, signedUrl }
   } catch (e) {
-    log.error({ error: (e as Error).message }, 'startVoiceSession failed')
-    return { error: 'Service indisponible.' }
+    const err = e as Error
+    log.error({ error: err.message, stack: err.stack?.slice(0, 800) }, 'startVoiceSession failed')
+    return { error: 'Service indisponible.', detail: `unhandled: ${err.message}` }
   }
 }
 
