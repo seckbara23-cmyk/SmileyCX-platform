@@ -17,3 +17,13 @@ export const AI_VOICE_ENABLED = process.env.NEXT_PUBLIC_AI_VOICE_ENABLED === 'tr
  * BEFORE enabling. No LLM is involved in Phase 2A either way.
  */
 export const AI_COACH_ENABLED = process.env.NEXT_PUBLIC_AI_COACH_ENABLED === 'true'
+
+/**
+ * AI_COACH_CLAUDE_ENABLED — Phase 2B kill-switch for the one-shot Claude
+ * evaluation. Default OFF. When false, no Claude/Anthropic call is ever made
+ * and the coach debrief shows only the deterministic report. Requires the coach
+ * flag on, migration 026 applied, and ANTHROPIC_API_KEY set on the server.
+ * Instant rollback = set back to false (stored reports remain readable).
+ */
+export const AI_COACH_CLAUDE_ENABLED =
+  process.env.NEXT_PUBLIC_AI_COACH_CLAUDE_ENABLED === 'true'
