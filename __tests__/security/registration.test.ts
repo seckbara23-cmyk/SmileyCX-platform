@@ -317,6 +317,13 @@ describe('SEC-2 §2 — Supabase disable_signup is validated at runtime', () => 
     expect(gate).toMatch(/process\.exitCode = 1/)
   })
 
+  it('the deploy gate is wired into the build and cannot be forgotten', () => {
+    // npm runs `prebuild` automatically before `npm run build`, which is what
+    // Vercel invokes — so enforcement needs no dashboard configuration.
+    const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'))
+    expect(pkg.scripts.prebuild).toContain('verify-prod-config.mjs')
+  })
+
   it('the startup hook cannot brick server preparation', async () => {
     const instrumentation = readFileSync(join(ROOT, 'instrumentation.ts'), 'utf8')
     // A try/catch backstop must wrap the check so no future change can throw.

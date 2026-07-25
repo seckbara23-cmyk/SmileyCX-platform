@@ -103,18 +103,32 @@ npm run verify:prod-config
 # ✓ Auth configuration verified: public self-registration is disabled.
 ```
 
-### 4.2 Enabling deploy-time enforcement
+### 4.2 Deploy-time enforcement (active — no action needed)
 
-Once `disable_signup` is `true`, wire the gate into the Vercel **Build Command**
-so an insecure configuration can never reach production again:
+Enforcement is wired into `package.json` as npm's automatic `prebuild` hook:
 
+```json
+"prebuild": "node scripts/security/verify-prod-config.mjs",
+"build":    "next build",
 ```
-npm run verify:prod-config && npm run build
-```
 
-> **Ordering matters.** Do not enable this while `disable_signup` is still
-> `false` — the gate would block the very deployment that fixes availability.
-> Flip the setting first, verify, then wire the gate.
+npm runs `prebuild` before every `npm run build`, which is what Vercel invokes.
+No dashboard configuration is required, and the gate cannot be forgotten.
+
+Behaviour:
+
+| Setting | Gate | Outcome |
+|---|---|---|
+| `disable_signup: true` | exit 0 | build proceeds |
+| `disable_signup: false` | **exit 1** | **build fails; insecure deployment never ships** |
+| unreachable / unreadable | exit 0 + warning | build proceeds (a transient network fault must not block a deploy) |
+| placeholder credentials (CI) | exit 0 + skip notice | build proceeds |
+
+> **Ordering note, for the record.** This hook was deliberately added *after*
+> `disable_signup` was set to `true`. Enabling it while the setting was still
+> `false` would have blocked the very deployment that restored availability.
+> If registration is ever reopened intentionally (see §6), remove this hook in
+> the same change, or every build will fail by design.
 
 ### 4.3 Provisioning a user
 
