@@ -25,8 +25,21 @@ const log = createLogger('security/auth-config')
 
 export type AuthConfigStatus = 'secure' | 'insecure' | 'unknown'
 
+/**
+ * Stable error codes (HOTFIX-1). Operators grep production logs for these, so
+ * they must never change once published.
+ *
+ *  SEC2_SIGNUP_ENABLED   — confirmed insecure: public registration is open.
+ *  SEC2_SIGNUP_UNVERIFIED — the setting could not be read. The application is
+ *                           running WITHOUT having verified this control.
+ */
+export const ERR_SIGNUP_ENABLED    = 'SEC2_SIGNUP_ENABLED'
+export const ERR_SIGNUP_UNVERIFIED = 'SEC2_SIGNUP_UNVERIFIED'
+
 export interface AuthConfigResult {
   status: AuthConfigStatus
+  /** Stable machine-readable code; undefined when status is 'secure'. */
+  code?: typeof ERR_SIGNUP_ENABLED | typeof ERR_SIGNUP_UNVERIFIED
   /** Raw value of disable_signup when the probe succeeded. */
   disableSignup?: boolean
   detail?: string
@@ -43,7 +56,7 @@ export async function checkSignupDisabled(
   const anonKey = opts.anonKey ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
   if (!url || !anonKey) {
-    return { status: 'unknown', detail: 'Supabase URL or anon key not configured' }
+    return { status: 'unknown', code: ERR_SIGNUP_UNVERIFIED, detail: 'Supabase URL or anon key not configured' }
   }
 
   try {
@@ -61,24 +74,25 @@ export async function checkSignupDisabled(
     }
 
     if (!res.ok) {
-      return { status: 'unknown', detail: `settings endpoint returned ${res.status}` }
+      return { status: 'unknown', code: ERR_SIGNUP_UNVERIFIED, detail: `settings endpoint returned ${res.status}` }
     }
 
     const body = (await res.json()) as { disable_signup?: unknown }
     if (typeof body.disable_signup !== 'boolean') {
-      return { status: 'unknown', detail: 'settings payload missing disable_signup' }
+      return { status: 'unknown', code: ERR_SIGNUP_UNVERIFIED, detail: 'settings payload missing disable_signup' }
     }
 
     return body.disable_signup
       ? { status: 'secure',   disableSignup: true }
-      : { status: 'insecure', disableSignup: false }
+      : { status: 'insecure', code: ERR_SIGNUP_ENABLED, disableSignup: false }
   } catch (e) {
-    return { status: 'unknown', detail: (e as Error).message }
+    return { status: 'unknown', code: ERR_SIGNUP_UNVERIFIED, detail: (e as Error).message }
   }
 }
 
 /** Message shown when the platform is running with public registration open. */
 export const INSECURE_SIGNUP_MESSAGE = [
+  `[${ERR_SIGNUP_ENABLED}]`,
   'SECURITY: public self-registration is ENABLED on this Supabase project',
   '(auth settings report disable_signup: false).',
   'XP Client Academy is invite-only — accounts must be provisioned by an administrator.',
@@ -103,7 +117,7 @@ export async function assertSignupDisabled(): Promise<AuthConfigResult> {
       break
 
     case 'insecure':
-      log.error({ disableSignup: false }, INSECURE_SIGNUP_MESSAGE)
+      log.error({ code: ERR_SIGNUP_ENABLED, disableSignup: false }, INSECURE_SIGNUP_MESSAGE)
       if (process.env.NODE_ENV === 'production') {
         throw new Error(INSECURE_SIGNUP_MESSAGE)
       }
@@ -111,9 +125,14 @@ export async function assertSignupDisabled(): Promise<AuthConfigResult> {
 
     case 'unknown':
       // Never silently continue: this is an error-level event, not a debug note.
+      // NOTE (HOTFIX-1): reaching this branch means the application is serving
+      // traffic WITHOUT having verified that public signup is closed. That is
+      // the ratified policy — a transient network fault must not take the
+      // platform down — but it is not a clean state. `npm run verify:prod-config`
+      // at deploy time is the deterministic check; this is the runtime backstop.
       log.error(
-        { detail: result.detail },
-        'SECURITY: could not verify Supabase disable_signup setting — verify manually in the Supabase Dashboard'
+        { code: ERR_SIGNUP_UNVERIFIED, detail: result.detail },
+        `[${ERR_SIGNUP_UNVERIFIED}] SECURITY: could not verify Supabase disable_signup setting — verify manually in the Supabase Dashboard`
       )
       break
   }
