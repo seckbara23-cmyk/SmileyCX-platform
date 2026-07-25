@@ -1,0 +1,85 @@
+name: CI
+
+# Runs the verification gates that were previously executed by hand in every
+# security phase (SEC-1, SEC-2). Nothing merges to main without passing these.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Cancel superseded runs on the same branch to save minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Placeholder values: the build must never depend on real credentials.
+  # Every page that touches Supabase is dynamic (rendered per request), so no
+  # network call is made at build time. If a build ever starts failing here,
+  # something began fetching at build time and should be reviewed.
+  NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder-anon-key
+  SUPABASE_SERVICE_ROLE_KEY: placeholder-service-role-key
+  NEXT_PUBLIC_APP_URL: http://localhost:3000
+  NEXT_PUBLIC_PLATFORM_MODE: pilot
+  EMAIL_DRY_RUN: 'true'
+  # Feature flags default OFF, matching production.
+  NEXT_PUBLIC_AI_VOICE_ENABLED: 'false'
+  NEXT_PUBLIC_AI_COACH_ENABLED: 'false'
+  NEXT_PUBLIC_AI_COACH_CLAUDE_ENABLED: 'false'
+
+jobs:
+  quality:
+    name: Typecheck · Lint · Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Includes the SEC-2 security regression suite
+      # (__tests__/security/registration.test.ts), which fails the build if a
+      # public registration path or a platform_role escalation is reintroduced.
+      - name: Unit tests
+        run: npm run test:ci
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # Automates the manual client-bundle secret scan performed in SEC-1/SEC-2.
+      # A server-only secret appearing in .next/static is a shipped credential.
+      - name: Verify no server secrets in the client bundle
+        run: node scripts/security/check-bundle-secrets.mjs

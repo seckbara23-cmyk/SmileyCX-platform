@@ -1,0 +1,52 @@
+{
+  "$comment": [
+    "Known RLS findings accepted as TRACKED DEBT so CI is green while they are",
+    "scheduled for remediation. This is a to-do list, NOT a permanent exemption:",
+    "the linter fails on anything NOT listed here, and warns when a listed entry",
+    "no longer matches (meaning it was fixed and should be deleted from this file).",
+    "",
+    "All four entries are the same bug class as SEC-1 finding F-2: a write policy",
+    "with USING but no WITH CHECK. PostgreSQL reuses USING as WITH CHECK, which",
+    "constrains row ownership but not column values.",
+    "",
+    "Discovered by scripts/security/check-migrations.mjs on its first run (SEC-3).",
+    "Full analysis and proposed fixes: docs/security/sec-3-devsecops.md section 5."
+  ],
+  "known": [
+    "001_phase_a_rls_fix.sql::profiles_update_own",
+    "001_phase_a_rls_fix.sql::enrollments_update",
+    "001_phase_a_rls_fix.sql::payments_update_own",
+    "018_certificates_pdf_bucket.sql::cert_service_update"
+  ],
+  "notes": {
+    "001_phase_a_rls_fix.sql::profiles_update_own": {
+      "status": "ALREADY FIXED — superseded by migration 027 (SEC-2).",
+      "why_still_listed": "The linter analyses each migration file in isolation and cannot know that a later migration redefines the policy. This entry documents that limitation; do not remove it while 001 remains in history.",
+      "severity": "none (remediated)"
+    },
+    "001_phase_a_rls_fix.sql::enrollments_update": {
+      "status": "LIVE — not superseded.",
+      "risk": "A learner may UPDATE their own enrollment row with no column constraint (e.g. status, expiry).",
+      "impact_today": "Low — pilot mode grants free enrollment anyway, so there is nothing to gain.",
+      "impact_later": "Access-control bypass once enrollment is paid or time-limited.",
+      "severity": "medium",
+      "proposed_fix": "Add WITH CHECK (user_id = auth.uid() AND status IS NOT DISTINCT FROM <current>), or drop the learner UPDATE policy entirely — enrollment writes go through service-role server actions."
+    },
+    "001_phase_a_rls_fix.sql::payments_update_own": {
+      "status": "LIVE — migration 011 redefines only the INSERT policies, not this one.",
+      "risk": "A learner may run UPDATE payments SET status='completed' WHERE user_id = auth.uid(). payments.status is CHECK-constrained to a value list that includes 'completed', so the write is accepted.",
+      "impact_today": "Low — payments are inactive during the pilot (FREE_ACCESS_MODE).",
+      "impact_later": "HIGH — a direct payment bypass once payment gateways are activated.",
+      "severity": "high (latent)",
+      "must_fix_before": "Activating payments / leaving pilot mode.",
+      "proposed_fix": "Drop the learner UPDATE policy — all payment mutations already run through service-role server actions (app/actions/payment.ts, lib/payments/index.ts) which bypass RLS."
+    },
+    "018_certificates_pdf_bucket.sql::cert_service_update": {
+      "status": "LIVE.",
+      "risk": "Scoped only by bucket_id, with no per-user folder restriction (unlike the sibling SELECT policy, which scopes to (storage.foldername(name))[1] = auth.uid()). Any authenticated user may therefore update ANY object in the certificates bucket.",
+      "impact_today": "Cross-user certificate tampering / overwrite.",
+      "severity": "medium-high",
+      "proposed_fix": "Restrict to the owner's folder and add a matching WITH CHECK, mirroring the SELECT policy, or limit the policy to the service role."
+    }
+  }
+}

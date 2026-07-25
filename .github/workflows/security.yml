@@ -1,0 +1,85 @@
+name: Security
+
+# Automates the security checks performed by hand during SEC-1 and SEC-2, and
+# runs them again weekly so newly-disclosed CVEs surface without a code change.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Mondays 06:00 UTC — catches advisories published against pinned deps.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so a secret committed earlier is still caught.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Scan tracked files and history for credentials
+        run: node scripts/security/check-secrets.mjs
+
+  rls:
+    name: RLS / migration lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # Fails on any NEW write policy lacking WITH CHECK — the defect class
+      # behind SEC-1 finding F-2 (platform_role self-escalation).
+      - name: Lint migrations
+        run: node scripts/security/check-migrations.mjs
+
+  dependencies:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # Gate on PRODUCTION dependencies only: a vulnerability in build/test
+      # tooling does not ship to users, and blocking on it trains people to
+      # ignore the gate.
+      #
+      # Threshold is CRITICAL, not high, and that is a deliberate ratchet:
+      # next@14.2.35 still carries 5 high advisories (DoS / SSRF / cache
+      # poisoning) whose only fix is the Next 15/16 major migration. Gating at
+      # `high` today would leave CI permanently red, which is worse than no
+      # gate at all. Raise this to `high` as part of that migration — tracked in
+      # docs/security/sec-3-devsecops.md section 6.
+      - name: Audit production dependencies (fails on critical)
+        run: npm run audit:prod
+
+      - name: Report all advisories (informational, never fatal)
+        if: always()
+        run: npm audit || true
