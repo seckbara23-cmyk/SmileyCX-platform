@@ -3,6 +3,10 @@ import { defineConfig } from 'vitest/config'
 import { resolve } from 'path'
 
 export default defineConfig({
+  // Next.js compiles JSX with the automatic runtime, so page/component modules
+  // never import React themselves. Match that here, otherwise importing a
+  // Server Component in a test fails with "React is not defined".
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'jsdom',
     globals: true,
