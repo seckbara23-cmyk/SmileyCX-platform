@@ -34,6 +34,16 @@ describe('middleware redirect rules', () => {
     vi.unstubAllEnvs()
     vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://test.supabase.co')
     vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'test-anon-key')
+    // The auth-required route list is MODE-DEPENDENT (see lib/pilot.ts and
+    // middleware.ts): in 'pilot' it is ['/app'] only, because pilot deliberately
+    // opens course content to anonymous visitors and /dashboard self-protects at
+    // page level. In 'public' (and 'private') the full list applies.
+    //
+    // Pin the suite to 'public' so these tests assert the STRICTEST matrix —
+    // that middleware really does gate every protected route when configured to.
+    // PLATFORM_MODE is resolved at module load, so this must be stubbed before
+    // the first dynamic import of '@/middleware' (which happens inside a test).
+    vi.stubEnv('NEXT_PUBLIC_PLATFORM_MODE', 'public')
     // Stub NextResponse.next to avoid edge-runtime Headers requirement
     vi.spyOn(NextResponse, 'next').mockReturnValue(new Response(null, { status: 200 }) as never)
   })

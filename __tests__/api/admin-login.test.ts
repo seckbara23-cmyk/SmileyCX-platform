@@ -7,8 +7,11 @@ import { NextRequest } from 'next/server'
 const mockRateLimit = vi.fn()
 const mockGetClientIp = vi.fn().mockReturnValue('127.0.0.1')
 
+// The route uses rateLimitDb (Supabase-backed, safe on serverless). The mock
+// must export it or every test in this file fails to import the route.
 vi.mock('@/lib/rate-limit', () => ({
   rateLimit: mockRateLimit,
+  rateLimitDb: mockRateLimit,
   getClientIp: mockGetClientIp,
 }))
 

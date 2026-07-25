@@ -1,0 +1,83 @@
+import { createAdminClient } from '@/lib/supabase/admin'
+import { createLogger } from '@/lib/logger'
+
+const log = createLogger('audit')
+
+/**
+ * Identity audit trail (SEC-2 / F-3).
+ *
+ * Writes append-only records to public.audit_log via the service-role client.
+ * Server-side only: it is imported exclusively from `'use server'` modules and
+ * route handlers, and depends on createAdminClient(), which reads the
+ * server-only SUPABASE_SERVICE_ROLE_KEY.
+ *
+ * NEVER pass passwords, tokens, session cookies, API keys or invitation secrets
+ * in `metadata` or `reason` — audit records are readable by every platform admin
+ * and are retained after the subject account is deleted.
+ */
+
+export type AuditEventType =
+  | 'user.created'
+  | 'user.deleted'
+  | 'user.role_changed'
+  | 'user.registration_blocked'
+
+export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
+export type AuditOutcome   = 'success' | 'failure'
+
+export interface AuditEvent {
+  eventType:     AuditEventType
+  actorType:     AuditActorType
+  actorId?:      string | null
+  actorEmail?:   string | null
+  subjectUserId?: string | null
+  subjectEmail?: string | null
+  /** How the action was performed, e.g. 'admin_panel', 'self_signup', 'api'. */
+  method?:       string | null
+  invitationId?: string | null
+  outcome:       AuditOutcome
+  /** Human-readable failure reason. Must not contain secrets. */
+  reason?:       string | null
+  ip?:           string | null
+  userAgent?:    string | null
+  metadata?:     Record<string, unknown>
+}
+
+/**
+ * Record an identity event. Never throws: a failure to audit must not break the
+ * user-facing action, but it is always logged at error level so the gap is
+ * visible in runtime logs.
+ */
+export async function logAuditEvent(event: AuditEvent): Promise<void> {
+  try {
+    const admin = createAdminClient()
+    const { error } = await admin.from('audit_log').insert({
+      event_type:      event.eventType,
+      actor_type:      event.actorType,
+      actor_id:        event.actorId        ?? null,
+      actor_email:     event.actorEmail     ?? null,
+      subject_user_id: event.subjectUserId  ?? null,
+      subject_email:   event.subjectEmail   ?? null,
+      method:          event.method         ?? null,
+      invitation_id:   event.invitationId   ?? null,
+      outcome:         event.outcome,
+      reason:          event.reason         ?? null,
+      ip:              event.ip             ?? null,
+      user_agent:      event.userAgent      ?? null,
+      metadata:        event.metadata       ?? {},
+    })
+
+    if (error) {
+      // Most likely cause: migration 027 not yet applied.
+      log.error(
+        { eventType: event.eventType, outcome: event.outcome, error: error.message },
+        'Failed to write audit_log record'
+      )
+    }
+  } catch (e) {
+    log.error(
+      { eventType: event.eventType, error: (e as Error).message },
+      'Unexpected failure writing audit_log record'
+    )
+  }
+}

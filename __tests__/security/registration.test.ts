@@ -1,0 +1,307 @@
+// @vitest-environment node
+/**
+ * SEC-2 security regression tests.
+ *
+ * These lock in the remediations from docs/security/sec-2-remediation.md so a
+ * future change cannot silently re-open the SEC-1 findings:
+ *
+ *   F-1  public self-registration      → no signup path may exist in the source
+ *   F-2  privilege escalation          → migration must pin platform_role
+ *   F-3  no audit trail                → audit_log + instrumentation must exist
+ *   F-4  no rate limiting              → provisioning must be rate limited
+ *   §2   external config validation    → insecure config must fail loudly
+ *
+ * Several of these are source-level assertions. That is deliberate: the public
+ * registration path was a CLIENT-side call straight to Supabase, so there is no
+ * server function to unit test — the only durable guarantee is that the call
+ * does not exist anywhere in the codebase.
+ */
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync, readdirSync, statSync } from 'fs'
+import { join, extname } from 'path'
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+const ROOT = process.cwd()
+const SOURCE_DIRS = ['app', 'components', 'lib']
+const SOURCE_EXTS = new Set(['.ts', '.tsx'])
+
+function collectSourceFiles(dir: string, acc: string[] = []): string[] {
+  let entries: string[]
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return acc
+  }
+  for (const entry of entries) {
+    if (entry === 'node_modules' || entry === '.next') continue
+    const full = join(dir, entry)
+    if (statSync(full).isDirectory()) collectSourceFiles(full, acc)
+    else if (SOURCE_EXTS.has(extname(entry))) acc.push(full)
+  }
+  return acc
+}
+
+/** Every application source file (excluding tests). */
+function appSources(): { path: string; text: string }[] {
+  const files: string[] = []
+  for (const d of SOURCE_DIRS) collectSourceFiles(join(ROOT, d), files)
+  return files
+    .filter(f => !f.includes('__tests__'))
+    .map(path => ({ path, text: readFileSync(path, 'utf8') }))
+}
+
+const migration027 = readFileSync(
+  join(ROOT, 'supabase/migrations/027_identity_hardening.sql'),
+  'utf8'
+)
+
+// ── F-1: public registration is gone ─────────────────────────────────────────
+
+describe('F-1 — public self-registration is removed', () => {
+  it('no source file calls auth.signUp()', () => {
+    const offenders = appSources()
+      .filter(f => /\bauth\s*\.\s*signUp\s*\(/.test(f.text))
+      .map(f => f.path)
+    expect(offenders).toEqual([])
+  })
+
+  it('no source file calls signInAnonymously() or admin.inviteUserByEmail()', () => {
+    const offenders = appSources()
+      .filter(f => /signInAnonymously\s*\(|inviteUserByEmail\s*\(/.test(f.text))
+      .map(f => f.path)
+    expect(offenders).toEqual([])
+  })
+
+  it('the signup page contains no password field and cannot create an account', () => {
+    const page = readFileSync(join(ROOT, 'app/(auth)/signup/page.tsx'), 'utf8')
+    expect(page).not.toMatch(/\bauth\s*\.\s*signUp\s*\(/)
+    expect(page).not.toMatch(/type=["']password["']/)
+    expect(page).not.toMatch(/autoComplete=["']new-password["']/)
+  })
+
+  it('the signup page states that access is invitation-only', () => {
+    const page = readFileSync(join(ROOT, 'app/(auth)/signup/page.tsx'), 'utf8')
+    expect(page).toMatch(/invitation/i)
+  })
+
+  it('exactly one provisioning path exists: the admin server action', () => {
+    const offenders = appSources()
+      .filter(f => /auth\s*\.\s*admin\s*\.\s*createUser\s*\(/.test(f.text))
+      .map(f => f.path.replace(ROOT, '').replace(/\\/g, '/'))
+    expect(offenders).toHaveLength(1)
+    expect(offenders[0]).toContain('/admin/users/new/actions.ts')
+  })
+})
+
+// ── Login and password reset must still work (no collateral damage) ──────────
+
+describe('login and password reset are preserved', () => {
+  it('login still calls signInWithPassword', () => {
+    const login = readFileSync(join(ROOT, 'app/(auth)/login/LoginForm.tsx'), 'utf8')
+    expect(login).toMatch(/signInWithPassword\s*\(/)
+  })
+
+  it('password reset still calls resetPasswordForEmail', () => {
+    const forgot = readFileSync(join(ROOT, 'app/(auth)/forgot-password/page.tsx'), 'utf8')
+    expect(forgot).toMatch(/resetPasswordForEmail\s*\(/)
+  })
+})
+
+// ── F-2: privilege escalation is closed ──────────────────────────────────────
+
+describe('F-2 — platform_role self-escalation is blocked', () => {
+  it('the profiles UPDATE policy has an explicit WITH CHECK', () => {
+    const policy = migration027.slice(
+      migration027.indexOf('create policy "profiles_update_own"')
+    )
+    expect(policy).toMatch(/with check/i)
+  })
+
+  it('the WITH CHECK pins platform_role for non-admins', () => {
+    expect(migration027).toMatch(/platform_role is not distinct from public\.current_platform_role\(\)/)
+  })
+
+  it('a BEFORE UPDATE trigger backstops the policy', () => {
+    expect(migration027).toMatch(/create trigger profiles_enforce_role_change/i)
+    expect(migration027).toMatch(/before update on public\.profiles/i)
+  })
+
+  it('the trigger raises insufficient_privilege (42501) on unauthorized role change', () => {
+    expect(migration027).toMatch(/errcode\s*=\s*'42501'/)
+  })
+
+  it('the trigger still permits service_role and platform admins', () => {
+    expect(migration027).toMatch(/current_user in \('service_role', 'postgres', 'supabase_admin'\)/)
+    expect(migration027).toMatch(/public\.is_platform_admin\(\)/)
+  })
+
+  it('the role-reading helper is SECURITY DEFINER (no RLS recursion)', () => {
+    const fn = migration027.slice(
+      migration027.indexOf('create or replace function public.current_platform_role'),
+      migration027.indexOf('comment on function public.current_platform_role')
+    )
+    expect(fn).toMatch(/security definer/i)
+  })
+
+  it('the migration does not broaden the USING clause', () => {
+    // USING must remain exactly the pre-existing ownership-or-admin condition.
+    expect(migration027).toMatch(/using \(\s*auth\.uid\(\) = id\s*or public\.is_platform_admin\(\)\s*\)/)
+    expect(migration027).not.toMatch(/using \(\s*true\s*\)/i)
+  })
+})
+
+// ── F-3: audit trail ─────────────────────────────────────────────────────────
+
+describe('F-3 — identity events are auditable', () => {
+  it('the audit_log table exists with the required forensic columns', () => {
+    for (const col of [
+      'event_type', 'actor_type', 'actor_id', 'subject_user_id',
+      'method', 'invitation_id', 'outcome', 'created_at',
+    ]) {
+      expect(migration027).toContain(col)
+    }
+  })
+
+  it('audit_log has NO foreign key to auth.users (records outlive users)', () => {
+    const table = migration027.slice(
+      migration027.indexOf('create table if not exists public.audit_log'),
+      migration027.indexOf('create index if not exists audit_log_created_idx')
+    )
+    expect(table).not.toMatch(/references\s+auth\.users/i)
+  })
+
+  it('audit_log is admin-read-only with no write policies for app roles', () => {
+    expect(migration027).toMatch(/create policy "audit_log_admin_read"[\s\S]*?for select[\s\S]*?is_platform_admin\(\)/i)
+    expect(migration027).toMatch(/revoke update, delete on public\.audit_log from anon, authenticated/i)
+    // No INSERT/UPDATE/DELETE policy may exist for audit_log.
+    expect(migration027).not.toMatch(/create policy "audit_log[^"]*"\s+on public\.audit_log\s+for (insert|update|delete)/i)
+  })
+
+  it('user creation is audited on success and on failure', () => {
+    const action = readFileSync(
+      join(ROOT, 'app/(admin)/admin/users/new/actions.ts'), 'utf8'
+    )
+    expect(action).toMatch(/logAuditEvent/)
+    expect(action).toMatch(/outcome:\s*'success'/)
+    expect(action).toMatch(/outcome:\s*'failure'/)
+  })
+
+  it('user deletion snapshots the subject before destroying it', () => {
+    const action = readFileSync(
+      join(ROOT, 'app/(admin)/admin/users/[id]/actions.ts'), 'utf8'
+    )
+    // The snapshot SELECT must precede the destructive deleteUser call.
+    const selectAt = action.indexOf(".from('profiles')")
+    const deleteAt = action.indexOf('auth.admin.deleteUser')
+    expect(selectAt).toBeGreaterThan(-1)
+    expect(deleteAt).toBeGreaterThan(-1)
+    expect(selectAt).toBeLessThan(deleteAt)
+    expect(action).toMatch(/deletedProfile/)
+  })
+
+  it('the audit helper never persists secrets', () => {
+    const helper = readFileSync(join(ROOT, 'lib/audit/log.ts'), 'utf8')
+    expect(helper).not.toMatch(/\bpassword\s*[:,]/)
+    expect(helper).not.toMatch(/access_token|service_role_key/)
+  })
+})
+
+// ── F-4: rate limiting ───────────────────────────────────────────────────────
+
+describe('F-4 — provisioning is rate limited', () => {
+  it('admin provisioning uses the shared rateLimitDb infrastructure', () => {
+    const action = readFileSync(
+      join(ROOT, 'app/(admin)/admin/users/new/actions.ts'), 'utf8'
+    )
+    expect(action).toMatch(/rateLimitDb\(/)
+    expect(action).toMatch(/from '@\/lib\/rate-limit'/)
+  })
+
+  it('admin login remains rate limited by IP and by username', () => {
+    const route = readFileSync(join(ROOT, 'app/api/admin/login/route.ts'), 'utf8')
+    expect(route).toMatch(/admin-login:ip:/)
+    expect(route).toMatch(/admin-login:user:/)
+  })
+
+  it('provisioning validates the requested role against an allow-list', () => {
+    const action = readFileSync(
+      join(ROOT, 'app/(admin)/admin/users/new/actions.ts'), 'utf8'
+    )
+    expect(action).toMatch(/VALID_ROLES/)
+    expect(action).toMatch(/Invalid platform role/)
+  })
+})
+
+// ── §2: external configuration validation ────────────────────────────────────
+
+describe('SEC-2 §2 — Supabase disable_signup is validated at runtime', () => {
+  beforeEach(() => {
+    vi.resetModules()
+    vi.unstubAllEnvs()
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://test.supabase.co')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'test-anon-key')
+  })
+
+  async function loadModule() {
+    return import('@/lib/security/auth-config')
+  }
+
+  it('reports "secure" when disable_signup is true', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ disable_signup: true }), { status: 200 })
+    ))
+    const { checkSignupDisabled } = await loadModule()
+    await expect(checkSignupDisabled()).resolves.toMatchObject({ status: 'secure' })
+  })
+
+  it('reports "insecure" when disable_signup is false', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ disable_signup: false }), { status: 200 })
+    ))
+    const { checkSignupDisabled } = await loadModule()
+    await expect(checkSignupDisabled()).resolves.toMatchObject({
+      status: 'insecure', disableSignup: false,
+    })
+  })
+
+  it('reports "unknown" (never "secure") when the probe fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('network down') }))
+    const { checkSignupDisabled } = await loadModule()
+    const res = await checkSignupDisabled()
+    expect(res.status).toBe('unknown')
+    expect(res.status).not.toBe('secure')
+  })
+
+  it('THROWS in production when signup is confirmed enabled', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ disable_signup: false }), { status: 200 })
+    ))
+    const { assertSignupDisabled } = await loadModule()
+    await expect(assertSignupDisabled()).rejects.toThrow(/public self-registration is ENABLED/i)
+  })
+
+  it('does not throw in production when signup is disabled', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({ disable_signup: true }), { status: 200 })
+    ))
+    const { assertSignupDisabled } = await loadModule()
+    await expect(assertSignupDisabled()).resolves.toMatchObject({ status: 'secure' })
+  })
+
+  it('does not take the server down on an unreachable settings endpoint', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED') }))
+    const { assertSignupDisabled } = await loadModule()
+    await expect(assertSignupDisabled()).resolves.toMatchObject({ status: 'unknown' })
+  })
+
+  it('is wired into the server startup hook', () => {
+    const instrumentation = readFileSync(join(ROOT, 'instrumentation.ts'), 'utf8')
+    expect(instrumentation).toMatch(/assertSignupDisabled/)
+    const config = readFileSync(join(ROOT, 'next.config.mjs'), 'utf8')
+    expect(config).toMatch(/instrumentationHook:\s*true/)
+  })
+})
