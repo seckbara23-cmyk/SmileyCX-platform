@@ -37,11 +37,36 @@ describe('HOTFIX-1 — fail-closed behaviour is preserved', () => {
 
   const load = () => import('@/lib/security/auth-config')
 
-  it('disable_signup=false still throws in production (the incident condition)', async () => {
+  /**
+   * HOTFIX-3: the incident condition must now be REPORTED, not fatal to the
+   * process. Enforcement moved to deploy time (see the deploy-gate block
+   * below). The site stays up; /api/health reports degraded.
+   */
+  it('disable_signup=false is reported without throwing (HOTFIX-3 policy)', async () => {
     vi.stubEnv('NODE_ENV', 'production')
     mockSettings({ disable_signup: false })
+    const { assertSignupDisabled, ERR_SIGNUP_ENABLED } = await load()
+    const res = await assertSignupDisabled()
+    expect(res.status).toBe('insecure')
+    expect(res.code).toBe(ERR_SIGNUP_ENABLED)
+  })
+
+  it('no code path in the startup check throws', async () => {
+    vi.stubEnv('NODE_ENV', 'production')
     const { assertSignupDisabled } = await load()
-    await expect(assertSignupDisabled()).rejects.toThrow(/SEC2_SIGNUP_ENABLED/)
+
+    // confirmed insecure
+    mockSettings({ disable_signup: false })
+    await expect(assertSignupDisabled()).resolves.toBeTruthy()
+    // unreadable
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('fetch failed') }))
+    await expect(assertSignupDisabled()).resolves.toBeTruthy()
+    // malformed payload
+    mockSettings({ nonsense: true })
+    await expect(assertSignupDisabled()).resolves.toBeTruthy()
+    // secure
+    mockSettings({ disable_signup: true })
+    await expect(assertSignupDisabled()).resolves.toBeTruthy()
   })
 
   it('disable_signup=true allows normal boot', async () => {
@@ -100,7 +125,7 @@ describe('HOTFIX-1 — stable error codes for operators', () => {
     await expect(checkSignupDisabled()).resolves.toMatchObject({ code: ERR_SIGNUP_UNVERIFIED })
   })
 
-  it('the thrown message embeds the stable code', async () => {
+  it('the operator-facing message embeds the stable code', async () => {
     const { INSECURE_SIGNUP_MESSAGE } = await import('@/lib/security/auth-config')
     expect(INSECURE_SIGNUP_MESSAGE).toContain('SEC2_SIGNUP_ENABLED')
   })

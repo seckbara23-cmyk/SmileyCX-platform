@@ -102,11 +102,32 @@ export const INSECURE_SIGNUP_MESSAGE = [
 ].join(' ')
 
 /**
- * Startup gate. Throws when the configuration is confirmed insecure.
+ * Startup observability check. NEVER throws (HOTFIX-3).
  *
- * Enforced only when NODE_ENV === 'production' so that local development,
- * tests and CI builds are never blocked by a project whose dashboard setting is
- * still being migrated. Non-production runs still log the finding loudly.
+ * ── Why this no longer takes the server down ────────────────────────────────
+ * SEC-2 originally threw here when the setting was confirmed insecure. In
+ * production that turned an operator configuration mistake into an
+ * application-wide outage: the throw happens inside the instrumentation hook
+ * during Next.js server *preparation*, so every route 500s — a nonexistent
+ * slug returned 500 instead of 404 (HOTFIX-1, HOTFIX-2).
+ *
+ * Worse, it did not close the hole it detected. POST /auth/v1/signup is served
+ * by Supabase directly using the public anon key; it never traverses this
+ * application. Refusing to boot removed the legitimate surface (courses, login,
+ * admin) while leaving the insecure one fully reachable.
+ *
+ * The ratified architecture (HOTFIX-3) splits the two concerns:
+ *
+ *   DEPLOY TIME  → enforcement.   scripts/security/verify-prod-config.mjs exits
+ *                                 non-zero, the build fails, and the insecure
+ *                                 deployment never goes live.
+ *   RUNTIME      → observability. Log at fatal level with a stable code and
+ *                                 report `degraded` from /api/health. Keep
+ *                                 serving.
+ *
+ * This is NOT a relaxation of the control: enforcement moved earlier, where it
+ * is deterministic and cannot be defeated by a cold-start network fault. What
+ * was removed is the self-inflicted outage, which protected nobody.
  */
 export async function assertSignupDisabled(): Promise<AuthConfigResult> {
   const result = await checkSignupDisabled()
@@ -117,19 +138,16 @@ export async function assertSignupDisabled(): Promise<AuthConfigResult> {
       break
 
     case 'insecure':
-      log.error({ code: ERR_SIGNUP_ENABLED, disableSignup: false }, INSECURE_SIGNUP_MESSAGE)
-      if (process.env.NODE_ENV === 'production') {
-        throw new Error(INSECURE_SIGNUP_MESSAGE)
-      }
+      // Fatal level: this is the most severe configuration state there is.
+      // The platform keeps serving, but the deployment gate should have
+      // prevented this build from shipping — treat it as an active incident.
+      log.fatal({ code: ERR_SIGNUP_ENABLED, disableSignup: false }, INSECURE_SIGNUP_MESSAGE)
       break
 
     case 'unknown':
       // Never silently continue: this is an error-level event, not a debug note.
-      // NOTE (HOTFIX-1): reaching this branch means the application is serving
-      // traffic WITHOUT having verified that public signup is closed. That is
-      // the ratified policy — a transient network fault must not take the
-      // platform down — but it is not a clean state. `npm run verify:prod-config`
-      // at deploy time is the deterministic check; this is the runtime backstop.
+      // Reaching this branch means the application is serving traffic WITHOUT
+      // having verified that public signup is closed.
       log.error(
         { code: ERR_SIGNUP_UNVERIFIED, detail: result.detail },
         `[${ERR_SIGNUP_UNVERIFIED}] SECURITY: could not verify Supabase disable_signup setting — verify manually in the Supabase Dashboard`

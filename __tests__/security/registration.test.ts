@@ -273,13 +273,55 @@ describe('SEC-2 §2 — Supabase disable_signup is validated at runtime', () => 
     expect(res.status).not.toBe('secure')
   })
 
-  it('THROWS in production when signup is confirmed enabled', async () => {
+  /**
+   * HOTFIX-3 — ratified policy change, NOT a relaxation.
+   *
+   * This previously asserted that a confirmed-insecure setting THREW in
+   * production. That throw ran inside the instrumentation hook during server
+   * preparation, so it took down every route (HOTFIX-1/HOTFIX-2) while doing
+   * nothing to close the hole — POST /auth/v1/signup is served by Supabase
+   * directly and never traverses this app.
+   *
+   * Enforcement moved EARLIER, to deploy time, where it is deterministic and
+   * blocks the build before it ships (asserted below and in
+   * auth-config-failclosed.test.ts). Runtime is now observability. The
+   * detection logic itself is unchanged and still asserted above.
+   */
+  it('reports the insecure state at runtime WITHOUT taking the server down', async () => {
     vi.stubEnv('NODE_ENV', 'production')
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response(JSON.stringify({ disable_signup: false }), { status: 200 })
     ))
-    const { assertSignupDisabled } = await loadModule()
-    await expect(assertSignupDisabled()).rejects.toThrow(/public self-registration is ENABLED/i)
+    const { assertSignupDisabled, ERR_SIGNUP_ENABLED } = await loadModule()
+
+    const res = await assertSignupDisabled()
+    expect(res.status).toBe('insecure')
+    expect(res.code).toBe(ERR_SIGNUP_ENABLED)
+    // Must never be misreported as verified.
+    expect(res.status).not.toBe('secure')
+  })
+
+  it('logs the insecure state at FATAL level so it cannot be missed', async () => {
+    const source = readFileSync(join(ROOT, 'lib/security/auth-config.ts'), 'utf8')
+    const insecureBranch = source.slice(
+      source.indexOf("case 'insecure':"),
+      source.indexOf("case 'unknown':")
+    )
+    expect(insecureBranch).toMatch(/log\.fatal/)
+    expect(insecureBranch).not.toMatch(/throw/)
+  })
+
+  it('deploy-time enforcement still blocks an insecure build', async () => {
+    const gate = readFileSync(join(ROOT, 'scripts/security/verify-prod-config.mjs'), 'utf8')
+    expect(gate).toMatch(/DEPLOYMENT BLOCKED/)
+    expect(gate).toMatch(/process\.exitCode = 1/)
+  })
+
+  it('the startup hook cannot brick server preparation', async () => {
+    const instrumentation = readFileSync(join(ROOT, 'instrumentation.ts'), 'utf8')
+    // A try/catch backstop must wrap the check so no future change can throw.
+    expect(instrumentation).toMatch(/try\s*\{/)
+    expect(instrumentation).toMatch(/catch/)
   })
 
   it('does not throw in production when signup is disabled', async () => {

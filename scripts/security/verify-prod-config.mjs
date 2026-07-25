@@ -27,8 +27,31 @@
  * loudly, do not block. A transient network fault must not stop a deployment.
  */
 
+import { readFileSync, existsSync } from 'node:fs'
+
 const ERR_SIGNUP_ENABLED    = 'SEC2_SIGNUP_ENABLED'
 const ERR_SIGNUP_UNVERIFIED = 'SEC2_SIGNUP_UNVERIFIED'
+
+/**
+ * Load .env.local when present.
+ *
+ * Next.js loads .env.local itself, but plain `npm run verify:prod-config` does
+ * not — so without this the script saw no credentials, reported "Skipping",
+ * and exited 0. An enforcement gate that silently passes is worse than no gate.
+ * On Vercel there is no .env.local and the platform populates process.env
+ * directly, so this is a no-op there. Real environment variables always win.
+ */
+if (existsSync('.env.local')) {
+  for (const line of readFileSync('.env.local', 'utf8').split('\n')) {
+    const t = line.trim()
+    if (!t || t.startsWith('#') || !t.includes('=')) continue
+    const i = t.indexOf('=')
+    const key = t.slice(0, i).trim()
+    if (process.env[key] === undefined) {
+      process.env[key] = t.slice(i + 1).trim().replace(/^["']|["']$/g, '')
+    }
+  }
+}
 
 const url     = process.env.NEXT_PUBLIC_SUPABASE_URL
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
