@@ -150,6 +150,70 @@ email → /auth/callback?next=/reset-password&type=recovery
 
 Requires `SUPABASE_SERVICE_ROLE_KEY` and `ADMIN_OWNER_EMAILS`.
 
+## 6b. Password rotation (CX-AUTH-1A)
+
+A one-time maintenance utility for rotating administrator passwords —
+for example after a suspected exposure, or when handing over an account.
+
+It uses the official Supabase Admin API (`auth.admin.updateUserById`). It does
+**not** modify `auth.users` in SQL, which would bypass Supabase's own password
+hashing and session handling.
+
+### Running it
+
+```bash
+# From platform/ — set both variables inline so they are never written to disk:
+SECKBARA_NEW_PASSWORD='…' MARIEME_NEW_PASSWORD='…' \
+  node scripts/change-admin-passwords.mjs
+```
+
+Output on success — and nothing else:
+
+```
+✓ seckbara23@gmail.com updated
+✓ mariemeify@gmail.com updated
+```
+
+Exit code is `0` only when **both** accounts updated; any failure exits `1`.
+
+### Behaviour
+
+| Condition | Result |
+|---|---|
+| Either password variable missing | Fails **before** contacting Supabase — no partial rotation |
+| Password shorter than 8 characters | Fails fast with a clear message |
+| Account not found | `✗ <email> — no such account`, exit 1 |
+| Supabase rejects the update | Supabase's reason is shown; the password value is not |
+
+### Secrets
+
+**Passwords are never printed, logged, written to disk, or committed.** Error
+messages name the *environment variable*, never its value. The `.env.example`
+entries are intentionally blank:
+
+```
+SECKBARA_NEW_PASSWORD=
+MARIEME_NEW_PASSWORD=
+```
+
+Prefer setting them inline on the command line (as above) rather than in
+`.env.local`, so the values never persist in a file at all. If you do put them
+in `.env.local`, that file is gitignored — but clear the values afterwards.
+
+The service-role key is used server-side by this script only and is never
+exposed to a browser.
+
+### Scope
+
+This utility is for **owner account maintenance only**. It changes no
+authentication logic, no middleware, no authorization, and no
+`ADMIN_OWNER_EMAILS` allowlist. Rotating a password does not grant or revoke
+administration access — that is governed solely by the allowlist in §1.
+
+For *initial* account setup, prefer `scripts/auth/provision-owner.mjs` (§6),
+which lets each holder choose their own password via an email link rather than
+having one assigned.
+
 ## 7. Environment variables
 
 | Variable | Required | Purpose |
@@ -157,6 +221,8 @@ Requires `SUPABASE_SERVICE_ROLE_KEY` and `ADMIN_OWNER_EMAILS`.
 | `ADMIN_OWNER_EMAILS` | **Yes** | Comma-separated allowlist of authorized administrators, e.g. `mariemeify@gmail.com,seckbara23@gmail.com`. Trimmed and compared case-insensitively. Server-side only — no `NEXT_PUBLIC_` prefix, never in the client bundle. Missing/empty ⇒ portal locked. |
 | `ADMIN_HOSTS` | No | Comma-separated private hostnames. Defaults to `smiley-cx-platform.vercel.app`. Add `admin.xpclient-academy.com` here later — **no code change needed**. |
 | `NEXT_PUBLIC_SITE_URL` | Recommended | Canonical public URL for certificate links and password-setup redirects. |
+| `SECKBARA_NEW_PASSWORD` | Only for rotation | Used **only** by `scripts/change-admin-passwords.mjs` (§6b). Blank in the repo; never committed. |
+| `MARIEME_NEW_PASSWORD` | Only for rotation | As above. |
 
 ## 8. Route reference
 
