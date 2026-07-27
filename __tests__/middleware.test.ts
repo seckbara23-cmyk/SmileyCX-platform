@@ -233,6 +233,81 @@ describe('middleware redirect rules', () => {
     })
   })
 
+  /**
+   * CX-AUTH-2B — the deleted /admin/login must redirect, not 404.
+   *
+   * The bespoke admin login route was removed in CX-AUTH-1 (it minted the
+   * unsigned scx_admin cookie). Old bookmarks still point at it. These prove
+   * the compatibility redirect works WITHOUT resurrecting any of that system.
+   */
+  describe('CX-AUTH-2B legacy /admin/login', () => {
+    const OWNER = 'owner@example.com'
+
+    it('anonymous /admin/login redirects to /login', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: null } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(makeRequest('/admin/login'))
+      expect(res.status).toBe(307)
+      const loc = res.headers.get('location') ?? ''
+      expect(loc).toContain('/login')
+      expect(loc).not.toMatch(/\/admin\/login/)      // never bounce back to itself
+    })
+
+    it('authenticated owner /admin/login redirects to /admin', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: { id: 'u1', email: OWNER } } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(makeRequest('/admin/login'))
+      expect(res.status).toBe(307)
+      expect(res.headers.get('location')).toMatch(/\/admin$/)
+    })
+
+    it('defaults ?next to /admin so the legacy intent is preserved', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: null } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(makeRequest('/admin/login'))
+      expect(res.headers.get('location')).toContain('next=%2Fadmin')
+    })
+
+    it('preserves ?next and ?error query parameters', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: null } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(makeRequest('/admin/login?next=/admin/users&error=invalid'))
+      const loc = res.headers.get('location') ?? ''
+      expect(loc).toContain('next=%2Fadmin%2Fusers')
+      expect(loc).toContain('error=invalid')
+    })
+
+    it('rejects an open-redirect in ?next', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: null } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(makeRequest('/admin/login?next=//evil.com'))
+      const loc = res.headers.get('location') ?? ''
+      expect(loc).not.toContain('evil.com')
+      expect(loc).toContain('next=%2Fadmin')
+    })
+
+    it('works on the private host too', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: null } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(portalRequest('/admin/login'))
+      const loc = res.headers.get('location') ?? ''
+      expect(loc).toContain('/login')
+      expect(loc).not.toMatch(/\/admin\/login/)
+    })
+  })
+
   describe('security headers on redirects', () => {
     it('applies X-Frame-Options DENY on redirect responses', async () => {
       mockGetUser.mockResolvedValue({ data: { user: null } })

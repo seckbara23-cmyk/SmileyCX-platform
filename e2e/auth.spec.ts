@@ -28,15 +28,18 @@ test.describe('Authentication flows', () => {
     await expect(page).toHaveURL(/\/login/)
   })
 
-  test('admin login page is accessible', async ({ page }) => {
+  // CX-AUTH-1 removed the bespoke /admin/login route (it minted the unsigned
+  // scx_admin cookie). /login is now the only login page.
+  test('legacy /admin/login redirects to /login instead of 404ing', async ({ page }) => {
     await page.goto('/admin/login')
-    await expect(page.locator('input[name="username"]')).toBeVisible()
+    await expect(page).toHaveURL(/\/login/)
+    await expect(page.locator('input[type="email"]')).toBeVisible()
     await expect(page.locator('input[type="password"]')).toBeVisible()
   })
 
-  test('unauthenticated user is redirected from /admin to /admin/login', async ({ page }) => {
+  test('unauthenticated user is redirected from /admin to /login', async ({ page }) => {
     await page.goto('/admin')
-    await expect(page).toHaveURL(/\/admin\/login/)
+    await expect(page).toHaveURL(/\/login/)
   })
 })
 

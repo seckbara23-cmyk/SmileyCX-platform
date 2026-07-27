@@ -106,6 +106,38 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const { pathname } = request.nextUrl
 
+  // ── CX-AUTH-2B: legacy /admin/login compatibility ──────────────────────
+  // The bespoke admin login route was removed in CX-AUTH-1 (it minted the
+  // unsigned `scx_admin` cookie). Old bookmarks and links still point at it and
+  // were 404ing. Redirect them instead of resurrecting the route — nothing of
+  // the deleted authentication system comes back.
+  //
+  // Handled BEFORE the host boundary so the redirect is clean: otherwise the
+  // boundary would send anonymous visitors to /login?next=/admin/login, which
+  // would bounce them straight back here after signing in.
+  if (pathname === '/admin/login') {
+    if (user && isOwnerEmail(user.email)) {
+      return applySecurityHeaders(NextResponse.redirect(new URL('/admin', request.url)))
+    }
+
+    const loginUrl = new URL('/login', request.url)
+
+    // Preserve ?next when it is a safe relative path; default to /admin so the
+    // visitor still lands where the legacy link intended.
+    const rawNext = request.nextUrl.searchParams.get('next') ?? ''
+    const safeNext =
+      rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/admin/login')
+        ? rawNext
+        : '/admin'
+    loginUrl.searchParams.set('next', safeNext)
+
+    // Preserve ?error so messages from the old route still surface.
+    const error = request.nextUrl.searchParams.get('error')
+    if (error) loginUrl.searchParams.set('error', error)
+
+    return applySecurityHeaders(NextResponse.redirect(loginUrl))
+  }
+
   // ── CX-AUTH-1: private administration portal host boundary ─────────────
   // smiley-cx-platform.vercel.app is the private admin entrance; the public
   // marketing site is served only from its own domain. On the admin host

@@ -121,7 +121,15 @@ export default function Footer() {
           <div className="flex gap-4">
             <Link href="/privacy"    className="hover:text-white/70 transition-colors">Confidentialité</Link>
             <Link href="/terms"      className="hover:text-white/70 transition-colors">CGU</Link>
-            <Link href="/admin/login" className="hover:text-white/70 transition-colors">Admin</Link>
+            {/*
+              CX-AUTH-2B: points at /admin, not the deleted /admin/login.
+              The link means "go to administration", so /admin is the correct
+              target: an anonymous visitor is sent to /login?next=/admin and
+              lands on the dashboard after signing in, while the owner goes
+              straight there. Linking to /login directly would send an already
+              authenticated owner to /dashboard instead.
+            */}
+            <Link href="/admin" className="hover:text-white/70 transition-colors">Admin</Link>
           </div>
         </div>
         <div className="mt-5 flex justify-center">

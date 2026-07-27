@@ -253,6 +253,43 @@ describe('CX-AUTH-1 — middleware host enforcement', () => {
     expect(layout).toMatch(/href: '\/admin\/modules'/)
   })
 
+  /**
+   * CX-AUTH-2B — /login is the ONLY login page. No application code may link
+   * to the deleted /admin/login, and the deleted auth system stays deleted.
+   */
+  it('no active link in app/, components/ or lib/ points to /admin/login', () => {
+    let hits = ''
+    try {
+      hits = execFileSync(
+        'git',
+        ['grep', '-n', '-e', 'href="/admin/login"', '-e', "href='/admin/login'",
+         '-e', 'href={"/admin/login"}', '--', 'app', 'components', 'lib'],
+        { cwd: ROOT, encoding: 'utf8' }
+      ).trim()
+    } catch {
+      // git grep exits 1 when nothing matches — that is the passing case.
+      hits = ''
+    }
+    expect(hits).toBe('')
+  }, 15_000)
+
+  it('/login is the only login page — /admin/login has no route file', () => {
+    for (const p of [
+      'app/(admin-auth)/admin/login/page.tsx',
+      'app/admin/login/page.tsx',
+      'app/api/admin/login/route.ts',
+    ]) {
+      expect(() => readFileSync(join(ROOT, p), 'utf8')).toThrow()
+    }
+  })
+
+  it('the legacy redirect does NOT resurrect the deleted auth system', () => {
+    expect(mw).toMatch(/pathname === '\/admin\/login'/)
+    // No cookie minting, no bespoke credential handling.
+    expect(mw).not.toMatch(/scx_admin['"]?\s*,/)
+    expect(mw).not.toMatch(/ADMIN_USERNAME|signInWithPassword/)
+  })
+
   it('does not gate the public marketing host behind auth', () => {
     // The public-host path must never require a session for / or /courses.
     const publicGate = /pathname === ['"]\/['"][\s\S]{0,120}redirect[\s\S]{0,60}\/login/
