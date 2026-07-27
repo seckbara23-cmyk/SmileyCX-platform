@@ -138,14 +138,16 @@ describe('middleware redirect rules', () => {
   })
 
   /**
-   * CX-AUTH-2 — the Vercel hostname IS the private Smiley CX portal.
+   * CX-AUTH-2A — the Vercel host gates access; it does NOT substitute pages.
+   *
+   * CX-AUTH-2 rewrote `/` into /admin, which replaced the Smiley CX landing
+   * page with the admin dashboard. That is reverted: `/` renders the landing
+   * page and the dashboard stays at /admin.
    *
    * Behavioural, not source-grep: the middleware is invoked with a real owner
-   * session and the response is inspected. A REWRITE keeps the browser on
-   * smiley-cx-platform.vercel.app/ while rendering the dashboard; a redirect
-   * would bounce the user to /admin, which is what this phase removes.
+   * session and the response inspected.
    */
-  describe('CX-AUTH-2 private portal routing', () => {
+  describe('CX-AUTH-2A private host routing', () => {
     const OWNER = 'owner@example.com'
 
     function asOwner() {
@@ -156,51 +158,63 @@ describe('middleware redirect rules', () => {
     /** Next signals an internal rewrite with this header. */
     const rewrittenTo = (res: NextResponse) => res.headers.get('x-middleware-rewrite')
 
-    it('serves the dashboard AT the portal root — rewrite, not redirect', async () => {
-      asOwner()
-      const { middleware } = await import('@/middleware')
-      const res = await middleware(portalRequest('/'))
-
-      expect(res.status).not.toBe(307)                       // not a redirect
-      expect(rewrittenTo(res)).toContain('/admin')           // dashboard rendered
-    })
-
-    it('serves clean portal paths without /admin in the URL', async () => {
-      asOwner()
-      const { middleware } = await import('@/middleware')
-      for (const [clean, target] of [['/users', '/admin/users'], ['/courses', '/admin/courses']]) {
-        const res = await middleware(portalRequest(clean))
-        expect(rewrittenTo(res)).toContain(target)
-      }
-    })
-
-    it('leaves /admin, /api and /_next untouched (no recursion, assets intact)', async () => {
-      asOwner()
-      const { middleware } = await import('@/middleware')
-      for (const p of ['/admin', '/admin/users', '/api/health', '/_next/data/x.json']) {
-        const res = await middleware(portalRequest(p))
-        const rewrite = rewrittenTo(res)
-        if (rewrite) expect(rewrite).not.toContain('/admin/admin')
-        expect(rewrite ?? '').not.toContain('/admin/api')
-        expect(rewrite ?? '').not.toContain('/admin/_next')
-      }
-    })
-
-    it('still sends anonymous portal visitors to the login page only', async () => {
+    it('anonymous / on the Vercel host redirects to /login', async () => {
       vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
       mockGetUser.mockResolvedValue({ data: { user: null } })
       const { middleware } = await import('@/middleware')
 
-      const root = await middleware(portalRequest('/'))
-      expect(root.status).toBe(307)
-      expect(root.headers.get('location')).toContain('/login')
-
-      // Deep links survive login.
-      const deep = await middleware(portalRequest('/users'))
-      expect(deep.headers.get('location')).toContain('next=%2Fusers')
+      const res = await middleware(portalRequest('/'))
+      expect(res.status).toBe(307)
+      expect(res.headers.get('location')).toContain('/login')
     })
 
-    it('AUTHORIZATION UNCHANGED: a non-owner is still signed out, not rewritten', async () => {
+    it('authenticated owner / renders the landing page — NOT the dashboard', async () => {
+      asOwner()
+      const { middleware } = await import('@/middleware')
+      const res = await middleware(portalRequest('/'))
+
+      expect(res.status).not.toBe(307)          // not redirected away
+      expect(rewrittenTo(res)).toBeNull()       // and not rewritten into /admin
+    })
+
+    it('NO / → /admin rewrite remains anywhere on the host', async () => {
+      asOwner()
+      const { middleware } = await import('@/middleware')
+      for (const p of ['/', '/courses', '/about', '/contact']) {
+        const res = await middleware(portalRequest(p))
+        expect(rewrittenTo(res) ?? '').not.toContain('/admin')
+      }
+    })
+
+    it('authenticated owner /admin reaches the dashboard route unchanged', async () => {
+      asOwner()
+      const { middleware } = await import('@/middleware')
+      for (const p of ['/admin', '/admin/users', '/admin/courses', '/admin/modules']) {
+        const res = await middleware(portalRequest(p))
+        expect(res.status).not.toBe(307)        // not bounced to /login
+        expect(rewrittenTo(res)).toBeNull()     // served as-is
+      }
+    })
+
+    it('clean paths are NOT rewritten into /admin (they were never real routes)', async () => {
+      asOwner()
+      const { middleware } = await import('@/middleware')
+      for (const p of ['/users', '/modules']) {
+        const res = await middleware(portalRequest(p))
+        expect(rewrittenTo(res) ?? '').not.toContain('/admin')
+      }
+    })
+
+    it('deep links still survive login', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: null } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(portalRequest('/admin/users'))
+      expect(res.headers.get('location')).toContain('next=%2Fadmin%2Fusers')
+    })
+
+    it('AUTHORIZATION UNCHANGED: a non-owner is still signed out', async () => {
       vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
       mockGetUser.mockResolvedValue({ data: { user: { id: 'u2', email: 'someone@else.com' } } })
       const { middleware } = await import('@/middleware')
@@ -208,14 +222,14 @@ describe('middleware redirect rules', () => {
       const res = await middleware(portalRequest('/'))
       expect(res.status).toBe(307)
       expect(res.headers.get('location')).toContain('/api/auth/signout')
-      expect(rewrittenTo(res)).toBeNull()
     })
 
-    it('the PUBLIC host is unaffected — no rewrite into /admin', async () => {
+    it('the PUBLIC host remains public and unrewritten', async () => {
       asOwner()
       const { middleware } = await import('@/middleware')
       const res = await middleware(makeRequest('/', { host: 'www.xpclient-academy.com' }))
       expect(rewrittenTo(res) ?? '').not.toContain('/admin')
+      expect(res.status).not.toBe(307)
     })
   })
 

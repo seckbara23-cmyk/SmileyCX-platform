@@ -54,33 +54,32 @@ smiley-cx-platform.vercel.app/<anything>
         ├─ session, NOT the owner ──► 307 /api/auth/signout?error=forbidden
         │                                  └─ session destroyed ──► /login  "Accès non autorisé"
         │
-        └─ session IS the owner ────► dashboard renders AT /   (internal rewrite)
+        └─ session IS the owner ────► the requested route, served as-is
 ```
 
-### CX-AUTH-2 — the hostname *is* the portal
-
-The bare host previously **redirected** to `/admin`, which made the portal look
-like a thin wrapper around an admin sub-path. It now **rewrites**: the browser
-stays on `smiley-cx-platform.vercel.app/` and the dashboard renders there.
+### CX-AUTH-2A — the host gates access; it does not substitute pages
 
 ```
-/            →  rewritten to  /admin
-/users       →  rewritten to  /admin/users
-/courses     →  rewritten to  /admin/courses
-/admin/**    →  untouched (still valid — existing links keep working)
-/api/**, /_next/**  →  untouched (route handlers and assets must resolve literally)
+smiley-cx-platform.vercel.app/         →  Smiley CX landing page (after login)
+smiley-cx-platform.vercel.app/admin    →  admin dashboard
+smiley-cx-platform.vercel.app/admin/** →  admin sections, unchanged
 ```
 
-Navigation is host-aware: on the portal the sidebar links are clean (`/users`),
-on the public host they keep the `/admin` prefix, because the admin UI still
-lives at `/admin` there. Same pages either way — only the visible URL differs.
+**No path is rewritten.** The authenticated owner is served whatever route they
+requested; the host boundary controls *who* gets in, not *what* they see.
 
-`/admin` is therefore an internal implementation detail, not required for
-normal navigation.
+CX-AUTH-2 briefly rewrote `/` (and `/users`, `/courses`, …) into `/admin`. That
+was wrong: it **replaced** the Smiley CX landing page with the admin dashboard,
+and invented clean routes that never existed. CX-AUTH-2A reverts it. The landing
+page is restored at `/`, and the dashboard is reached explicitly at `/admin` —
+the shared header already renders an admin link for `super_admin` users, so no
+extra navigation was needed.
 
-**This is routing only.** Authorization is unchanged: `requirePlatformAdmin()`
-still runs inside every page and server action a rewrite resolves to, and a
-non-owner is still signed out rather than rewritten.
+Login lands on `/`, not the dashboard. Deep links still survive login via
+`?next=`.
+
+**Authorization is unchanged throughout.** `requirePlatformAdmin()` still runs
+inside every admin page and server action, and a non-owner is still signed out.
 
 Sign-in itself is unchanged Supabase Auth: email + password via
 `signInWithPassword`. No new identity provider was introduced.

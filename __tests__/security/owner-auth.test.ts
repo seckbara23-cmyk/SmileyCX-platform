@@ -232,21 +232,25 @@ describe('CX-AUTH-1 — middleware host enforcement', () => {
   })
 
   /**
-   * CX-AUTH-2 — the hostname IS the portal. The bare host must RENDER the
-   * dashboard (rewrite), not bounce the browser to /admin (redirect).
+   * CX-AUTH-2A — the host boundary gates access; it must not substitute one
+   * page for another. No path is rewritten into /admin.
    */
-  it('rewrites the portal path space into /admin rather than redirecting', () => {
-    expect(mw).toMatch(/NextResponse\.rewrite\(url\)/)
-    expect(mw).toMatch(/pathname === '\/' \? '\/admin' : `\/admin\$\{pathname\}`/)
+  it('contains NO rewrite of the path space into /admin', () => {
+    expect(mw).not.toMatch(/NextResponse\.rewrite/)
+    expect(mw).not.toMatch(/`\/admin\$\{pathname\}`/)
+    expect(mw).not.toMatch(/RESERVED_PORTAL_PREFIXES/)
   })
 
-  it('never rewrites /admin, /api or /_next (no recursion, assets intact)', () => {
-    expect(mw).toMatch(/RESERVED_PORTAL_PREFIXES = \['\/admin', '\/api', '\/_next'\]/)
-  })
-
-  it('sends an authenticated owner on /login to the portal root, not /admin', () => {
+  it('sends an authenticated owner on /login to the landing page at /', () => {
     const block = mw.slice(mw.indexOf("pathname === '/login'"))
-    expect(block.slice(0, 300)).toMatch(/redirect\(new URL\('\/', request\.url\)\)/)
+    expect(block.slice(0, 400)).toMatch(/redirect\(new URL\('\/', request\.url\)\)/)
+  })
+
+  it('the admin nav still points at /admin/* (clean routes do not exist)', () => {
+    const layout = readFileSync(join(ROOT, 'app/(admin)/layout.tsx'), 'utf8')
+    expect(layout).toMatch(/href: '\/admin\/users'/)
+    expect(layout).toMatch(/href: '\/admin\/courses'/)
+    expect(layout).toMatch(/href: '\/admin\/modules'/)
   })
 
   it('does not gate the public marketing host behind auth', () => {
