@@ -8,19 +8,26 @@ import { Input } from '@/components/ui/Input'
 const AUTH_ERROR_MESSAGES: Record<string, string> = {
   reset_expired: 'Votre lien de réinitialisation a expiré. Demandez-en un nouveau ci-dessous.',
   auth_error:    "Le lien de confirmation est invalide ou a déjà été utilisé. Essayez de vous connecter.",
+  // CX-AUTH-1: shown after the middleware signs out an authenticated
+  // non-owner on the administration portal.
+  forbidden:     'Accès non autorisé.',
 }
 
 interface Props {
   next?: string
   error?: string
+  /** True when served from the private administration hostname (CX-AUTH-1). */
+  adminPortal?: boolean
 }
 
-export default function LoginForm({ next, error: callbackErrorProp }: Props) {
-  const rawNext      = next || '/dashboard'
+export default function LoginForm({ next, error: callbackErrorProp, adminPortal = false }: Props) {
+  // On the administration portal the only meaningful destination is /admin.
+  const fallback     = adminPortal ? '/admin' : '/dashboard'
+  const rawNext      = next || fallback
   const nextUrl      =
     rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login')
       ? rawNext
-      : '/dashboard'
+      : fallback
   const callbackError = callbackErrorProp ?? ''
 
   const supabase = useMemo(() => createClient(), [])
@@ -67,8 +74,14 @@ export default function LoginForm({ next, error: callbackErrorProp }: Props) {
     <div className="w-full max-w-md px-2 sm:px-0">
       <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-5 sm:p-8">
         <div className="text-center mb-8">
-          <h1 className="text-2xl font-extrabold text-dark mb-1">Connexion</h1>
-          <p className="text-sm text-cx-gray">Accédez à votre espace XP Client Academy</p>
+          <h1 className="text-2xl font-extrabold text-dark mb-1">
+            {adminPortal ? 'Administration' : 'Connexion'}
+          </h1>
+          <p className="text-sm text-cx-gray">
+            {adminPortal
+              ? 'Espace réservé — XP Client Academy'
+              : 'Accédez à votre espace XP Client Academy'}
+          </p>
         </div>
 
         {callbackError && AUTH_ERROR_MESSAGES[callbackError] && (
@@ -141,14 +154,15 @@ export default function LoginForm({ next, error: callbackErrorProp }: Props) {
           </button>
         </form>
 
-        <p className="text-center text-sm text-cx-gray mt-6">
-          Pas encore de compte ?{' '}
-          <Link
-            href={`/signup?next=${encodeURIComponent(nextUrl)}`}
-            className="text-primary font-semibold hover:underline"
-          >
-            S&apos;inscrire gratuitement
-          </Link>
+        {/*
+          CX-AUTH-1: the public registration link is deliberately gone.
+          Self-registration was closed by SEC-2/HOTFIX-3 (Supabase
+          disable_signup=true), so advertising it was both misleading and
+          contrary to the invite-only posture. Accounts are provisioned by an
+          administrator.
+        */}
+        <p className="text-center text-xs text-cx-gray mt-6">
+          Accès sur invitation uniquement.
         </p>
       </div>
     </div>

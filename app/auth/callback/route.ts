@@ -1,4 +1,4 @@
-import { createServerClient } from '@supabase/ssr'
+import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import { NextResponse, type NextRequest } from 'next/server'
 import { createLogger } from '@/lib/logger'
@@ -24,17 +24,28 @@ export async function GET(request: NextRequest) {
   const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/dashboard'
 
   if (code) {
-    const cookieStore = cookies()
+    const cookieStore = await cookies()
+    // SECURITY (CX-AUTH-1, repairs CX-AUTH-0 finding F-2):
+    // This previously supplied { getAll, setAll }. @supabase/ssr@0.3.0 defines
+    // CookieMethods as { get, set, remove } and contains ZERO references to
+    // getAll — so the adapter was silently ignored, the exchanged session was
+    // never persisted, and password recovery / email confirmation could not
+    // complete. tsc does not catch the wrong shape (excess-property checking is
+    // weak against the intersection option type), which is why it survived.
+    // This now matches lib/supabase/server.ts, which was always correct.
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
       {
         cookies: {
-          getAll() { return cookieStore.getAll() },
-          setAll(cookiesToSet: { name: string; value: string; options?: Parameters<typeof cookieStore.set>[2] }[]) {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            )
+          get(name: string) {
+            return cookieStore.get(name)?.value
+          },
+          set(name: string, value: string, options: CookieOptions) {
+            cookieStore.set(name, value, options as Parameters<typeof cookieStore.set>[2])
+          },
+          remove(name: string, options: CookieOptions) {
+            cookieStore.set(name, '', { ...options, maxAge: 0 })
           },
         },
       }

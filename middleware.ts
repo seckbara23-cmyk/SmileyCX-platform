@@ -2,6 +2,8 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { PLATFORM_MODE } from '@/lib/pilot'
 import { isPrivateMode, isAllowedPrivateUser } from '@/lib/access-control'
+import { isAdminHost, resolveHost, isAdminHostPublicPath } from '@/lib/hosts'
+import { isOwnerEmail } from '@/lib/auth/owner-email'
 
 // Routes requiring authentication in pilot / public modes (prefix match).
 // In private mode the site-wide gate below replaces this list.
@@ -104,6 +106,50 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser()
   const { pathname } = request.nextUrl
 
+  // ── CX-AUTH-1: private administration portal host boundary ─────────────
+  // smiley-cx-platform.vercel.app is the private admin entrance; the public
+  // marketing site is served only from its own domain. On the admin host
+  // nothing renders without the owner session — not the homepage, not the
+  // course catalogue.
+  //
+  // This is a BOUNDARY, not the enforcement point: every admin page and
+  // server action independently calls requirePlatformAdmin(). A redirect in
+  // the browser is not protection.
+  if (isAdminHost(resolveHost(request.headers))) {
+    if (isAdminHostPublicPath(pathname)) {
+      // /login and the auth callbacks must stay reachable, otherwise the
+      // owner could never sign in. Authenticated owners get bounced off
+      // /login to the dashboard below.
+      if (pathname === '/login' && user && isOwnerEmail(user.email)) {
+        return applySecurityHeaders(NextResponse.redirect(new URL('/admin', request.url)))
+      }
+      return applySecurityHeaders(supabaseResponse)
+    }
+
+    if (!user) {
+      const loginUrl = new URL('/login', request.url)
+      // Only preserve an admin destination; never bounce to a public page.
+      if (pathname.startsWith('/admin')) {
+        loginUrl.searchParams.set('next', pathname + request.nextUrl.search)
+      }
+      return applySecurityHeaders(NextResponse.redirect(loginUrl))
+    }
+
+    if (!isOwnerEmail(user.email)) {
+      // Authenticated, but not the owner. Terminate the session rather than
+      // leaving a valid non-owner session sitting on the admin host.
+      return applySecurityHeaders(
+        NextResponse.redirect(new URL('/api/auth/signout?error=forbidden', request.url))
+      )
+    }
+
+    // Owner: send the bare host to the dashboard, allow everything else.
+    if (pathname === '/') {
+      return applySecurityHeaders(NextResponse.redirect(new URL('/admin', request.url)))
+    }
+    return applySecurityHeaders(supabaseResponse)
+  }
+
   // ── Private mode: site-wide allowlist gate ─────────────────────────────
   // When PLATFORM_MODE=private the entire site is locked down. Only the
   // paths in PRIVATE_MODE_EXEMPT bypass this check; everything else requires
@@ -159,14 +205,15 @@ export async function middleware(request: NextRequest) {
     }
   }
 
-  // ── Platform admin routes ──────────────────────────────────────────────
-  // /admin/login is public. All other /admin/* routes check the scx_admin
-  // cookie set by /api/admin/login. The role check (super_admin) is enforced
-  // in the admin layout using the service role client.
-  if (ADMIN_ROUTES.some(r => pathname.startsWith(r)) && pathname !== '/admin/login') {
-    const adminCookie = request.cookies.get('scx_admin')?.value
-    if (!adminCookie) {
-      return applySecurityHeaders(NextResponse.redirect(new URL('/admin/login', request.url)))
+  // ── Platform admin routes on a PUBLIC host ─────────────────────────────
+  // CX-AUTH-1: administration is reachable only through the admin hostname
+  // (handled above). Requesting /admin on the public marketing domain must not
+  // reveal that a portal exists, and must never render admin content, so it is
+  // gated behind the same owner session. Authorization itself is enforced
+  // server-side by requirePlatformAdmin() in every admin page and action.
+  if (ADMIN_ROUTES.some(r => pathname.startsWith(r))) {
+    if (!user || !isOwnerEmail(user.email)) {
+      return applySecurityHeaders(NextResponse.redirect(new URL('/login', request.url)))
     }
   }
 

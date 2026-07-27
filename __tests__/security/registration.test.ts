@@ -218,10 +218,31 @@ describe('F-4 — provisioning is rate limited', () => {
     expect(action).toMatch(/from '@\/lib\/rate-limit'/)
   })
 
-  it('admin login remains rate limited by IP and by username', () => {
-    const route = readFileSync(join(ROOT, 'app/api/admin/login/route.ts'), 'utf8')
-    expect(route).toMatch(/admin-login:ip:/)
-    expect(route).toMatch(/admin-login:user:/)
+  /**
+   * CX-AUTH-1 — the bespoke /api/admin/login route was removed along with the
+   * unsigned `scx_admin` cookie it minted (CX-AUTH-0 finding F-3). Admin
+   * authentication now uses the same Supabase Auth path as every other login.
+   *
+   * HONEST TRADE-OFF, recorded here rather than silently dropped: that route
+   * carried application-level brute-force protection (5 attempts / 15 min, per
+   * IP AND per username). Login is now a direct browser→Supabase call, so the
+   * application server is not in the request path and cannot rate-limit it.
+   * Brute-force protection is therefore Supabase-side only. Supabase enforces
+   * its own auth rate limits, but the exact configured threshold could NOT be
+   * verified from this repository.
+   *
+   * Tracked for CX-AUTH-2 (session lifecycle): either move sign-in to a server
+   * action so rateLimitDb applies, or confirm and document the Supabase limit.
+   */
+  it('the unsigned-cookie admin login route is gone', () => {
+    expect(() => readFileSync(join(ROOT, 'app/api/admin/login/route.ts'), 'utf8')).toThrow()
+  })
+
+  it('admin provisioning remains rate limited (unchanged by CX-AUTH-1)', () => {
+    const action = readFileSync(
+      join(ROOT, 'app/(admin)/admin/users/new/actions.ts'), 'utf8'
+    )
+    expect(action).toMatch(/rateLimitDb\(/)
   })
 
   it('provisioning validates the requested role against an allow-list', () => {

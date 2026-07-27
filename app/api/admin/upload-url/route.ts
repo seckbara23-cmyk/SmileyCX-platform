@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { getOwnerSession } from '@/lib/auth/owner'
 import { rateLimit, getClientIp } from '@/lib/rate-limit'
 import { z } from 'zod'
 
@@ -22,13 +23,23 @@ const UploadRequestSchema = z.object({
 const RATE_LIMIT = { limit: 30, windowMs: 60 * 1000 }
 
 export async function POST(request: NextRequest) {
-  const adminCookie = request.cookies.get('scx_admin')?.value
-  if (!adminCookie) {
+  // SECURITY (CX-AUTH-1, repairs CX-AUTH-0 finding F-1):
+  // This previously checked only that an `scx_admin` cookie was PRESENT — never
+  // its value, never a role. Because the handler then used the service-role
+  // client to mint a signed upload URL into a PUBLIC bucket, any anonymous
+  // caller sending `Cookie: scx_admin=x` obtained write access.
+  //
+  // Authorization is now a verified Supabase session belonging to the owner.
+  // A forged cookie carries no session and is rejected here.
+  const session = await getOwnerSession()
+  if (!session) {
     return NextResponse.json({ error: 'Non autorisé' }, { status: 401 })
   }
 
   const ip = getClientIp(request)
-  const rl = rateLimit(`upload-url:${adminCookie}:${ip}`, RATE_LIMIT)
+  // Rate-limit key is now bound to the verified user id, not an attacker-chosen
+  // cookie value (which previously let a caller pick a fresh bucket per request).
+  const rl = rateLimit(`upload-url:${session.user.id}:${ip}`, RATE_LIMIT)
   if (!rl.success) {
     return NextResponse.json({ error: 'Trop de requêtes' }, { status: 429 })
   }

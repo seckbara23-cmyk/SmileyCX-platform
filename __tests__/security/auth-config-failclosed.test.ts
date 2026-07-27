@@ -192,7 +192,11 @@ describe('HOTFIX-1 — health endpoint does not leak configuration', () => {
 
   it('gates detailed status behind a verified platform admin', () => {
     expect(route).toMatch(/isPlatformAdmin/)
-    expect(route).toMatch(/super_admin/)
+    // CX-AUTH-1: authorization moved from an unsigned `scx_admin` cookie +
+    // platform_role lookup to a verified owner session. Same guarantee,
+    // stronger mechanism — a forged cookie no longer reaches this branch.
+    expect(route).toMatch(/getOwnerSession\(\)/)
+    expect(route).not.toMatch(/scx_admin['"]\)/)
   })
 
   it('returns only a coarse status to anonymous callers', () => {

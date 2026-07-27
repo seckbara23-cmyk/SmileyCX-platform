@@ -93,21 +93,39 @@ describe('middleware redirect rules', () => {
     })
   })
 
+  /**
+   * CX-AUTH-1 — these previously asserted that /admin redirected to
+   * /admin/login when the `scx_admin` cookie was ABSENT. That check was
+   * satisfied by any non-empty cookie value, and the cookie was an unsigned
+   * user UUID (CX-AUTH-0 finding F-3).
+   *
+   * The assertion is now STRICTER, not looser: /admin requires a verified
+   * Supabase session belonging to the configured owner. Cookie presence
+   * proves nothing.
+   */
   describe('admin routes', () => {
-    it('redirects /admin without scx_admin cookie to /admin/login', async () => {
+    it('redirects anonymous /admin to /login', async () => {
       mockGetUser.mockResolvedValue({ data: { user: null } })
       const { middleware } = await import('@/middleware')
       const res = await middleware(makeRequest('/admin'))
       expect(res.status).toBe(307)
-      expect(res.headers.get('location')).toContain('/admin/login')
+      expect(res.headers.get('location')).toContain('/login')
     })
 
-    it('redirects /admin/users without scx_admin cookie to /admin/login', async () => {
+    it('redirects anonymous /admin/users to /login', async () => {
       mockGetUser.mockResolvedValue({ data: { user: null } })
       const { middleware } = await import('@/middleware')
       const res = await middleware(makeRequest('/admin/users'))
       expect(res.status).toBe(307)
-      expect(res.headers.get('location')).toContain('/admin/login')
+      expect(res.headers.get('location')).toContain('/login')
+    })
+
+    it('redirects an authenticated NON-owner away from /admin', async () => {
+      mockGetUser.mockResolvedValue({ data: { user: { id: 'u1', email: 'someone@else.com' } } })
+      const { middleware } = await import('@/middleware')
+      const res = await middleware(makeRequest('/admin'))
+      expect(res.status).toBe(307)
+      expect(res.headers.get('location')).toContain('/login')
     })
   })
 

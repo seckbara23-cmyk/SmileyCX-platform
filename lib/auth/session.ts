@@ -1,7 +1,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { getOwnerSession } from '@/lib/auth/owner'
 import { redirect } from 'next/navigation'
-import { cookies } from 'next/headers'
 import type { Profile } from '@/types/cx'
 import type { OrganizationMembership, Organization } from '@/types/cx'
 
@@ -61,35 +61,47 @@ export async function requireOrgMembership(
   return { org: org as Organization, membership: membership as OrganizationMembership }
 }
 
-// ── Require platform admin role — uses scx_admin cookie (bypasses Supabase session) ──
+/**
+ * Require the administration-portal owner (CX-AUTH-1).
+ *
+ * Called by all 41 admin page and server-action entry points, so it is the
+ * single choke point for administration authorization. Server-side only —
+ * never rely on middleware alone, because server actions can be invoked
+ * directly without ever rendering the page that hosts them.
+ *
+ * Replaces the previous `scx_admin` cookie check. That cookie's value was the
+ * admin's raw user UUID with no signature, so anyone who obtained or guessed
+ * the value held permanent, unrevocable admin access (CX-AUTH-0 finding F-3).
+ * Authorization now requires a verified Supabase session whose email is on the
+ * ADMIN_OWNER_EMAILS allowlist. A forged cookie carries no session and is
+ * rejected.
+ */
 export async function requirePlatformAdmin(): Promise<Profile> {
-  const cookieStore = await cookies()
-  const adminUserId = cookieStore.get('scx_admin')?.value
-  if (!adminUserId) {
-    console.warn('[requirePlatformAdmin] No scx_admin cookie — redirecting to login')
-    redirect('/admin/login')
+  const session = await getOwnerSession()
+
+  if (!session) {
+    // Identical redirect for anonymous and authenticated-non-owner callers:
+    // never disclose whether an address is the owner. Non-owners are signed
+    // out by the middleware boundary before reaching here.
+    redirect('/login?error=forbidden')
   }
 
-  const { data: profile, error: profileErr } = await createAdminClient()
+  // Profile row is still the return contract for existing callers. Read it with
+  // the service client so a restrictive RLS policy cannot mask an owner who is
+  // legitimately authenticated.
+  const { data: profile } = await createAdminClient()
     .from('profiles')
     .select('*')
-    .eq('id', adminUserId)
+    .eq('id', session.user.id)
     .single()
 
-  if (profileErr) {
-    console.error('[requirePlatformAdmin] Profile fetch error:', profileErr.message, '| userId:', adminUserId)
-    redirect('/admin/login')
+  if (!profile) {
+    // Authenticated as the owner but no profile row: provisioning is incomplete.
+    // Fail closed rather than fabricating one.
+    console.error('[requirePlatformAdmin] Owner authenticated but profile row missing:', session.user.id)
+    redirect('/login?error=forbidden')
   }
 
-  const platformRole = (profile?.platform_role as string | null)?.trim()
-  if (!profile || platformRole !== 'super_admin') {
-    console.error(
-      '[requirePlatformAdmin] Access denied — userId:', adminUserId,
-      '| platform_role:', JSON.stringify(profile?.platform_role),
-      '| trimmed:', JSON.stringify(platformRole)
-    )
-    redirect('/admin/login')
-  }
   return profile as Profile
 }
 

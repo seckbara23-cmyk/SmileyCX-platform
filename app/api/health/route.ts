@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
-import { cookies } from 'next/headers'
-import { createAdminClient } from '@/lib/supabase/admin'
+import { getOwnerSession } from '@/lib/auth/owner'
 import { checkSignupDisabled } from '@/lib/security/auth-config'
 
 /**
@@ -28,16 +27,8 @@ export const runtime  = 'nodejs'
 
 async function isPlatformAdmin(): Promise<boolean> {
   try {
-    const adminUserId = (await cookies()).get('scx_admin')?.value
-    if (!adminUserId) return false
-
-    const { data } = await createAdminClient()
-      .from('profiles')
-      .select('platform_role')
-      .eq('id', adminUserId)
-      .single()
-
-    return (data?.platform_role as string | null)?.trim() === 'super_admin'
+    // CX-AUTH-1: a verified owner session, not the retired unsigned cookie.
+    return (await getOwnerSession()) !== null
   } catch {
     return false
   }

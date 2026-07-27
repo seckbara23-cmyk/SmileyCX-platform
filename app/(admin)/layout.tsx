@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
-import { cookies } from 'next/headers'
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { getOwnerSession } from '@/lib/auth/owner'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
   FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare, Dumbbell,
@@ -22,23 +22,23 @@ const ADMIN_NAV = [
 ]
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  // ── Auth: verify scx_admin cookie (set by /api/admin/login) ─────────
-  const cookieStore = await cookies()
-  const adminUserId = cookieStore.get('scx_admin')?.value
-  if (!adminUserId) redirect('/admin/login')
+  // ── Auth: verified Supabase session belonging to the configured owner ──
+  // (CX-AUTH-1). Replaces the previous unsigned `scx_admin` cookie, whose
+  // value was the admin's raw user UUID — possession alone granted access and
+  // logout could not revoke it. Every admin PAGE and ACTION additionally calls
+  // requirePlatformAdmin(); the middleware host boundary is not relied upon.
+  const session = await getOwnerSession()
+  if (!session) redirect('/login?error=forbidden')
 
-  // ── SECURITY: verify platform_role via service client (bypasses RLS) ─
+  // Service client so a restrictive RLS policy cannot hide a legitimately
+  // authenticated owner's own profile row.
   const { data: profile } = await createAdminClient()
     .from('profiles')
-    .select('platform_role, full_name, email')
-    .eq('id', adminUserId)
+    .select('full_name, email')
+    .eq('id', session.user.id)
     .single()
 
-  if (!profile || profile.platform_role !== 'super_admin') {
-    redirect('/admin/login')
-  }
-
-  const displayName = profile.full_name || profile.email || 'Admin'
+  const displayName = profile?.full_name || profile?.email || session.user.email || 'Admin'
 
   return (
     <div className="flex h-[100dvh] bg-light overflow-hidden">
@@ -78,7 +78,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           >
             <ExternalLink className="w-3.5 h-3.5" /> App
           </Link>
-          <form action="/api/admin/signout" method="POST">
+          <form action="/api/auth/signout" method="POST">
             <button
               type="submit"
               className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-white/40 hover:text-red-400 transition-colors text-left"
