@@ -1,24 +1,34 @@
 import { redirect } from 'next/navigation'
+import { headers } from 'next/headers'
 import Link from 'next/link'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { getOwnerSession } from '@/lib/auth/owner'
+import { isAdminHost, resolveHost } from '@/lib/hosts'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
   FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare, Dumbbell,
 } from 'lucide-react'
 
+/**
+ * Nav paths are relative to the admin root (CX-AUTH-2).
+ *
+ * On the private portal host they render clean — `/users` — because middleware
+ * rewrites the portal path space into /admin. On the public host they are
+ * prefixed back to `/admin/users`, where the admin UI still lives. Same pages
+ * either way; only the visible URL differs.
+ */
 const ADMIN_NAV = [
-  { href: '/admin',                label: 'Tableau de bord', icon: LayoutDashboard },
-  { href: '/admin/users',          label: 'Utilisateurs',    icon: Users },
-  { href: '/admin/courses',        label: 'Formations',      icon: Layers },
-  { href: '/admin/modules',        label: 'Modules',         icon: BookOpen },
-  { href: '/admin/quizzes',        label: 'Quiz',            icon: FileQuestion },
-  { href: '/admin/exercises',      label: 'Exercices',       icon: Dumbbell },
-  { href: '/admin/progress',       label: 'Progression',     icon: TrendingUp },
-  { href: '/admin/enrollments',    label: 'Inscriptions',    icon: Award },
-  { href: '/admin/certificates',   label: 'Certificats',     icon: GraduationCap },
-  { href: '/admin/feedback',       label: 'Retours pilote',  icon: MessageSquare },
-  { href: '/admin/payments',       label: 'Paiements',       icon: CreditCard },
+  { href: '',               label: 'Tableau de bord', icon: LayoutDashboard },
+  { href: '/users',         label: 'Utilisateurs',    icon: Users },
+  { href: '/courses',       label: 'Formations',      icon: Layers },
+  { href: '/modules',       label: 'Modules',         icon: BookOpen },
+  { href: '/quizzes',       label: 'Quiz',            icon: FileQuestion },
+  { href: '/exercises',     label: 'Exercices',       icon: Dumbbell },
+  { href: '/progress',      label: 'Progression',     icon: TrendingUp },
+  { href: '/enrollments',   label: 'Inscriptions',    icon: Award },
+  { href: '/certificates',  label: 'Certificats',     icon: GraduationCap },
+  { href: '/feedback',      label: 'Retours pilote',  icon: MessageSquare },
+  { href: '/payments',      label: 'Paiements',       icon: CreditCard },
 ]
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -39,6 +49,10 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     .single()
 
   const displayName = profile?.full_name || profile?.email || session.user.email || 'Admin'
+
+  // CX-AUTH-2: on the private portal the dashboard lives at the host root, so
+  // links carry no /admin prefix. On the public host they still need it.
+  const navBase = isAdminHost(resolveHost(await headers())) ? '' : '/admin'
 
   return (
     <div className="flex h-[100dvh] bg-light overflow-hidden">
@@ -61,7 +75,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           {ADMIN_NAV.map(({ href, label, icon: Icon }) => (
             <Link
               key={href}
-              href={href}
+              href={`${navBase}${href}` || '/'}
               className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-white/60 hover:text-white hover:bg-white/[0.07] transition-colors"
             >
               <Icon className="w-4 h-4 shrink-0" />

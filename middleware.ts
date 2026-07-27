@@ -14,6 +14,15 @@ const AUTH_REQUIRED = PLATFORM_MODE === 'pilot'
 // Platform admin routes — always protected regardless of platform mode
 const ADMIN_ROUTES = ['/admin']
 
+/**
+ * CX-AUTH-2: paths NOT rewritten into /admin on the private portal host.
+ *
+ * `/admin` itself is excluded so existing links keep working unchanged (and so
+ * the rewrite cannot recurse into /admin/admin). `/api` and `/_next` must
+ * resolve literally or route handlers and client assets break.
+ */
+const RESERVED_PORTAL_PREFIXES = ['/admin', '/api', '/_next']
+
 // Learner auth pages. Authenticated users are redirected away.
 const LEARNER_AUTH_PAGES = ['/login', '/signup', '/forgot-password']
 
@@ -121,15 +130,18 @@ export async function middleware(request: NextRequest) {
       // owner could never sign in. Authenticated owners get bounced off
       // /login to the dashboard below.
       if (pathname === '/login' && user && isOwnerEmail(user.email)) {
-        return applySecurityHeaders(NextResponse.redirect(new URL('/admin', request.url)))
+        // Land on the portal root, not /admin — the dashboard IS the portal.
+        return applySecurityHeaders(NextResponse.redirect(new URL('/', request.url)))
       }
       return applySecurityHeaders(supabaseResponse)
     }
 
     if (!user) {
       const loginUrl = new URL('/login', request.url)
-      // Only preserve an admin destination; never bounce to a public page.
-      if (pathname.startsWith('/admin')) {
+      // CX-AUTH-2: every non-public path on this host is a portal destination
+      // (clean paths are rewritten into /admin), so deep links survive login.
+      // The root is the default destination, so it needs no ?next.
+      if (pathname !== '/') {
         loginUrl.searchParams.set('next', pathname + request.nextUrl.search)
       }
       return applySecurityHeaders(NextResponse.redirect(loginUrl))
@@ -143,10 +155,21 @@ export async function middleware(request: NextRequest) {
       )
     }
 
-    // Owner: send the bare host to the dashboard, allow everything else.
-    if (pathname === '/') {
-      return applySecurityHeaders(NextResponse.redirect(new URL('/admin', request.url)))
+    // ── CX-AUTH-2: the hostname IS the portal ───────────────────────────
+    // Previously the bare host REDIRECTED to /admin, which made the portal
+    // look like a thin wrapper around an admin sub-path. It now REWRITES:
+    // the browser stays on smiley-cx-platform.vercel.app/ and the dashboard
+    // renders there. /admin becomes an internal implementation detail —
+    // still valid, but no longer required to navigate.
+    //
+    // Purely cosmetic routing. Authorization is unchanged: requirePlatformAdmin()
+    // still runs inside every page and server action this resolves to.
+    if (!RESERVED_PORTAL_PREFIXES.some(p => pathname === p || pathname.startsWith(p + '/'))) {
+      const url = request.nextUrl.clone()
+      url.pathname = pathname === '/' ? '/admin' : `/admin${pathname}`
+      return applySecurityHeaders(NextResponse.rewrite(url))
     }
+
     return applySecurityHeaders(supabaseResponse)
   }
 

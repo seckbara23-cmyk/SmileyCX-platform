@@ -21,8 +21,9 @@ interface Props {
 }
 
 export default function LoginForm({ next, error: callbackErrorProp, adminPortal = false }: Props) {
-  // On the administration portal the only meaningful destination is /admin.
-  const fallback     = adminPortal ? '/admin' : '/dashboard'
+  // CX-AUTH-2: on the private portal the destination is the portal root — the
+  // dashboard renders there directly, so /admin never appears in the URL.
+  const fallback     = adminPortal ? '/' : '/dashboard'
   const rawNext      = next || fallback
   const nextUrl      =
     rawNext.startsWith('/') && !rawNext.startsWith('//') && !rawNext.startsWith('/login')

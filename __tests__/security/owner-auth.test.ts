@@ -231,6 +231,24 @@ describe('CX-AUTH-1 — middleware host enforcement', () => {
     expect(mw).toMatch(/\/api\/auth\/signout\?error=forbidden/)
   })
 
+  /**
+   * CX-AUTH-2 — the hostname IS the portal. The bare host must RENDER the
+   * dashboard (rewrite), not bounce the browser to /admin (redirect).
+   */
+  it('rewrites the portal path space into /admin rather than redirecting', () => {
+    expect(mw).toMatch(/NextResponse\.rewrite\(url\)/)
+    expect(mw).toMatch(/pathname === '\/' \? '\/admin' : `\/admin\$\{pathname\}`/)
+  })
+
+  it('never rewrites /admin, /api or /_next (no recursion, assets intact)', () => {
+    expect(mw).toMatch(/RESERVED_PORTAL_PREFIXES = \['\/admin', '\/api', '\/_next'\]/)
+  })
+
+  it('sends an authenticated owner on /login to the portal root, not /admin', () => {
+    const block = mw.slice(mw.indexOf("pathname === '/login'"))
+    expect(block.slice(0, 300)).toMatch(/redirect\(new URL\('\/', request\.url\)\)/)
+  })
+
   it('does not gate the public marketing host behind auth', () => {
     // The public-host path must never require a session for / or /courses.
     const publicGate = /pathname === ['"]\/['"][\s\S]{0,120}redirect[\s\S]{0,60}\/login/

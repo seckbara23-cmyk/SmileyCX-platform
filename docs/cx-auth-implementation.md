@@ -49,13 +49,38 @@ smiley-cx-platform.vercel.app/<anything>
         ├─ /login, /forgot-password, /reset-password, /auth/*, /api/auth/*, /api/health
         │     └─ allowed without a session (otherwise the owner could never sign in)
         │
-        ├─ no session ──────────────► 307 /login
+        ├─ no session ──────────────► 307 /login   (deep link preserved as ?next=)
         │
         ├─ session, NOT the owner ──► 307 /api/auth/signout?error=forbidden
         │                                  └─ session destroyed ──► /login  "Accès non autorisé"
         │
-        └─ session IS the owner ────► /  →  /admin      (everything else allowed)
+        └─ session IS the owner ────► dashboard renders AT /   (internal rewrite)
 ```
+
+### CX-AUTH-2 — the hostname *is* the portal
+
+The bare host previously **redirected** to `/admin`, which made the portal look
+like a thin wrapper around an admin sub-path. It now **rewrites**: the browser
+stays on `smiley-cx-platform.vercel.app/` and the dashboard renders there.
+
+```
+/            →  rewritten to  /admin
+/users       →  rewritten to  /admin/users
+/courses     →  rewritten to  /admin/courses
+/admin/**    →  untouched (still valid — existing links keep working)
+/api/**, /_next/**  →  untouched (route handlers and assets must resolve literally)
+```
+
+Navigation is host-aware: on the portal the sidebar links are clean (`/users`),
+on the public host they keep the `/admin` prefix, because the admin UI still
+lives at `/admin` there. Same pages either way — only the visible URL differs.
+
+`/admin` is therefore an internal implementation detail, not required for
+normal navigation.
+
+**This is routing only.** Authorization is unchanged: `requirePlatformAdmin()`
+still runs inside every page and server action a rewrite resolves to, and a
+non-owner is still signed out rather than rewritten.
 
 Sign-in itself is unchanged Supabase Auth: email + password via
 `signInWithPassword`. No new identity provider was introduced.
