@@ -208,7 +208,7 @@ Migration 035 asserts at apply time: `authenticated` holds exactly `SELECT` on
 
 | # | Blocker | Owner |
 |---|---|---|
-| **B-1** | **Migration 035 is NOT applied.** Until it is, registration fails closed (no `legal_acceptances`) and RLS still permits anonymous reads of all content. Apply **before or with** the deploy. | operator |
+| **B-1** | **Migration 035 is NOT applied.** First attempt failed and rolled back atomically; corrected version below is ready to re-run. Until applied, registration fails closed (no `legal_acceptances`) and RLS still permits anonymous reads of all content. | operator |
 | **B-2** | `RESEND_API_KEY` / verified sender domain (Q-D). Without it verification email is dry-run and **no account can ever be activated**. | operator |
 | **B-3** | No path to grant an enrollment. `activateEnrollment` needs a pre-existing `payments` row, and none exist. Course access is admin-only until XPA-6B. | XPA-6B |
 | **B-4** | `quiz_questions.correct_answer` is still readable by an **entitled** learner via PostgREST. Audience reduced from the entire internet to admin-enrolled learners. Needs a learner-safe projection. | XPA-6D |
@@ -223,6 +223,70 @@ Migration 035 asserts at apply time: `authenticated` holds exactly `SELECT` on
 | `NEXT_PUBLIC_SITE_URL` | canonical origin | recommended |
 | `NEXT_PUBLIC_ALLOW_FREE_SELF_ENROLLMENT` | re-open self-enrollment | **leave unset** |
 | `CAPTCHA_PROVIDER`, `CAPTCHA_SECRET_KEY` | enable CAPTCHA | optional |
+
+---
+
+## 14b. Migration 035 — failed apply and correction
+
+The first apply failed. It **rolled back atomically**: verified afterwards that
+none of the eight new `profiles` columns, neither new helper function, and no
+`legal_acceptances` table existed. Nothing was left behind and **no manual
+production patching was performed or is needed**.
+
+### Every reference migration 035 makes to `public.profiles`
+
+Live columns, read from production: `avatar_url, company_id, created_at, email,
+full_name, id, platform_role, role, updated_at`.
+
+| Referenced by 035 | Pre-existed? | Resolution |
+|---|---|---|
+| `id`, `email`, `full_name`, `platform_role` | **yes** | use as-is |
+| `first_name`, `last_name`, `display_name`, `preferred_language` | no | **created by the migration** |
+| `accepted_terms_version`, `accepted_privacy_version` | no | **created by the migration** |
+| `account_status`, `disabled_at` | no | **created by the migration** |
+
+No reference was to a wrongly-named column, and none needed removing. All eight
+missing columns are legitimately new; the defect was **when** they were created,
+not whether.
+
+### Root cause 1 — order (this is what failed)
+
+`current_account_status()` is `language sql`, and PostgreSQL **fully
+parse-analyses a SQL-language function body at CREATE time** — unlike plpgsql,
+which only checks syntax. It reads `profiles.account_status`, but the
+`ALTER TABLE` adding that column came *later* in the file. Result: `42703` on the
+first function.
+
+**Fix:** all column additions moved to section 1, before any function. The
+ordering is now labelled load-bearing and pinned by a test.
+
+### Root cause 2 — recursion (would have failed the *next* run)
+
+The hardened `profiles_update_own` policy pinned `disabled_at` with an inline
+`select … from public.profiles` — a subquery on the table the policy guards,
+which raises `42P17 infinite recursion detected in policy for relation
+"profiles"`. Masked by root cause 1, so it would have produced a second failed
+apply.
+
+**Fix:** a `current_disabled_at()` SECURITY DEFINER helper, the same pattern
+migration 027 introduced for `current_platform_role()` for exactly this reason.
+
+### Also corrected while in there
+
+* **Preflight block.** Missing dependencies now fail at the top with a named
+  object instead of a bare `42703` several sections in.
+* **Genuine idempotency for the `is_preview` reset.** An unconditional
+  `set is_preview = false` is *repeatable*, not idempotent — re-running it later
+  would silently un-publish preview lessons an administrator had since chosen.
+  It now fires only while the broken pattern holds (every lesson flagged).
+* **The matching assertion** checks the dangerous state (`n_preview = n_total`)
+  rather than "zero previews", which would have turned a legitimate editorial
+  act into a failed migration.
+* **Constraints** use `drop … if exists` + `add`, scoped to the table, instead of
+  a `conname`-only probe that can collide across tables.
+* **A post-apply assertion** verifies all eight columns exist.
+
+Five new tests pin both root causes and the idempotency guarantees.
 
 ---
 

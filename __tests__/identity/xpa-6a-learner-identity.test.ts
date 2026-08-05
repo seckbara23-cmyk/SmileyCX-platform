@@ -304,10 +304,43 @@ describe('XPA-6A course access', () => {
     }
   })
 
-  it('the blanket is_preview flag is reset and asserted at apply time', () => {
+  it('the blanket is_preview flag is retired and asserted at apply time', () => {
     expect(sqlCode).toMatch(/update public\.lessons set is_preview = false/)
     expect(sqlCode).toMatch(/from public\.lessons where is_preview = true/)
-    expect(sqlCode).toMatch(/raise exception 'is_preview is still set/)
+    expect(sqlCode).toMatch(/raise exception 'every lesson \(%\) is still flagged is_preview/)
+  })
+
+  /**
+   * The reset must not be an unconditional UPDATE.
+   *
+   * Re-running the migration a year from now would otherwise silently
+   * un-publish whatever preview lessons an administrator had deliberately
+   * chosen. That is repeatable, not idempotent.
+   */
+  it('the is_preview reset fires only while the blanket pattern holds', () => {
+    const block = sqlCode.slice(sqlCode.indexOf('select count(*) into n_total'))
+    expect(block.slice(0, 600)).toMatch(/if n_total > 0 and n_preview = n_total then/)
+    const update = sqlCode.indexOf('update public.lessons set is_preview = false')
+    const guard = sqlCode.indexOf('if n_total > 0 and n_preview = n_total then')
+    expect(guard).toBeGreaterThan(-1)
+    expect(guard).toBeLessThan(update)
+  })
+
+  /**
+   * And the assertion must check the DANGEROUS state, not "zero previews" —
+   * asserting zero would turn a legitimate editorial act into a failed
+   * migration on the next run.
+   */
+  it('the apply-time assertion permits a deliberate preview subset', () => {
+    // Anchored on the raised message, not on a `-- 9d` comment marker: the
+    // comments are stripped before these assertions run, so a comment anchor
+    // silently matches position 0 and the test asserts nothing.
+    const at = sqlCode.indexOf("raise exception 'every lesson")
+    expect(at).toBeGreaterThan(-1)
+    const assertion = sqlCode.slice(at - 400, at + 200)
+    expect(assertion).toMatch(/n_preview = n_total/)
+    // "zero previews" would forbid a legitimate editorial act.
+    expect(assertion).not.toMatch(/n_preview\s*<>\s*0/)
   })
 
   it('an assessment has no preview arm', () => {
@@ -397,7 +430,12 @@ describe('XPA-6A privileges', () => {
   })
 
   it('revokes default EXECUTE on new functions before granting it', () => {
-    for (const fn of ['is_email_verified()', 'current_account_status()', 'has_course_access(uuid)']) {
+    for (const fn of [
+      'is_email_verified()',
+      'current_account_status()',
+      'current_disabled_at()',
+      'has_course_access(uuid)',
+    ]) {
       const r = sqlCode.indexOf(`revoke all on function public.${fn}`)
       const g = sqlCode.indexOf(`grant execute on function public.${fn}`)
       expect(r, `${fn} must be revoked from public`).toBeGreaterThan(-1)
@@ -438,6 +476,102 @@ describe('XPA-6A privileges', () => {
   it('contains no USING (true) and no GRANT ALL to anon or public', () => {
     expect(sqlCode).not.toMatch(/using\s*\(\s*true\s*\)/i)
     expect(sqlCode).not.toMatch(/grant\s+all\s+on\s+\S+\s+to\s+(anon|public)/i)
+  })
+
+  /**
+   * ── The two defects that made the first apply fail ───────────────────────
+   *
+   * Both were ordering/recursion bugs that no amount of reading the intent
+   * would catch, so they are pinned structurally.
+   */
+
+  it('adds every profiles column BEFORE any function that reads one', () => {
+    // A `language sql` function is fully parse-analysed at CREATE time (unlike
+    // plpgsql). current_account_status() reads profiles.account_status, so if
+    // the ALTER TABLE moves below it the migration fails with 42703 on the
+    // first function — which is exactly what happened.
+    const alter = sqlCode.indexOf('alter table public.profiles')
+    expect(alter).toBeGreaterThan(-1)
+
+    for (const fn of [
+      'create or replace function public.current_account_status',
+      'create or replace function public.current_disabled_at',
+      'create or replace function public.has_course_access',
+    ]) {
+      const at = sqlCode.indexOf(fn)
+      expect(at, `${fn} must exist`).toBeGreaterThan(-1)
+      expect(alter, `${fn} reads a profiles column, so the ALTER must come first`).toBeLessThan(at)
+    }
+  })
+
+  it('no policy ON profiles contains a raw subquery FROM profiles', () => {
+    // Re-entering the table a policy guards raises 42P17, "infinite recursion
+    // detected in policy for relation profiles". Pinned values must be read
+    // through the SECURITY DEFINER helpers instead — the pattern migration 027
+    // established for exactly this reason.
+    const start = sqlCode.indexOf('create policy "profiles_update_own"')
+    expect(start).toBeGreaterThan(-1)
+    const policy = sqlCode.slice(start, sqlCode.indexOf(';', start))
+
+    expect(policy).not.toMatch(/from\s+public\.profiles/i)
+    expect(policy).toMatch(/public\.current_platform_role\(\)/)
+    expect(policy).toMatch(/public\.current_account_status\(\)/)
+    expect(policy).toMatch(/public\.current_disabled_at\(\)/)
+  })
+
+  it('every helper reading its own guarded table is SECURITY DEFINER', () => {
+    for (const fn of ['current_account_status', 'current_disabled_at', 'is_email_verified']) {
+      const start = sqlCode.indexOf(`create or replace function public.${fn}`)
+      const body = sqlCode.slice(start, sqlCode.indexOf('$$;', start))
+      expect(body, fn).toMatch(/security definer/i)
+      expect(body, fn).toMatch(/set search_path/i)
+    }
+  })
+
+  it('fails fast and legibly when a dependency is missing', () => {
+    expect(sqlCode).toMatch(/XPA-6A 035 preflight/)
+    expect(sqlCode).toMatch(/to_regprocedure\('public\.is_platform_admin\(\)'\)/)
+    expect(sqlCode).toMatch(/to_regprocedure\('public\.current_platform_role\(\)'\)/)
+  })
+
+  it('asserts the promised profiles columns actually exist afterwards', () => {
+    const at = sqlCode.indexOf("raise exception 'profiles is missing expected column")
+    expect(at).toBeGreaterThan(-1)
+    const assertion = sqlCode.slice(at - 900, at + 120)
+    expect(assertion).toMatch(/information_schema\.columns/)
+    // The list checked must be the full set the migration adds.
+    for (const c of [
+      'first_name', 'last_name', 'display_name', 'preferred_language',
+      'accepted_terms_version', 'accepted_privacy_version',
+      'account_status', 'disabled_at',
+    ]) {
+      expect(assertion, `assertion must cover ${c}`).toContain(`'${c}'`)
+    }
+  })
+
+  it('is idempotent — every object guards its own re-creation', () => {
+    // ALTER ... ADD COLUMN
+    const addCols = sqlCode.match(/add column (if not exists )?/g) ?? []
+    expect(addCols.length).toBeGreaterThan(0)
+    for (const c of addCols) expect(c).toContain('if not exists')
+
+    // Constraints use drop-then-add rather than a conname-only probe, which
+    // can collide with an identically named constraint on another table.
+    for (const c of ['profiles_account_status_check', 'profiles_preferred_language_check']) {
+      expect(sqlCode).toContain(`drop constraint if exists ${c}`)
+      expect(sqlCode).toContain(`add constraint ${c}`)
+    }
+
+    expect(sqlCode).toMatch(/create table if not exists public\.legal_acceptances/)
+    expect(sqlCode).toMatch(/create unique index if not exists/)
+
+    // Every policy is dropped before it is created.
+    const created = [...sqlCode.matchAll(/create policy "([^"]+)"/g)].map(m => m[1])
+    expect(created.length).toBeGreaterThan(4)
+    for (const name of created) {
+      expect(sqlCode, `policy ${name} must be dropped before creation`)
+        .toMatch(new RegExp(`drop policy if exists "${name}"`))
+    }
   })
 
   it('does not modify migrations 001-027', () => {

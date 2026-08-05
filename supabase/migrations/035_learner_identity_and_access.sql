@@ -2,67 +2,183 @@
 -- Migration 035 — XPA-6A: learner identity, legal acceptance, and the
 --                 deny-by-default course-access seam.
 --
--- Three things, in order of consequence:
+-- Run as a SINGLE TRANSACTION. The first attempt failed and rolled back
+-- atomically, leaving nothing behind — verified against production: none of the
+-- eight new profiles columns, neither helper function, and no
+-- legal_acceptances table existed afterwards. There is nothing to clean up and
+-- nothing to patch by hand.
+--
+-- ── WHY THE FIRST ATTEMPT FAILED ───────────────────────────────────────────
+--
+-- Two defects, both mine, both about ORDER rather than intent.
+--
+-- 1. `current_account_status()` is `language sql`. PostgreSQL fully
+--    parse-analyses a SQL-language function body at CREATE time — unlike
+--    plpgsql, which only checks syntax. The function read
+--    `profiles.account_status`, but the ALTER TABLE that adds that column came
+--    LATER in the file, so creation failed with 42703 on the very first
+--    statement that mattered.
+--
+--    Corrected by adding every column BEFORE any function that reads one.
+--    Section order is now load-bearing and labelled as such.
+--
+-- 2. The hardened `profiles_update_own` policy pinned `disabled_at` using an
+--    inline `select ... from public.profiles` — a subquery on the very table
+--    the policy guards, which raises 42P17 "infinite recursion detected in
+--    policy for relation profiles". This would NOT have surfaced until defect 1
+--    was fixed, so it would have produced a second failed run.
+--
+--    Corrected by reading the stored value through a SECURITY DEFINER helper,
+--    which is exactly why migration 027 introduced `current_platform_role()`.
+--    The pattern was already established here; this migration simply failed to
+--    follow it.
+--
+-- ── VERIFIED AGAINST PRODUCTION BEFORE REWRITING ───────────────────────────
+--
+--   profiles: avatar_url, company_id, created_at, email, full_name, id,
+--             platform_role, role, updated_at        <- the complete live set
+--   MISSING : first_name, last_name, display_name, preferred_language,
+--             accepted_terms_version, accepted_privacy_version,
+--             account_status, disabled_at            <- all added below
+--   PRESENT : is_platform_admin(), current_platform_role()
+--   PRESENT : enrollments(user_id, course_id, status), lessons(module_id,
+--             is_preview), modules(course_id), quizzes(course_id, module_id,
+--             lesson_id), quiz_questions(quiz_id), courses(id)
+--
+-- Every column this migration assumes on public.profiles is now either created
+-- by section 1 or listed above as verified pre-existing. There are no others.
+--
+-- ── WHAT THE MIGRATION DOES ────────────────────────────────────────────────
 --
 --   1. THE ACCESS SEAM.  public.has_course_access(course_id) becomes the single
 --      server-authoritative answer to "may this caller read this course's
 --      learning material?". Every content policy is rewritten to call it.
---      XPA-6B extends THIS FUNCTION to consult entitlements — no policy has to
---      be touched again.
+--      XPA-6B extends THAT FUNCTION — no policy is touched again.
 --
---   2. LEARNER IDENTITY.  Nullable name/language columns on the existing
---      profiles table (no new profile table — the audit found the existing one
---      sound), plus account lifecycle state.
+--   2. LEARNER IDENTITY.  Nullable name/language columns on the EXISTING
+--      profiles table (no second profile model), plus account lifecycle state.
 --
 --   3. LEGAL ACCEPTANCE.  An append-only, versioned record of Terms and Privacy
 --      acceptance.
 --
 -- ── WHY THE ACCESS SEAM IS A CORRECTION, NOT A FEATURE ─────────────────────
 --
--- Verified against production before writing this migration, using the public
--- anon key — i.e. what any anonymous visitor on the internet actually gets:
+-- Measured against production with the public anon key — i.e. what any
+-- anonymous visitor on the internet actually gets:
 --
 --     lessons        82 of 82 rows readable anonymously
 --     modules        23 of 23 rows readable anonymously
 --     quizzes         1 of 1  rows readable anonymously
 --     quiz_questions  3 of 3  rows readable anonymously, correct_answer included
 --
--- Three independent policy arms caused it, and the third is the one that
--- matters:
+-- Three independent policy arms caused it, and the third is the decisive one:
 --
 --   a) `auth.uid() IS NULL AND courses.is_published` — the deliberate pilot arm
 --      (migration 008).
 --   b) `auth.uid() IS NOT NULL AND courses.is_free`  — migration 005 set
---      is_free = true on every published course, so ANY authenticated user
---      reads everything. With public registration opening in XPA-6A this arm
---      alone would mean "registration grants full course access", which
---      directly contradicts ratified decisions 3 and 5.
---   c) `is_preview = true` — and ALL 82 lessons carry is_preview = true.
---      This arm is not conditioned on the caller at all, so it would survive
---      the removal of (a) and (b) and keep the entire catalogue world-readable.
+--      is_free = true on EVERY published course, so any authenticated user read
+--      everything. With public registration opening in XPA-6A this arm alone
+--      would mean "registration grants full course access", contradicting
+--      ratified decisions 3 and 5.
+--   c) `is_preview = true` — and ALL 82 lessons carried it. This arm is not
+--      conditioned on the caller at all, so it would have survived the removal
+--      of (a) and (b) and kept the entire catalogue world-readable.
 --
 -- (c) is why removing the pilot arm alone would have LOOKED like a fix and
--- changed nothing. The flag is reset below.
+-- changed nothing.
 --
 -- ── EFFECT, STATED PLAINLY ─────────────────────────────────────────────────
 --
 -- After this migration nobody reads lesson content without an ACTIVE
--- enrollment. There are currently ZERO enrollments and ZERO payments, so in
--- practice course material becomes admin-only until XPA-6B ships the grant
--- path. That is the ratified commercial posture (decisions 3, 5, 6), not an
--- accident — but it IS an outward-facing change and is called out in the
--- XPA-6A report rather than buried here.
+-- enrollment. There are currently ZERO enrollments and ZERO payments, so course
+-- material becomes admin-only until XPA-6B ships the grant path. That is the
+-- ratified commercial posture (decisions 3, 5, 6), not an accident.
 --
--- Public discovery is untouched: `courses`, `public_courses`-style catalogue
--- reads, parcours and secteurs all continue to work, because `courses` itself
--- is not restricted here.
+-- Public discovery is untouched: `courses` is not restricted here, so the
+-- catalogue, parcours and secteurs pages continue to work.
 --
--- ── ROLLBACK ───────────────────────────────────────────────────────────────
--- See the ROLLBACK block at the foot of this file.
+-- ── IDEMPOTENCY ────────────────────────────────────────────────────────────
+-- Safe to re-run. Every object uses IF NOT EXISTS / OR REPLACE / DROP-then-
+-- CREATE. The one data change (section 3) is guarded so that a re-run cannot
+-- undo later editorial work — see the note there, which is the only place in
+-- this file where "idempotent" needed more thought than a keyword.
 -- ============================================================================
 
 
--- ══ 1. IDENTITY HELPERS ═══════════════════════════════════════════════════
+-- ══ 0. PREFLIGHT — fail fast and legibly ══════════════════════════════════
+--
+-- The first attempt failed with a bare 42703 several sections in. If a
+-- dependency is ever missing again, say which one, at the top.
+do $$
+declare
+  missing text := '';
+begin
+  if to_regclass('public.profiles')       is null then missing := missing || ' profiles';       end if;
+  if to_regclass('public.enrollments')    is null then missing := missing || ' enrollments';    end if;
+  if to_regclass('public.lessons')        is null then missing := missing || ' lessons';        end if;
+  if to_regclass('public.modules')        is null then missing := missing || ' modules';        end if;
+  if to_regclass('public.quizzes')        is null then missing := missing || ' quizzes';        end if;
+  if to_regclass('public.quiz_questions') is null then missing := missing || ' quiz_questions'; end if;
+  if to_regclass('public.courses')        is null then missing := missing || ' courses';        end if;
+
+  if missing <> '' then
+    raise exception 'XPA-6A 035 preflight: missing table(s):%', missing;
+  end if;
+
+  if to_regprocedure('public.is_platform_admin()') is null then
+    raise exception 'XPA-6A 035 preflight: public.is_platform_admin() is missing (expected from the pre-001 baseline)';
+  end if;
+
+  if to_regprocedure('public.current_platform_role()') is null then
+    raise exception 'XPA-6A 035 preflight: public.current_platform_role() is missing (expected from migration 027)';
+  end if;
+end $$;
+
+
+-- ══ 1. LEARNER PROFILE COLUMNS — FIRST, because functions below read them ══
+--
+-- ORDER IS LOAD-BEARING. A `language sql` function is parse-analysed when it is
+-- created, so every column referenced by section 2 must already exist here.
+-- This section moving after section 2 is precisely what broke the first run.
+--
+-- Additive and nullable on the EXISTING profiles table. The audit found no
+-- reason for a second profile model, and a second one would immediately
+-- disagree with the first.
+--
+-- Deliberately absent, per XPA-6A scope: no payment data, no entitlement
+-- columns, no B2B membership. Identity stays separate from commerce.
+alter table public.profiles
+  add column if not exists first_name               text,
+  add column if not exists last_name                text,
+  add column if not exists display_name             text,
+  add column if not exists preferred_language       text        not null default 'fr',
+  add column if not exists accepted_terms_version   text,
+  add column if not exists accepted_privacy_version text,
+  add column if not exists account_status           text        not null default 'active',
+  add column if not exists disabled_at              timestamptz;
+
+-- Drop-then-add rather than a pg_constraint existence probe: it is genuinely
+-- idempotent, and it is scoped to this table, whereas matching on conname alone
+-- can collide with an identically named constraint elsewhere.
+alter table public.profiles drop constraint if exists profiles_account_status_check;
+alter table public.profiles
+  add constraint profiles_account_status_check
+  check (account_status in ('active', 'suspended', 'disabled'));
+
+alter table public.profiles drop constraint if exists profiles_preferred_language_check;
+alter table public.profiles
+  add constraint profiles_preferred_language_check
+  check (preferred_language in ('fr', 'en'));
+
+comment on column public.profiles.account_status is
+  'XPA-6A lifecycle state: active | suspended | disabled. Server-controlled — pinned against self-modification by profiles_update_own.';
+
+
+-- ══ 2. IDENTITY HELPERS ═══════════════════════════════════════════════════
+--
+-- All three are SECURITY DEFINER for the same reason migration 027's
+-- current_platform_role() is: they are read from inside RLS policies on the
+-- very tables they query, and a plain subquery there recurses (42P17).
 
 -- Email verification is mandatory for learner access (XPA-6A). auth.users is
 -- the ONLY authority for it — the app never mirrors email_confirmed_at into a
@@ -85,10 +201,7 @@ comment on function public.is_email_verified() is
   'XPA-6A. True when the caller''s email is confirmed in auth.users. SECURITY DEFINER because auth.users is not readable by app roles.';
 
 
--- Current account_status of the caller, read past RLS. Mirrors the
--- current_platform_role() pattern from migration 027 and exists for the same
--- reason: the UPDATE policy below must compare against the STORED value, and
--- reading profiles from inside a profiles policy would recurse.
+-- Stored account_status of the caller, read past RLS.
 create or replace function public.current_account_status()
 returns text
 language sql
@@ -100,13 +213,33 @@ as $$
 $$;
 
 comment on function public.current_account_status() is
-  'XPA-6A. Stored account_status of the calling user, read past RLS. Used to pin the column in profiles_update_own.';
+  'XPA-6A. Stored account_status of the calling user, read past RLS. Used to pin the column in profiles_update_own without recursing into the policy.';
 
 
--- ══ 2. THE COURSE-ACCESS SEAM ═════════════════════════════════════════════
+-- Stored disabled_at of the caller, read past RLS.
 --
--- Deny by default. Returns true ONLY for a platform admin, or a verified,
--- active learner holding an ACTIVE enrollment for that exact course.
+-- This exists ONLY to avoid recursion. The first version of this migration
+-- inlined `(select p.disabled_at from public.profiles p where p.id =
+-- auth.uid())` directly into the profiles UPDATE policy, which re-enters the
+-- policy being evaluated and raises 42P17.
+create or replace function public.current_disabled_at()
+returns timestamptz
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.disabled_at from public.profiles p where p.id = auth.uid()
+$$;
+
+comment on function public.current_disabled_at() is
+  'XPA-6A. Stored disabled_at of the calling user, read past RLS. Exists to keep profiles_update_own free of a self-referential subquery (42P17).';
+
+
+-- ══ 3. THE COURSE-ACCESS SEAM ═════════════════════════════════════════════
+--
+-- Deny by default. True ONLY for a platform admin, or a verified, active
+-- learner holding an ACTIVE enrollment for that exact course.
 --
 -- XPA-6B EXTENDS THIS FUNCTION and nothing else: add an `or exists (... active
 -- entitlement ...)` arm here and every content policy inherits it atomically.
@@ -142,32 +275,56 @@ as $$
 $$;
 
 comment on function public.has_course_access(uuid) is
-  'XPA-6A course-access seam. The single server-authoritative answer to "may this caller read this course''s learning material?". Admin, or verified+active learner with an ACTIVE enrollment. XPA-6B extends THIS function to consult entitlements; content policies must not be edited again.';
+  'XPA-6A course-access seam. The single server-authoritative answer to "may this caller read this course''s learning material?". Admin, or verified+active learner with an ACTIVE enrollment. XPA-6B extends THIS function; content policies must not be edited again.';
 
 -- RLS policies are evaluated as the CALLING role, so anon and authenticated
 -- both need EXECUTE or every policy that calls this raises permission denied.
 -- Revoke first: functions are created with EXECUTE granted to PUBLIC.
-revoke all on function public.is_email_verified()        from public;
-revoke all on function public.current_account_status()   from public;
-revoke all on function public.has_course_access(uuid)    from public;
+revoke all on function public.is_email_verified()      from public;
+revoke all on function public.current_account_status() from public;
+revoke all on function public.current_disabled_at()    from public;
+revoke all on function public.has_course_access(uuid)  from public;
 
 grant execute on function public.is_email_verified()      to anon, authenticated;
 grant execute on function public.current_account_status() to anon, authenticated;
+grant execute on function public.current_disabled_at()    to anon, authenticated;
 grant execute on function public.has_course_access(uuid)  to anon, authenticated;
 
 
--- ══ 3. RESET THE BLANKET PREVIEW FLAG ═════════════════════════════════════
+-- ══ 4. RETIRE THE BLANKET PREVIEW FLAG ════════════════════════════════════
 --
--- All 82 lessons carry is_preview = true, which makes "preview" meaningless
--- and the whole catalogue public. Reset it so the flag means what it says; the
+-- All 82 lessons carry is_preview = true, which makes "preview" meaningless and
+-- the whole catalogue public. Reset it so the flag means what it says; the
 -- policy below still honours it, so designating real preview lessons remains a
 -- normal editorial action.
 --
--- Not data loss: a boolean flag with a one-line rollback (see foot of file).
-update public.lessons set is_preview = false where is_preview is distinct from false;
+-- ── THE ONE PLACE IDEMPOTENCY NEEDED REAL THOUGHT ────────────────────────
+-- An unconditional `set is_preview = false` is re-runnable in the trivial sense
+-- and WRONG in the useful sense: re-applying this migration a year from now
+-- would silently un-publish whatever preview lessons an administrator had
+-- deliberately chosen since. A migration that quietly destroys later editorial
+-- work is not idempotent, it is just repeatable.
+--
+-- So the correction fires only while the BROKEN pattern still holds — every
+-- lesson flagged. Once a deliberate subset exists, this is a no-op forever.
+do $$
+declare
+  n_total   integer;
+  n_preview integer;
+begin
+  select count(*) into n_total   from public.lessons;
+  select count(*) into n_preview from public.lessons where is_preview = true;
+
+  if n_total > 0 and n_preview = n_total then
+    update public.lessons set is_preview = false;
+    raise notice 'XPA-6A 035: cleared the blanket is_preview flag on % lesson(s).', n_total;
+  else
+    raise notice 'XPA-6A 035: is_preview already a deliberate subset (%/%) — left untouched.', n_preview, n_total;
+  end if;
+end $$;
 
 
--- ══ 4. CONTENT POLICIES — rewritten onto the seam ═════════════════════════
+-- ══ 5. CONTENT POLICIES — rewritten onto the seam ═════════════════════════
 
 -- ── lessons ──────────────────────────────────────────────────────────────
 drop policy if exists "lessons_visible" on public.lessons;
@@ -229,10 +386,9 @@ create policy "quizzes_visible" on public.quizzes for select
 -- this table, so an ENTITLED learner can still read it via PostgREST. The
 -- learner UI never selects it (both quiz players select an explicit safe column
 -- list) and scoring is server-side (XPA-4), but column-level confidentiality
--- needs a learner-safe projection — the XPA-5A pattern. That is XPA-6D scope
--- and is listed as a remaining blocker in the XPA-6A report. This migration
--- reduces the exposed audience from "the entire internet" to "learners an
--- admin explicitly enrolled".
+-- needs a learner-safe projection — the XPA-5A pattern. That is XPA-6D scope.
+-- This migration reduces the exposed audience from "the entire internet" to
+-- "learners an admin explicitly enrolled".
 drop policy if exists "quiz_questions_visible" on public.quiz_questions;
 
 create policy "quiz_questions_visible" on public.quiz_questions for select
@@ -258,47 +414,6 @@ create policy "quiz_questions_visible" on public.quiz_questions for select
   );
 
 
--- ══ 5. LEARNER PROFILE COLUMNS ════════════════════════════════════════════
---
--- Additive and nullable on the EXISTING profiles table. The audit found no
--- reason for a second profile model, and a second one would immediately
--- disagree with the first.
---
--- Deliberately absent, per the XPA-6A scope: no payment data, no entitlement
--- columns, no B2B membership. Identity stays separate from commerce.
-alter table public.profiles
-  add column if not exists first_name               text,
-  add column if not exists last_name                text,
-  add column if not exists display_name             text,
-  add column if not exists preferred_language       text    not null default 'fr',
-  add column if not exists accepted_terms_version   text,
-  add column if not exists accepted_privacy_version text,
-  add column if not exists account_status           text    not null default 'active',
-  add column if not exists disabled_at              timestamptz;
-
-do $$
-begin
-  if not exists (
-    select 1 from pg_constraint where conname = 'profiles_account_status_check'
-  ) then
-    alter table public.profiles
-      add constraint profiles_account_status_check
-      check (account_status in ('active', 'suspended', 'disabled'));
-  end if;
-
-  if not exists (
-    select 1 from pg_constraint where conname = 'profiles_preferred_language_check'
-  ) then
-    alter table public.profiles
-      add constraint profiles_preferred_language_check
-      check (preferred_language in ('fr', 'en'));
-  end if;
-end $$;
-
-comment on column public.profiles.account_status is
-  'XPA-6A lifecycle state: active | suspended | disabled. Server-controlled — pinned against self-modification by profiles_update_own.';
-
-
 -- ══ 6. CLOSE THE SELF-SERVICE ESCALATION THIS WOULD OTHERWISE OPEN ════════
 --
 -- Migration 027 lets a user UPDATE their own profile row and pins platform_role
@@ -308,7 +423,10 @@ comment on column public.profiles.account_status is
 --
 -- Migration 027 is NOT modified (ledger rule). Its policy is replaced by a
 -- STRICTLY STRONGER one: same USING clause, same platform_role pin, plus pins
--- on account_status, disabled_at and platform_role's sibling `role`.
+-- on account_status and disabled_at.
+--
+-- Every pinned value is read through a SECURITY DEFINER helper. Reading them
+-- with an inline subquery on public.profiles is what raises 42P17 here.
 drop policy if exists "profiles_update_own" on public.profiles;
 
 create policy "profiles_update_own" on public.profiles for update
@@ -320,9 +438,7 @@ create policy "profiles_update_own" on public.profiles for update
       or (
         platform_role  is not distinct from public.current_platform_role()
         and account_status is not distinct from coalesce(public.current_account_status(), 'active')
-        and disabled_at    is not distinct from (
-          select p.disabled_at from public.profiles p where p.id = auth.uid()
-        )
+        and disabled_at    is not distinct from public.current_disabled_at()
       )
     )
   );
@@ -394,10 +510,32 @@ grant select on public.legal_acceptances to authenticated;
 do $$
 declare
   bad          text;
+  n_total      integer;
   n_preview    integer;
-  n_anon_grant integer;
+  n_select     integer;
+  missing_cols text;
 begin
-  -- 9a. legal_acceptances: authenticated holds SELECT and nothing else.
+  -- 9a. Every column this migration promised on profiles actually exists.
+  -- `as t(col)` names the table AND its column explicitly. `as c` alone leaves
+  -- the bare reference below resolving through an alias that is both, which is
+  -- legal but reads as ambiguous and breaks the moment the query grows.
+  select string_agg(t.col, ', ') into missing_cols
+  from unnest(array[
+    'first_name', 'last_name', 'display_name', 'preferred_language',
+    'accepted_terms_version', 'accepted_privacy_version',
+    'account_status', 'disabled_at'
+  ]) as t(col)
+  where not exists (
+    select 1 from information_schema.columns ic
+    where ic.table_schema = 'public'
+      and ic.table_name   = 'profiles'
+      and ic.column_name  = t.col
+  );
+  if missing_cols is not null then
+    raise exception 'profiles is missing expected column(s): %', missing_cols;
+  end if;
+
+  -- 9b. legal_acceptances: authenticated holds SELECT and nothing else.
   select string_agg(privilege_type, ', ' order by privilege_type) into bad
   from information_schema.role_table_grants
   where table_schema = 'public'
@@ -408,17 +546,17 @@ begin
     raise exception 'legal_acceptances: authenticated holds unintended privileges: %', bad;
   end if;
 
-  select count(*) into n_anon_grant
+  select count(*) into n_select
   from information_schema.role_table_grants
   where table_schema = 'public'
     and table_name   = 'legal_acceptances'
     and grantee      = 'authenticated'
     and privilege_type = 'SELECT';
-  if n_anon_grant <> 1 then
+  if n_select <> 1 then
     raise exception 'legal_acceptances: authenticated is missing SELECT';
   end if;
 
-  -- 9b. anon holds NOTHING on legal_acceptances.
+  -- 9c. anon and PUBLIC hold NOTHING on legal_acceptances.
   select string_agg(privilege_type, ', ' order by privilege_type) into bad
   from information_schema.role_table_grants
   where table_schema = 'public'
@@ -428,25 +566,29 @@ begin
     raise exception 'legal_acceptances: anon/PUBLIC still hold: %', bad;
   end if;
 
-  -- 9c. The blanket preview flag is gone. If this ever fails again, the
-  --     catalogue is world-readable regardless of every policy above.
+  -- 9d. The blanket preview flag is gone.
+  --
+  -- Asserts the DANGEROUS state is absent, not that zero previews exist. "Zero"
+  -- would forbid an administrator from ever designating a preview lesson —
+  -- turning a legitimate editorial act into a failed migration on the next run.
+  select count(*) into n_total   from public.lessons;
   select count(*) into n_preview from public.lessons where is_preview = true;
-  if n_preview <> 0 then
-    raise exception 'is_preview is still set on % lesson(s) — content remains public', n_preview;
+  if n_total > 0 and n_preview = n_total then
+    raise exception 'every lesson (%) is still flagged is_preview — the catalogue remains world-readable', n_total;
   end if;
 
-  -- 9d. The seam denies an unauthenticated caller. has_course_access() is
+  -- 9e. The seam denies an unauthenticated caller. has_course_access() is
   --     evaluated here with auth.uid() = NULL (no request context at apply
   --     time), which is exactly the anonymous case.
   if exists (
     select 1 from public.courses c
     where public.has_course_access(c.id)
-      and not public.is_platform_admin()
+      and not coalesce(public.is_platform_admin(), false)
   ) then
     raise exception 'has_course_access() grants access with no authenticated user';
   end if;
 
-  raise notice 'XPA-6A 035: access seam, identity columns and legal acceptance verified.';
+  raise notice 'XPA-6A 035: identity columns, access seam and legal acceptance verified.';
 end $$;
 
 
@@ -469,4 +611,6 @@ end $$;
 --     drop column if exists accepted_privacy_version,
 --     drop column if exists account_status,
 --     drop column if exists disabled_at;
+--   drop function if exists public.current_disabled_at();
+--   drop function if exists public.current_account_status();
 -- ══════════════════════════════════════════════════════════════════════════
