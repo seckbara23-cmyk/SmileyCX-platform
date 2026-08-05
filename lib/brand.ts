@@ -3,21 +3,21 @@
  *
  * Single source of truth for the public identity. Before XPA-1 these values were
  * duplicated as literals across ~15 files, which is how the platform ended up
- * with three different fallback domains (`academy.smileycx.com`,
- * `smileycx.com`, `smiley-cx-platform.vercel.app`) all claiming to be canonical.
+ * with three different legacy fallback domains all claiming to be canonical.
  *
  * ── Domain policy (ratified, D-DOMAIN) ────────────────────────────────────
  * The dual-domain architecture is PRESERVED and deliberate:
  *
- *   www.xpclient-academy.com       → canonical PUBLIC academy. Every
- *                                    user-facing URL, certificate link,
- *                                    metadata and canonical link uses this.
- *   smiley-cx-platform.vercel.app  → technical deployment / private admin
- *                                    portal host. NOT a brand surface.
+ *   www.xpclient-academy.com  → canonical PUBLIC academy. Every user-facing
+ *                               URL, certificate link, metadata entry and
+ *                               canonical link uses this.
+ *   the Vercel deployment host → technical deployment / private admin portal.
+ *                               NOT a brand surface, and never named here.
  *
- * The Vercel hostname still appears in `lib/hosts.ts` and `middleware.ts` — that
- * is the admin host boundary, it is infrastructure, and it must NOT be
- * "rebranded". Only user-facing URLs move to the canonical domain.
+ * The deployment hostname is defined once, in `lib/hosts.ts`, and consumed by
+ * the middleware host boundary. It is infrastructure, must NOT be "rebranded",
+ * and is deliberately absent from this module so that a brand-wide search never
+ * surfaces it as something to change. Only user-facing URLs live here.
  *
  * Dependency-free by design so both server and client components can import it.
  */
@@ -27,7 +27,7 @@
  *
  * NEXT_PUBLIC_SITE_URL is the single override, and it is purpose-built for this.
  * NEXT_PUBLIC_APP_URL is deliberately NOT consulted: it is a legacy variable
- * that previously carried smileycx.com values, and its production value cannot
+ * that previously carried legacy-domain values, and its production value cannot
  * be read from the repository. Letting it participate would mean a stale
  * setting could silently poison every canonical URL, OG tag, sitemap entry and
  * certificate link — exactly the class of drift XPA-1 exists to remove. If the
