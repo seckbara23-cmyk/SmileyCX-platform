@@ -217,6 +217,53 @@ indexes, triggers, policies), then repair only those proven complete.
 
 ---
 
+## D-VERIFY — Structural verification is not verification · ✅ RATIFIED (XPA-6A)
+
+**Recorded 2026-08-06, at the cost of a production outage.**
+
+Migration 035 passed every check it had — grants, column existence, policy text
+— and shipped four RLS policies that could not be evaluated at all (`42P17`,
+mutual recursion between `lessons_visible` and `modules_visible`). Every content
+table became unreadable by every caller that goes through RLS, platform admins
+included.
+
+It survived post-apply verification too, because that probe scored *denied* as
+`status >= 400`. A 500 from a recursion error counted as a PASS for "anonymous
+callers are refused". It reported 27 of 30 green on a database where nothing
+worked.
+
+**Two rules, both now enforced in code:**
+
+1. **A migration must EXERCISE what it creates, not describe it.** Migration 036
+   reads every protected table as `anon` and as `authenticated` via `SET ROLE`
+   at apply time. A recursion, a missing EXECUTE grant or a missing SELECT grant
+   aborts the migration instead of shipping.
+
+2. **A verification must distinguish three outcomes, never two:**
+
+   | Outcome | Signature | Meaning |
+   |---|---|---|
+   | `DENIED` | 401/403 + `42501`, or 200 with zero rows | the policy ran and said no |
+   | `ALLOWED` | 200 with rows | the policy ran and said yes |
+   | `BROKEN` | 5xx, `42P17`, `57014` | the policy did not run |
+
+   **BROKEN is never a pass, whichever answer was wanted.** See
+   `classify()` in `scripts/security/verify-xpa-6a.mjs`.
+
+**Corollary, equally load-bearing:** verify the GRANT direction too. A seam that
+denies everyone is broken, not secure. XPA-6A's verification gives a throwaway
+learner an active enrollment and requires them to read the course, and requires a
+platform admin to read everything.
+
+**Structural rule this produced:** no RLS policy may query another
+RLS-protected table. Cross-table lookups go through a SECURITY DEFINER resolver
+— the pattern migration 027 established with `current_platform_role()`.
+
+Fifth instance of the [[D-GRANT]] class: a statement or check that reads as proof
+and is not. See also [[D-ACCESS]].
+
+---
+
 ## D-ACCESS — Course access requires an ACTIVE entitlement · ✅ RATIFIED (XPA-6A)
 
 **Recorded 2026-08-06.** Account != Payment != Enrollment != Access. Four
