@@ -8,11 +8,24 @@ import { createClient } from '@/lib/supabase/client'
 import { PILOT_MODE } from '@/lib/pilot'
 import type { Profile } from '@/types'
 
+/**
+ * Homepage section anchors (scroll-spy). `formations` moved to ROUTE_LINKS in
+ * XPA-3: the catalogue is now a real page, not a homepage section.
+ */
 const NAV_LINKS = [
   { id: 'accueil',    label: 'Accueil' },
-  { id: 'formations', label: 'Formations' },
   { id: 'a-propos',   label: 'À propos' },
   { id: 'contact',    label: 'Contact' },
+]
+
+/**
+ * Real public routes (XPA-3 discovery). Rendered as Next <Link> so they work
+ * from any page, unlike the homepage anchors above.
+ */
+const ROUTE_LINKS = [
+  { href: '/courses',  label: 'Formations' },
+  { href: '/parcours', label: 'Parcours métier' },
+  { href: '/secteurs', label: 'Secteurs' },
 ]
 
 export default function Header({ compact = false }: { compact?: boolean }) {
@@ -134,6 +147,16 @@ export default function Header({ compact = false }: { compact?: boolean }) {
                 </a>
               </li>
             ))}
+            {ROUTE_LINKS.map(link => (
+              <li key={link.href}>
+                <Link
+                  href={link.href}
+                  className="px-3 py-1.5 rounded-lg text-sm font-bold text-dark hover:text-primary hover:bg-primary/5 transition-colors duration-200"
+                >
+                  {link.label}
+                </Link>
+              </li>
+            ))}
           </ul>
 
           {/* Desktop auth */}
@@ -246,6 +269,16 @@ export default function Header({ compact = false }: { compact?: boolean }) {
             >
               {link.label}
             </a>
+          ))}
+          {ROUTE_LINKS.map(link => (
+            <Link
+              key={link.href}
+              href={link.href}
+              onClick={() => setMenuOpen(false)}
+              className="px-4 py-3 rounded-cx text-sm font-bold text-dark hover:bg-light transition-colors"
+            >
+              {link.label}
+            </Link>
           ))}
           <hr className="border-black/[0.06] my-1" />
           {profile ? (

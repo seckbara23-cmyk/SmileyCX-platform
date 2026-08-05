@@ -14,6 +14,15 @@ import { readFileSync } from 'fs'
 import { execFileSync } from 'child_process'
 import { join } from 'path'
 
+// XPA-3 made app/sitemap.ts async and DB-backed. Mock the reader so this
+// suite stays a pure unit test — it asserts static routes and the canonical
+// domain, not database contents.
+vi.mock('@/lib/queries/catalogue', () => ({
+  getPublicPaths: async () => [],
+  pathHref: (p: { code: string; kind: string }) =>
+    `${p.kind === 'sector' ? '/secteurs' : '/parcours'}/${p.code.toLowerCase()}`,
+}))
+
 const ROOT = process.cwd()
 const CANONICAL = 'https://www.xpclient-academy.com'
 const VERCEL_HOST = 'smiley-cx-platform.vercel.app'
@@ -170,7 +179,8 @@ describe('XPA-1 — robots, sitemap, manifest', () => {
 
   it('sitemap lists only public pages, all on the canonical domain', async () => {
     const { default: sitemap } = await import('@/app/sitemap')
-    const entries = sitemap()
+    // Async since XPA-3: it now enumerates publicly-renderable path pages.
+    const entries = await sitemap()
     expect(entries.length).toBeGreaterThan(0)
     for (const e of entries) {
       expect(e.url.startsWith(CANONICAL)).toBe(true)
@@ -274,14 +284,30 @@ describe('XPA-1 — public asset guard', () => {
 })
 
 describe('XPA-1 — no schema, permission or migration changes', () => {
-  it('adds no migration', () => {
+  /**
+   * XPA-1 was branding only and introduced no schema work.
+   *
+   * This originally pinned an absolute migration count (27). That was true when
+   * written but inherently brittle: every legitimate later migration breaks it,
+   * which is a false alarm rather than a real regression — XPA-2 (028–030) and
+   * XPA-3 (031) each tripped it. The durable expression of the same intent is
+   * that branding never leaked INTO SQL: no migration may reference brand,
+   * domain or contact constants.
+   */
+  it('branding never leaked into any migration', () => {
     const migrations = execFileSync('git', ['ls-files', '--', 'supabase/migrations'], {
       cwd: ROOT, encoding: 'utf8',
     }).split('\n').filter(Boolean)
-    // XPA-0 recorded 27 migrations; XPA-1 is branding only and must add none.
-    expect(migrations.length).toBe(27)
-    expect(migrations.some(m => m.includes('028'))).toBe(false)
-  }, 15_000)
+
+    expect(migrations.length).toBeGreaterThanOrEqual(27)
+
+    for (const m of migrations) {
+      const sql = read(m)
+      for (const forbidden of ['xpclient-academy.com', 'smileycx.com', 'PUBLIC_SITE_URL', 'CONTACT_EMAIL', 'BRAND_NAME']) {
+        expect(sql, `${m} references branding`).not.toContain(forbidden)
+      }
+    }
+  }, 20_000)
 
   it('leaves authorization and the owner allowlist untouched', () => {
     expect(read('lib/auth/owner-email.ts')).toMatch(/ADMIN_OWNER_EMAILS/)

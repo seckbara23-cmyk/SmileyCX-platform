@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
 import { FLAGSHIP_COURSE, COURSE_MODULES, COURSE_COPY } from '@/data/seed'
 import { FREE_ACCESS_MODE, PILOT_MODE, PLATFORM_MODE } from '@/lib/pilot'
+import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
 import type { Metadata } from 'next'
 
 const COURSE_META: Record<string, { number: number; objectives: string[]; image: string }> = {
@@ -220,6 +221,9 @@ export default async function CourseDetailPage({ params }: Props) {
   const level          = dbCourse?.level          ?? FLAGSHIP_COURSE.level
   const durationHours  = dbCourse?.duration_hours ?? FLAGSHIP_COURSE.duration_hours
   const meta           = COURSE_META[slug]
+  // XPA-3: paths that publicly feature this course (V4 §8 "ce cours fait
+  // partie des parcours…"). Only publicly visible paths are returned.
+  const memberPaths    = await getPublicPathsForCourse((dbCourse?.code as string | null) ?? null)
   const coverImage     = dbCourse?.cover_url      ?? meta?.image ?? null
   const introVideoUrl  = (dbCourse as Record<string, unknown> | null)?.intro_video_url as string | null ?? null
 
@@ -463,6 +467,29 @@ export default async function CourseDetailPage({ params }: Props) {
           </div>
         </div>
       </section>
+
+      {/* ══ Parcours membership (XPA-3) ════════════════════════════════ */}
+      {memberPaths.length > 0 && (
+        <section className="bg-white border-b border-black/[0.06] py-8">
+          <div className="cx-container max-w-4xl">
+            <h2 className="text-sm font-bold text-cx-gray uppercase tracking-wide mb-4">
+              Cette formation fait partie des parcours
+            </h2>
+            <div className="flex flex-wrap gap-2">
+              {memberPaths.map(p => (
+                <Link
+                  key={p.code}
+                  href={pathHref(p)}
+                  className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-black/[0.08] bg-light/60 text-sm text-dark hover:border-primary/40 hover:bg-primary/5 transition-colors"
+                >
+                  <span className="font-mono text-[11px] font-bold text-secondary">{p.code}</span>
+                  {p.title}
+                </Link>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ══ Learning outcomes ══════════════════════════════════════════ */}
       {meta?.objectives && meta.objectives.length > 0 && (
