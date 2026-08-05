@@ -5,6 +5,7 @@ import { getOwnerSession } from '@/lib/auth/owner'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
   FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare, Dumbbell, Library, Mic,
+  KeyRound,
 } from 'lucide-react'
 
 const ADMIN_NAV = [
@@ -17,6 +18,10 @@ const ADMIN_NAV = [
   { href: '/admin/exercises',      label: 'Exercices',       icon: Dumbbell },
   { href: '/admin/voice',          label: 'Voice Practice',  icon: Mic },
   { href: '/admin/progress',       label: 'Progression',     icon: TrendingUp },
+  // XPA-6B: "Accès" is the commercial right to enter a course; "Inscriptions"
+  // below is the academic record of taking it. Adjacent in the nav because the
+  // distinction is easy to lose, and separate because they are (Q-L).
+  { href: '/admin/entitlements',   label: 'Accès formations', icon: KeyRound },
   { href: '/admin/enrollments',    label: 'Inscriptions',    icon: Award },
   { href: '/admin/certificates',   label: 'Certificats',     icon: GraduationCap },
   { href: '/admin/feedback',       label: 'Retours pilote',  icon: MessageSquare },

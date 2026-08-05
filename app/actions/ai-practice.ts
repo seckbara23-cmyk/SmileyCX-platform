@@ -356,7 +356,7 @@ export async function startVoiceSession(
           'startVoiceSession: refused — no course access',
         )
         return {
-          error:  denialMessage(access.reason ?? 'not_enrolled').body,
+          error:  denialMessage(access.reason ?? 'not_entitled').body,
           detail: `course access denied: ${access.reason}`,
         }
       }

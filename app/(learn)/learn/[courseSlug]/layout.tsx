@@ -35,7 +35,7 @@ export default async function CourseAccessLayout({
     redirect(`/login?next=${encodeURIComponent(`/learn/${params.courseSlug}`)}`)
   }
 
-  const { title, body } = denialMessage(access.reason ?? 'not_enrolled')
+  const { title, body } = denialMessage(access.reason ?? 'not_entitled')
   const unverified = access.reason === 'email_unverified'
 
   return (

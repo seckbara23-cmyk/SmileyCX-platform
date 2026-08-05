@@ -4,7 +4,19 @@ import { BookOpen, Award, ArrowRight, Play, CheckCircle, ClipboardList, Star, Ex
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
 import ResendVerificationButton from './ResendVerificationButton'
+import {
+  isEntitlementAccessible,
+  inaccessibleReason,
+  LEARNER_REASON_LABELS,
+  type EntitlementLike,
+} from '@/lib/entitlements'
 import type { Metadata } from 'next'
+
+interface EntitlementRow extends EntitlementLike {
+  id: string
+  course_id: string
+  source: string
+}
 
 export const metadata: Metadata = { title: 'Mon Espace' }
 
@@ -22,20 +34,46 @@ export default async function DashboardPage() {
   // which quietly turned "you are not signed in" into "here is the catalogue".
   if (!user) redirect('/login?next=/dashboard')
 
-  const [{ data: profile }, { data: enrollments }] = await Promise.all([
+  // ── XPA-6B: "Mes formations" is driven by ENTITLEMENTS ─────────────────
+  // Q-L: an enrollment is an academic transcript, not a key. Listing
+  // enrollments here would show a learner courses they can no longer open —
+  // which is precisely the confusion the separation exists to prevent. The
+  // enrollment is still what carries their progress; it is simply not what
+  // decides whether the course appears.
+  const [{ data: profile }, { data: entitlementRows }, { data: enrollments }] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
+    supabase
+      .from('entitlements')
+      .select('id, course_id, status, source, starts_at, expires_at, revoked_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false }),
     supabase
       .from('enrollments')
       .select('*, courses(*, modules(id, lessons(id)))')
       .eq('user_id', user.id)
-      .eq('status', 'active')
       .order('enrolled_at', { ascending: false }),
   ])
 
   if (!profile) redirect('/login')
 
+  // Only entitlements that currently grant access produce a usable course card.
+  // The rest are surfaced separately, with the reason, so an expired access
+  // reads as "expired" rather than silently vanishing.
+  const allEntitlements = (entitlementRows ?? []) as EntitlementRow[]
+  const accessibleCourseIds = new Set(
+    allEntitlements.filter(e => isEntitlementAccessible(e)).map(e => e.course_id),
+  )
+  const lapsed = allEntitlements
+    .filter(e => !isEntitlementAccessible(e) && e.status !== 'CANCELLED')
+    .map(e => ({ ...e, why: inaccessibleReason(e) }))
+
+  // Progress is computed only for courses the learner may currently open.
+  const activeEnrollments = (enrollments ?? []).filter(
+    (e: { course_id: string }) => accessibleCourseIds.has(e.course_id),
+  )
+
   const progressData = await Promise.all(
-    (enrollments ?? []).map(async (e: {
+    activeEnrollments.map(async (e: {
       id: string
       course_id: string
       enrolled_at: string
@@ -122,6 +160,12 @@ export default async function DashboardPage() {
     .select('id, certificate_number, issued_at, pdf_url, courses(title, slug)')
     .eq('user_id', user.id)
     .order('issued_at', { ascending: false })
+
+  const courseTitleById = new Map(
+    (enrollments ?? [])
+      .filter((e: { courses: { title: string } | null }) => e.courses)
+      .map((e: { course_id: string; courses: { title: string } }) => [e.course_id, e.courses.title]),
+  )
 
   const firstName         = (profile.first_name || profile.full_name || profile.email).split(' ')[0]
   const emailVerified     = Boolean(user.email_confirmed_at)
@@ -345,6 +389,32 @@ export default async function DashboardPage() {
               </Link>
             </div>
           </div>
+        )}
+
+        {/* ── Lapsed access (XPA-6B) ──────────────────────────────────────
+            An expired or revoked access disappearing without explanation reads
+            as a bug. Naming it — and saying the progress is kept — is the whole
+            point of separating the two lifecycles (Q-L). */}
+        {lapsed.length > 0 && (
+          <section className="mb-7">
+            <h2 className="text-sm font-extrabold text-dark mb-3">Accès terminés</h2>
+            <div className="grid md:grid-cols-2 gap-3">
+              {lapsed.map(e => (
+                <div key={e.id} className="cx-card p-4 border-black/[0.08]">
+                  <p className="font-bold text-dark text-sm leading-snug mb-1">
+                    {courseTitleById.get(e.course_id) ?? 'Formation'}
+                  </p>
+                  <p className="text-xs text-cx-gray leading-relaxed mb-2">
+                    {e.why ? LEARNER_REASON_LABELS[e.why] : 'Cet accès n’est plus actif.'}
+                  </p>
+                  <p className="text-[11px] text-cx-gray/80 leading-relaxed">
+                    Votre progression et vos résultats sont conservés. Contactez-nous pour
+                    rétablir votre accès.
+                  </p>
+                </div>
+              ))}
+            </div>
+          </section>
         )}
 
         {/* Certificates empty state — shown only once there is nothing else to

@@ -29,6 +29,15 @@ export type AuditEventType =
   | 'user.verification_resent'
   | 'user.password_reset_requested'
   | 'user.legal_accepted'
+  // XPA-6B — entitlement lifecycle. These are the ONLY events that change who
+  // can read a course, so they are the first place to look when access is
+  // disputed.
+  | 'entitlement.granted'
+  | 'entitlement.suspended'
+  | 'entitlement.reinstated'
+  | 'entitlement.revoked'
+  | 'entitlement.cancelled'
+  | 'entitlement.expired'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

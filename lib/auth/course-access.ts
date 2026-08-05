@@ -21,13 +21,21 @@
  */
 
 import { createClient } from '@/lib/supabase/server'
+import {
+  isEntitlementAccessible,
+  inaccessibleReason,
+  type EntitlementLike,
+} from '@/lib/entitlements'
 
 /** Why access was refused. Drives which honest message the learner sees. */
 export type CourseAccessDenial =
   | 'not_authenticated'
   | 'email_unverified'
   | 'account_inactive'
-  | 'not_enrolled'
+  | 'not_entitled'
+  | 'entitlement_expired'
+  | 'entitlement_revoked'
+  | 'entitlement_suspended'
   | 'course_not_found'
 
 export interface CourseAccess {
@@ -95,17 +103,36 @@ export async function resolveCourseAccessById(courseId: string): Promise<CourseA
     return { allowed: false, reason: 'account_inactive', courseId, userId: user.id }
   }
 
-  const { data: enrollment } = await supabase
-    .from('enrollments')
-    .select('id')
+  // ── XPA-6B: ENTITLEMENTS, not enrollments ─────────────────────────────
+  // Q-L: an enrollment is an academic transcript and must not authorize
+  // access on its own. The SQL seam dropped its enrollments arm in migration
+  // 037; this mirror drops it here, in the same commit, so the two cannot
+  // drift into disagreeing about who may read a course.
+  const { data: entitlements } = await supabase
+    .from('entitlements')
+    .select('status, starts_at, expires_at, revoked_at')
     .eq('user_id', user.id)
     .eq('course_id', courseId)
-    .eq('status', 'active')
-    .maybeSingle()
 
-  // XPA-6B: add `|| activeEntitlement` here, and the matching arm in SQL.
-  if (!enrollment) {
-    return { allowed: false, reason: 'not_enrolled', courseId, userId: user.id }
+  const rows = entitlements ?? []
+  const live = rows.find(e => isEntitlementAccessible(e as EntitlementLike))
+
+  if (!live) {
+    // Say something useful. "Expired" and "never had access" are different
+    // situations for the learner even though both end in a locked page, and
+    // only one of them is worth contacting us about.
+    const mostRecent = rows[0] as EntitlementLike | undefined
+    const why = mostRecent ? inaccessibleReason(mostRecent) : null
+
+    return {
+      allowed: false,
+      reason: why === 'expired'   ? 'entitlement_expired'
+            : why === 'revoked'   ? 'entitlement_revoked'
+            : why === 'suspended' ? 'entitlement_suspended'
+            : 'not_entitled',
+      courseId,
+      userId: user.id,
+    }
   }
 
   return { allowed: true, courseId, userId: user.id }
@@ -134,10 +161,25 @@ export function denialMessage(reason: CourseAccessDenial): { title: string; body
         title: 'Formation introuvable',
         body:  'Cette formation n’existe pas ou n’est plus disponible.',
       }
-    case 'not_enrolled':
+    case 'entitlement_expired':
+      return {
+        title: 'Votre accès a expiré',
+        body:  'Votre accès à cette formation est arrivé à échéance. Votre progression et vos résultats sont conservés — contactez-nous pour renouveler votre accès.',
+      }
+    case 'entitlement_revoked':
+      return {
+        title: 'Accès retiré',
+        body:  'Votre accès à cette formation a été retiré. Votre progression reste enregistrée. Contactez-nous si vous pensez qu’il s’agit d’une erreur.',
+      }
+    case 'entitlement_suspended':
+      return {
+        title: 'Accès suspendu',
+        body:  'Votre accès à cette formation est temporairement suspendu. Votre progression est conservée.',
+      }
+    case 'not_entitled':
     default:
       return {
-        title: 'Vous n’êtes pas inscrit à cette formation',
+        title: 'Vous n’avez pas accès à cette formation',
         body:  'La création d’un compte ne donne pas accès aux formations. Un accès doit être activé pour votre compte.',
       }
   }

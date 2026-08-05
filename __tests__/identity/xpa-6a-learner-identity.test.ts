@@ -379,11 +379,18 @@ describe('XPA-6A course access', () => {
     expect(layout).toMatch(/access\.allowed/)
   })
 
+  /**
+   * XPA-6B superseded the enrollment clause of this test: the seam now reads
+   * entitlements, and asserting `.eq('status','active')` on enrollments would
+   * pin the very coupling Q-L removed. What still matters — and is what this
+   * test was always about — is that the TS mirror applies the same gate
+   * conditions as the SQL function.
+   */
   it('the TS contract mirrors the SQL one', () => {
     const ts = stripComments(read('lib/auth/course-access.ts'))
     expect(ts).toMatch(/email_confirmed_at/)
     expect(ts).toMatch(/account_status/)
-    expect(ts).toMatch(/status['"]?,\s*['"]active['"]\)/)
+    expect(ts).toMatch(/platform_role === 'super_admin'/)
     expect(ts).not.toMatch(/is_free/)
     expect(ts).not.toMatch(/is_published/)
   })
