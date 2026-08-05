@@ -4,7 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { getOwnerSession } from '@/lib/auth/owner'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
-  FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare, Dumbbell, Library,
+  FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare, Dumbbell, Library, Mic,
 } from 'lucide-react'
 
 const ADMIN_NAV = [
@@ -15,6 +15,7 @@ const ADMIN_NAV = [
   { href: '/admin/modules',        label: 'Modules',         icon: BookOpen },
   { href: '/admin/quizzes',        label: 'Quiz',            icon: FileQuestion },
   { href: '/admin/exercises',      label: 'Exercices',       icon: Dumbbell },
+  { href: '/admin/voice',          label: 'Voice Practice',  icon: Mic },
   { href: '/admin/progress',       label: 'Progression',     icon: TrendingUp },
   { href: '/admin/enrollments',    label: 'Inscriptions',    icon: Award },
   { href: '/admin/certificates',   label: 'Certificats',     icon: GraduationCap },

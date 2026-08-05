@@ -472,11 +472,81 @@ export async function completeAiSession(
       }
     }
 
+    // XPA-5: a completed voice exercise now counts as lesson activity.
+    // Non-fatal by design — the session is already recorded, and failing to
+    // mark progress must never lose a learner's completed conversation.
+    if (status === 'completed') {
+      try {
+        await markVoiceLessonComplete(sessionId, session.scenario_id as string)
+      } catch (e) {
+        log.error({ sessionId, error: (e as Error).message }, 'voice lesson progress failed (non-fatal)')
+      }
+    }
+
     return { ok: true }
   } catch (e) {
     log.error({ error: (e as Error).message }, 'completeAiSession failed')
     return { error: 'Service indisponible.' }
   }
+}
+
+/**
+ * Record lesson completion for a finished voice exercise (XPA-5).
+ *
+ * This is the productization step: before XPA-5 a completed conversation
+ * updated `ai_sessions` and stopped, so Voice Practice was a demo rather than a
+ * lesson activity. It now feeds the SAME progress engine every other activity
+ * uses — `lesson_progress` — so module, course and certificate eligibility all
+ * follow automatically. No parallel progress model is introduced.
+ *
+ * Server-authoritative and idempotent:
+ *   * the lesson is resolved from the SCENARIO, never from client input, so a
+ *     learner cannot complete an arbitrary lesson by forging a payload;
+ *   * the write is an upsert on the existing UNIQUE(user_id, lesson_id)
+ *     constraint, so replays and double-submits collapse to one row.
+ *
+ * Anonymous pilot sessions have no user_id and are skipped: `lesson_progress`
+ * requires a profile, and pilot progress lives in localStorage.
+ */
+async function markVoiceLessonComplete(sessionId: string, scenarioId: string): Promise<void> {
+  const admin = createAdminClient()
+
+  const { data: sess } = await admin
+    .from('ai_sessions')
+    .select('user_id')
+    .eq('id', sessionId)
+    .maybeSingle()
+
+  const userId = sess?.user_id as string | null
+  if (!userId) return // anonymous pilot session — nothing to attribute
+
+  const { data: scenario } = await admin
+    .from('ai_scenarios')
+    .select('lesson_id')
+    .eq('id', scenarioId)
+    .maybeSingle()
+
+  const lessonId = scenario?.lesson_id as string | null
+  if (!lessonId) return
+
+  const { error } = await admin
+    .from('lesson_progress')
+    .upsert(
+      {
+        user_id:      userId,
+        lesson_id:    lessonId,
+        is_completed: true,
+        completed_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,lesson_id' }
+    )
+
+  if (error) {
+    log.error({ sessionId, lessonId, error: error.message }, 'lesson_progress upsert failed')
+    return
+  }
+
+  log.info({ sessionId, lessonId, userId }, 'voice exercise completed lesson')
 }
 
 // ── Deterministic Competency Engine hook (Phase 2A — no LLM) ──────────────────
