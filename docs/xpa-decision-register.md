@@ -217,6 +217,45 @@ indexes, triggers, policies), then repair only those proven complete.
 
 ---
 
+## D-ACCESS — Course access requires an ACTIVE entitlement · ✅ RATIFIED (XPA-6A)
+
+**Recorded 2026-08-06.** Account != Payment != Enrollment != Access. Four
+separate facts; only the last opens content.
+
+**The single seam:** `public.has_course_access(course_id uuid)` — platform admin,
+or a **verified, active** learner holding an **ACTIVE enrollment**. All four
+content policies (lessons, modules, quizzes, quiz_questions) call it and nothing
+else. XPA-6B extends THIS FUNCTION and its TypeScript mirror
+(`resolveCourseAccessById`); no policy, page or layout is touched again.
+
+**Deliberately absent, each an explicit decision:**
+
+| Omitted arm | Why |
+|---|---|
+| `courses.is_free` | migration 005 set it on every published course — it meant "everyone" |
+| `courses.is_published` | publication controls DISCOVERY, never ACCESS |
+| `auth.uid() IS NULL` | the pilot is over |
+
+**What it corrected.** Before XPA-6A, 82 of 82 lessons, 23 of 23 modules and
+3 of 3 quiz questions (including `correct_answer`) were readable by any
+anonymous caller. Three arms caused it, and the decisive one was
+`is_preview = true` — set on **every** lesson and not conditioned on the caller,
+so removing the pilot arm alone would have looked like a fix and changed
+nothing. Fourth instance of the [[D-GRANT]] class: a statement that reads like a
+restriction but only widens.
+
+**Accepted consequence, ratified not accidental:** with zero enrollments and
+zero payments, course material is **admin-only** until XPA-6B ships a grant
+path. `activateEnrollment` requires a pre-existing `payments` row and none
+exist.
+
+**Registration grants nothing.** Public registration is open on the commercial
+domain, and `disable_signup` stays TRUE forever — registration runs through the
+admin API behind validation, rate limiting, versioned legal acceptance and
+audit. Free self-enrollment is closed behind a flag that defaults to off.
+
+---
+
 ## D-GRANT — Supabase default privileges are ALL · ✅ RECORDED (XPA-5A)
 
 **Recorded 2026-08-06.** Supabase applies
