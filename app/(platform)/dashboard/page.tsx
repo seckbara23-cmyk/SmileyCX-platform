@@ -4,18 +4,13 @@ import { BookOpen, Award, ArrowRight, Play, CheckCircle, ClipboardList, Star, Ex
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
 import ResendVerificationButton from './ResendVerificationButton'
-import {
-  isEntitlementAccessible,
-  inaccessibleReason,
-  LEARNER_REASON_LABELS,
-  type EntitlementLike,
-} from '@/lib/entitlements'
 import type { Metadata } from 'next'
 
-interface EntitlementRow extends EntitlementLike {
-  id: string
-  course_id: string
-  source: string
+/** One row of the learner-safe `my_course_access` view (migration 037). */
+interface CourseAccessRow {
+  course_id:    string
+  has_access:   boolean
+  access_ended: boolean
 }
 
 export const metadata: Metadata = { title: 'Mon Espace' }
@@ -40,13 +35,13 @@ export default async function DashboardPage() {
   // which is precisely the confusion the separation exists to prevent. The
   // enrollment is still what carries their progress; it is simply not what
   // decides whether the course appears.
-  const [{ data: profile }, { data: entitlementRows }, { data: enrollments }] = await Promise.all([
+  const [{ data: profile }, { data: accessRows }, { data: enrollments }] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
-    supabase
-      .from('entitlements')
-      .select('id, course_id, status, source, starts_at, expires_at, revoked_at')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false }),
+    // The learner-safe view, NOT the entitlements table — that one is revoked
+    // from every app role and would return 42501. The view carries no
+    // provenance, no dates and no revocation reasons; it answers "may I open
+    // this course, and did an access of mine end?" and nothing more.
+    supabase.from('my_course_access').select('course_id, has_access, access_ended'),
     supabase
       .from('enrollments')
       .select('*, courses(*, modules(id, lessons(id)))')
@@ -56,16 +51,11 @@ export default async function DashboardPage() {
 
   if (!profile) redirect('/login')
 
-  // Only entitlements that currently grant access produce a usable course card.
-  // The rest are surfaced separately, with the reason, so an expired access
-  // reads as "expired" rather than silently vanishing.
-  const allEntitlements = (entitlementRows ?? []) as EntitlementRow[]
-  const accessibleCourseIds = new Set(
-    allEntitlements.filter(e => isEntitlementAccessible(e)).map(e => e.course_id),
-  )
-  const lapsed = allEntitlements
-    .filter(e => !isEntitlementAccessible(e) && e.status !== 'CANCELLED')
-    .map(e => ({ ...e, why: inaccessibleReason(e) }))
+  const access = (accessRows ?? []) as CourseAccessRow[]
+  const accessibleCourseIds = new Set(access.filter(a => a.has_access).map(a => a.course_id))
+  // Surfaced separately rather than silently vanishing: access disappearing
+  // with no explanation reads as a bug.
+  const lapsed = access.filter(a => !a.has_access && a.access_ended)
 
   // Progress is computed only for courses the learner may currently open.
   const activeEnrollments = (enrollments ?? []).filter(
@@ -399,17 +389,17 @@ export default async function DashboardPage() {
           <section className="mb-7">
             <h2 className="text-sm font-extrabold text-dark mb-3">Accès terminés</h2>
             <div className="grid md:grid-cols-2 gap-3">
-              {lapsed.map(e => (
-                <div key={e.id} className="cx-card p-4 border-black/[0.08]">
+              {lapsed.map(a => (
+                <div key={a.course_id} className="cx-card p-4 border-black/[0.08]">
                   <p className="font-bold text-dark text-sm leading-snug mb-1">
-                    {courseTitleById.get(e.course_id) ?? 'Formation'}
+                    {courseTitleById.get(a.course_id) ?? 'Formation'}
                   </p>
                   <p className="text-xs text-cx-gray leading-relaxed mb-2">
-                    {e.why ? LEARNER_REASON_LABELS[e.why] : 'Cet accès n’est plus actif.'}
+                    Votre accès à cette formation n&apos;est plus actif.
                   </p>
                   <p className="text-[11px] text-cx-gray/80 leading-relaxed">
-                    Votre progression et vos résultats sont conservés. Contactez-nous pour
-                    rétablir votre accès.
+                    Votre progression, vos résultats et vos certificats sont conservés.
+                    Contactez-nous pour rétablir votre accès.
                   </p>
                 </div>
               ))}

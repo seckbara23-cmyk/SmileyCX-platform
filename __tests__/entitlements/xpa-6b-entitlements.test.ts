@@ -205,17 +205,19 @@ describe('XPA-6B: enrollment does not authorize access', () => {
   it('the TS mirror reads entitlements and NOT enrollments', () => {
     const ts = stripTs(read('lib/auth/course-access.ts'))
     const fn = ts.slice(ts.indexOf('export async function resolveCourseAccessById'))
-    expect(fn).toMatch(/from\('entitlements'\)/)
+    expect(fn).toMatch(/from\('my_course_access'\)/)
     expect(fn).not.toMatch(/from\('enrollments'\)/)
-    expect(fn).toMatch(/isEntitlementAccessible\(/)
+    // The base table is unreachable from a learner session — querying it would
+    // return 42501 — so the mirror must go through the learner-safe view.
+    expect(fn).not.toMatch(/from\('entitlements'\)/)
   })
 
   it('the learner dashboard lists entitlements, not enrollments', () => {
     // Listing enrollments would show a learner courses they can no longer open.
     const page = stripTs(read('app/(platform)/dashboard/page.tsx'))
-    expect(page).toMatch(/from\('entitlements'\)/)
+    expect(page).toMatch(/from\('my_course_access'\)/)
     expect(page).toMatch(/accessibleCourseIds/)
-    expect(page).toMatch(/isEntitlementAccessible\(/)
+    expect(page).not.toMatch(/from\('entitlements'\)/)
   })
 
   it('XPA-6A content policies are NOT edited — the seam absorbs the change', () => {
@@ -303,39 +305,111 @@ describe('XPA-6B expiry does not depend on a job running', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('XPA-6B privileges and controls', () => {
-  it('REVOKES before it GRANTS (D-GRANT)', () => {
-    const revoke = sql.indexOf('revoke all on public.entitlements from public')
-    const grant = sql.indexOf('grant select on public.entitlements to authenticated')
-    expect(revoke).toBeGreaterThan(-1)
-    expect(grant).toBeGreaterThan(-1)
-    expect(revoke).toBeLessThan(grant)
+  it('grants NO app role any privilege on the base table', () => {
+    // entitlements carries provenance, timing and revocation detail. It is
+    // commercial authorization data: anon and authenticated must not reach it
+    // at all, so 42501 is the correct answer rather than "200, zero rows".
     for (const role of ['public', 'anon', 'authenticated']) {
       expect(sql).toContain(`revoke all on public.entitlements from ${role}`)
     }
-    expect(sql).not.toMatch(/grant\s+\w+\s+on\s+public\.entitlements\s+to[^;]*anon/i)
+    expect(sql, 'no GRANT on the base table to any app role')
+      .not.toMatch(/grant\s+\w+\s+on\s+public\.entitlements\s+to/i)
   })
 
-  it('asserts the resulting matrix at apply time', () => {
+  it('exposes exactly one learner-facing reader, granted SELECT only', () => {
+    expect(sql).toMatch(/create or replace view public\.my_course_access/)
+    for (const role of ['public', 'anon', 'authenticated']) {
+      expect(sql).toContain(`revoke all on public.my_course_access from ${role}`)
+    }
+    const revoke = sql.indexOf('revoke all on public.my_course_access from public')
+    const grant = sql.indexOf('grant select on public.my_course_access to authenticated')
+    expect(revoke).toBeGreaterThan(-1)
+    expect(grant).toBeGreaterThan(-1)
+    expect(revoke, 'REVOKE must precede GRANT — D-GRANT').toBeLessThan(grant)
+    expect(sql).not.toMatch(/grant\s+\w+\s+on\s+public\.my_course_access\s+to[^;]*anon/i)
+  })
+
+  it('the learner view cannot serve provenance, timing or revocation data', () => {
+    const view = sql.slice(
+      sql.indexOf('create or replace view public.my_course_access'),
+      sql.indexOf('comment on view public.my_course_access'),
+    )
+    // Structural: a view cannot return a column it does not select.
+    for (const col of [
+      'source', 'granted_by', 'granted_reason', 'external_ref', 'revoked_reason', 'user_id',
+    ]) {
+      expect(view, `my_course_access must not project ${col}`)
+        .not.toMatch(new RegExp(`(^|[\\s,])${col}\\s*(,|$)`, 'm'))
+    }
+    expect(view).toMatch(/ent\.course_id/)
+    expect(view).toMatch(/as has_access/)
+    expect(view).toMatch(/as access_ended/)
+    expect(view).toMatch(/where ent\.user_id = auth\.uid\(\)/)
+  })
+
+  it('asserts the exact matrix from information_schema at apply time', () => {
     expect(sql).toMatch(/information_schema\.role_table_grants/)
-    expect(sql).toMatch(/raise exception 'entitlements: authenticated holds unintended privileges/)
-    expect(sql).toMatch(/raise exception 'entitlements: anon\/PUBLIC still hold/)
+    expect(sql).toMatch(/raise exception 'entitlements must hold NO app-role privileges/)
+    expect(sql).toMatch(/raise exception 'my_course_access must hold ONLY authenticated:SELECT/)
   })
 
-  it('EXERCISES the policies as real roles (D-VERIFY)', () => {
-    expect(sql).toMatch(/set role anon/)
-    expect(sql).toMatch(/set role authenticated/)
-    expect(sql).toMatch(/raise exception 'entitlements is not readable as anon/)
-    expect(sql).toMatch(/raise exception 'content policies broke under the new seam/)
+  /**
+   * The first apply failed because it treated an EXPECTED_DENIAL as broken:
+   * it revoked anon's privileges and then asserted the table was readable as
+   * anon. Every probe is now classified explicitly.
+   */
+  it('classifies every apply-time probe explicitly', () => {
+    expect(sql).toMatch(/return 'EXPECTED_DENIAL'/)
+    expect(sql).toMatch(/return 'ALLOWED'/)
+    expect(sql).toMatch(/return 'BROKEN:'/)
+    expect(sql).toMatch(/when insufficient_privilege then/)
+    expect(sql).toMatch(/anon SELECT entitlements: expected EXPECTED_DENIAL/)
+    expect(sql).toMatch(/anon write on entitlements: expected EXPECTED_DENIAL/)
+    expect(sql).toMatch(/authenticated SELECT entitlements: expected EXPECTED_DENIAL/)
+    expect(sql).toMatch(/authenticated SELECT my_course_access: expected ALLOWED/)
+  })
+
+  it('never asserts that entitlements is readable as anon', () => {
+    // The exact contradiction that failed the first apply.
+    expect(sql).not.toMatch(/entitlements is not readable as anon/)
+  })
+
+  it('exercises the whole lifecycle at apply time', () => {
+    for (const claim of [
+      'access granted with no entitlement',
+      'enrollment alone granted access',
+      'an ACTIVE in-window entitlement did not grant access',
+      'a SUSPENDED entitlement still granted access',
+      'reinstatement did not restore access',
+      'a REVOKED entitlement still granted access',
+      'revocation destroyed the enrollment',
+      'an entitlement past expires_at still granted access',
+      'a learner can enumerate another learner',
+    ]) {
+      expect(sql, `apply-time check missing: ${claim}`).toContain(claim)
+    }
+  })
+
+  it('proves expiry without mutating the row', () => {
+    // Flipping the status to EXPIRED would prove nothing about whether access
+    // stops before the materialiser has run.
+    expect(sql).toMatch(/expiry test row was mutated/)
+  })
+
+  it('leaves no test data or helper behind', () => {
+    expect(sql).toMatch(/XPA6B_ROLLBACK_TEST_DATA/)
+    expect(sql).toMatch(/raise exception 'behavioural checks left % entitlement row/)
+    expect(sql).toMatch(/raise exception 'behavioural checks left an enrollment behind'/)
+    expect(sql).toMatch(/drop function if exists public\.xpa6b_probe/)
+  })
+
+  it('confirms the four content policies still evaluate', () => {
+    expect(sql).toMatch(/content policy on % is not evaluatable as anon/)
+    expect(sql).toMatch(/content policy on % is not evaluatable as authenticated/)
     expect(sql).toMatch(/raise exception 'has_course_access\(\) grants access with no authenticated user'/)
   })
 
-  it('exercises the predicate itself at apply time', () => {
-    expect(sql).toMatch(/raise exception 'predicate grants an EXPIRED window'/)
-    expect(sql).toMatch(/raise exception 'predicate grants an entitlement that has not started'/)
-    expect(sql).toMatch(/raise exception 'predicate grants a revoked entitlement'/)
-  })
-
-  it('RLS is on, SELECT-only, with no write policy for app roles', () => {
+  it('RLS stays on as defence in depth', () => {
     expect(sql).toMatch(/alter table public\.entitlements enable row level security/)
     expect(sql).toMatch(/create policy "entitlements_select_own"[\s\S]*?for select/)
     expect(sql).not.toMatch(/create policy "entitlements[^"]*"[\s\S]{0,120}for (insert|update|delete)/i)

@@ -21,11 +21,6 @@
  */
 
 import { createClient } from '@/lib/supabase/server'
-import {
-  isEntitlementAccessible,
-  inaccessibleReason,
-  type EntitlementLike,
-} from '@/lib/entitlements'
 
 /** Why access was refused. Drives which honest message the learner sees. */
 export type CourseAccessDenial =
@@ -33,9 +28,7 @@ export type CourseAccessDenial =
   | 'email_unverified'
   | 'account_inactive'
   | 'not_entitled'
-  | 'entitlement_expired'
-  | 'entitlement_revoked'
-  | 'entitlement_suspended'
+  | 'access_ended'
   | 'course_not_found'
 
 export interface CourseAccess {
@@ -103,35 +96,35 @@ export async function resolveCourseAccessById(courseId: string): Promise<CourseA
     return { allowed: false, reason: 'account_inactive', courseId, userId: user.id }
   }
 
-  // ── XPA-6B: ENTITLEMENTS, not enrollments ─────────────────────────────
-  // Q-L: an enrollment is an academic transcript and must not authorize
-  // access on its own. The SQL seam dropped its enrollments arm in migration
-  // 037; this mirror drops it here, in the same commit, so the two cannot
-  // drift into disagreeing about who may read a course.
-  const { data: entitlements } = await supabase
-    .from('entitlements')
-    .select('status, starts_at, expires_at, revoked_at')
-    .eq('user_id', user.id)
+  // ── XPA-6B: ENTITLEMENTS, via the learner-safe view ───────────────────
+  //
+  // Two things changed here and both are deliberate.
+  //
+  // 1. Q-L: an enrollment is an academic transcript and must not authorize
+  //    access on its own. The SQL seam dropped its enrollments arm in migration
+  //    037; this mirror drops it in the same commit, so the two cannot drift
+  //    into disagreeing about who may read a course.
+  //
+  // 2. This reads `my_course_access`, NOT `entitlements`. The base table holds
+  //    provenance, timing and revocation detail and is revoked from every app
+  //    role — a learner session querying it gets 42501, by design. The view
+  //    answers only "may I open this, and did an access of mine end?".
+  const { data } = await supabase
+    .from('my_course_access')
+    .select('has_access, access_ended')
     .eq('course_id', courseId)
+    .maybeSingle()
 
-  const rows = entitlements ?? []
-  const live = rows.find(e => isEntitlementAccessible(e as EntitlementLike))
-
-  if (!live) {
-    // Say something useful. "Expired" and "never had access" are different
-    // situations for the learner even though both end in a locked page, and
-    // only one of them is worth contacting us about.
-    const mostRecent = rows[0] as EntitlementLike | undefined
-    const why = mostRecent ? inaccessibleReason(mostRecent) : null
-
+  if (!data?.has_access) {
+    // The distinction the learner needs is "you never had this" versus "yours
+    // ended" — the first is a purchase decision, the second is a support
+    // conversation. WHY it ended (expired, revoked, suspended) is deliberately
+    // not available here: it is commercial data and the view does not carry it.
     return {
       allowed: false,
-      reason: why === 'expired'   ? 'entitlement_expired'
-            : why === 'revoked'   ? 'entitlement_revoked'
-            : why === 'suspended' ? 'entitlement_suspended'
-            : 'not_entitled',
+      reason:  data?.access_ended ? 'access_ended' : 'not_entitled',
       courseId,
-      userId: user.id,
+      userId:  user.id,
     }
   }
 
@@ -161,20 +154,10 @@ export function denialMessage(reason: CourseAccessDenial): { title: string; body
         title: 'Formation introuvable',
         body:  'Cette formation n’existe pas ou n’est plus disponible.',
       }
-    case 'entitlement_expired':
+    case 'access_ended':
       return {
-        title: 'Votre accès a expiré',
-        body:  'Votre accès à cette formation est arrivé à échéance. Votre progression et vos résultats sont conservés — contactez-nous pour renouveler votre accès.',
-      }
-    case 'entitlement_revoked':
-      return {
-        title: 'Accès retiré',
-        body:  'Votre accès à cette formation a été retiré. Votre progression reste enregistrée. Contactez-nous si vous pensez qu’il s’agit d’une erreur.',
-      }
-    case 'entitlement_suspended':
-      return {
-        title: 'Accès suspendu',
-        body:  'Votre accès à cette formation est temporairement suspendu. Votre progression est conservée.',
+        title: 'Votre accès n’est plus actif',
+        body:  'Votre accès à cette formation n’est plus actif. Votre progression, vos résultats et vos certificats sont conservés — contactez-nous pour rétablir votre accès.',
       }
     case 'not_entitled':
     default:
