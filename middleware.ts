@@ -4,18 +4,39 @@ import { PLATFORM_MODE } from '@/lib/pilot'
 import { isPrivateMode, isAllowedPrivateUser } from '@/lib/access-control'
 import { isAdminHost, resolveHost, isAdminHostPublicPath } from '@/lib/hosts'
 import { isOwnerEmail } from '@/lib/auth/owner-email'
+import { publicUrl } from '@/lib/brand'
 
-// Routes requiring authentication in pilot / public modes (prefix match).
-// In private mode the site-wide gate below replaces this list.
-const AUTH_REQUIRED = PLATFORM_MODE === 'pilot'
-  ? ['/app']
-  : ['/app', '/dashboard', '/learn', '/checkout', '/certificate']
+/**
+ * Routes requiring authentication (prefix match).
+ *
+ * XPA-6A: no longer conditioned on PLATFORM_MODE. The pilot is over and course
+ * material is commercial, so `/learn` and the learner surfaces require a session
+ * on every mode. Previously `pilot` protected only `/app`, which is why an
+ * anonymous visitor could open any lesson.
+ *
+ * This is the OUTER layer of three. It only redirects browsers. Access itself is
+ * decided by `public.has_course_access()` in RLS (migration 035) and re-checked
+ * server-side by `resolveCourseAccess()`. Deleting this list would change what
+ * users see, not what they can read.
+ */
+const AUTH_REQUIRED = ['/app', '/dashboard', '/learn', '/checkout', '/certificate']
 
 // Platform admin routes — always protected regardless of platform mode
 const ADMIN_ROUTES = ['/admin']
 
 // Learner auth pages. Authenticated users are redirected away.
 const LEARNER_AUTH_PAGES = ['/login', '/signup', '/forgot-password']
+
+/**
+ * Paths NOT worth preserving when bouncing a learner off the internal host:
+ * they either do not exist on the commercial site or would bounce again.
+ */
+function safeCommercialDeepLink(pathname: string, search: string): string {
+  if (pathname.startsWith('/admin') || pathname.startsWith('/api') || pathname === '/login') {
+    return publicUrl('/')
+  }
+  return publicUrl(pathname + search)
+}
 
 // Paths that bypass the private mode site-wide gate to prevent redirect loops
 // and preserve core auth flows. Use exact prefix matching.
@@ -152,10 +173,16 @@ export async function middleware(request: NextRequest) {
       // /login and the auth callbacks must stay reachable, otherwise the
       // owner could never sign in. Authenticated owners get bounced off
       // /login to the dashboard below.
-      if (pathname === '/login' && user && isOwnerEmail(user.email)) {
-        // CX-AUTH-2A: land on the Smiley CX landing page, not the dashboard.
-        // The dashboard is reached explicitly from there, at /admin.
-        return applySecurityHeaders(NextResponse.redirect(new URL('/', request.url)))
+      if (pathname === '/login' && user) {
+        if (isOwnerEmail(user.email)) {
+          // CX-AUTH-2A: land on the Smiley CX landing page, not the dashboard.
+          // The dashboard is reached explicitly from there, at /admin.
+          return applySecurityHeaders(NextResponse.redirect(new URL('/', request.url)))
+        }
+        // XPA-6A: an ordinary learner who signed in here belongs on the
+        // commercial site. Their session stays valid — it is simply not an
+        // administration session, and never was.
+        return applySecurityHeaders(NextResponse.redirect(publicUrl('/dashboard')))
       }
       return applySecurityHeaders(supabaseResponse)
     }
@@ -171,10 +198,23 @@ export async function middleware(request: NextRequest) {
     }
 
     if (!isOwnerEmail(user.email)) {
-      // Authenticated, but not the owner. Terminate the session rather than
-      // leaving a valid non-owner session sitting on the admin host.
+      // ── XPA-6A: send ordinary learners home, do not destroy their session ──
+      //
+      // This previously signed the visitor OUT. That was right when the only
+      // accounts on the platform were administrators: a non-owner session on
+      // the admin host could only be an anomaly. With public registration open
+      // it is now an ordinary learner following a stale link or a bookmark, and
+      // logging them out of the commercial site as punishment for landing on
+      // the wrong hostname is hostile and confusing.
+      //
+      // Redirect to the commercial domain instead, preserving the deep link
+      // where it is meaningful. NOTHING is granted by this: the learner is
+      // still not an owner, and every admin page and server action calls
+      // requirePlatformAdmin() independently of hostname.
       return applySecurityHeaders(
-        NextResponse.redirect(new URL('/api/auth/signout?error=forbidden', request.url))
+        NextResponse.redirect(
+          safeCommercialDeepLink(pathname, request.nextUrl.search),
+        ),
       )
     }
 

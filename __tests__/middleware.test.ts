@@ -214,14 +214,43 @@ describe('middleware redirect rules', () => {
       expect(res.headers.get('location')).toContain('next=%2Fadmin%2Fusers')
     })
 
-    it('AUTHORIZATION UNCHANGED: a non-owner is still signed out', async () => {
+    /**
+     * XPA-6A (supersedes the CX-AUTH-1 sign-out behaviour, decision 8): an
+     * ordinary learner on the internal host is sent to the commercial domain
+     * with their session intact. AUTHORIZATION IS UNCHANGED — they are refused
+     * the internal host either way; only the disposal differs.
+     */
+    it('a non-owner is redirected to the commercial domain, session intact', async () => {
       vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
       mockGetUser.mockResolvedValue({ data: { user: { id: 'u2', email: 'someone@else.com' } } })
       const { middleware } = await import('@/middleware')
 
       const res = await middleware(portalRequest('/'))
       expect(res.status).toBe(307)
-      expect(res.headers.get('location')).toContain('/api/auth/signout')
+      const location = res.headers.get('location') ?? ''
+      expect(location).toContain('xpclient-academy.com')
+      expect(location).not.toContain('signout')
+      expect(location).not.toContain('vercel.app')
+    })
+
+    it('a non-owner deep link into /admin is NOT preserved across the bounce', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: { id: 'u2', email: 'someone@else.com' } } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(portalRequest('/admin/users'))
+      const location = res.headers.get('location') ?? ''
+      expect(location).toContain('xpclient-academy.com')
+      expect(location).not.toContain('/admin')
+    })
+
+    it('a non-owner learner deep link IS preserved when it is meaningful', async () => {
+      vi.stubEnv('ADMIN_OWNER_EMAILS', OWNER)
+      mockGetUser.mockResolvedValue({ data: { user: { id: 'u2', email: 'someone@else.com' } } })
+      const { middleware } = await import('@/middleware')
+
+      const res = await middleware(portalRequest('/courses'))
+      expect(res.headers.get('location') ?? '').toContain('/courses')
     })
 
     it('the PUBLIC host remains public and unrewritten', async () => {

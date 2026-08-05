@@ -42,13 +42,38 @@ function collectSourceFiles(dir: string, acc: string[] = []): string[] {
   return acc
 }
 
-/** Every application source file (excluding tests). */
+/**
+ * Blank out comments and string literals, preserving offsets and line numbers.
+ *
+ * Without this, every assertion below is really asking "does the project MENTION
+ * this?" rather than "does the project DO this?". That is not hypothetical: the
+ * XPA-6A registration code documents the SEC-1 finding by name, so a source scan
+ * for `auth.signUp(` matched the very comment explaining why it must never
+ * appear. A security test that fires on its own documentation trains people to
+ * edit the test.
+ */
+function stripTsCommentsAndStrings(src: string): string {
+  const blank = (m: string) => m.replace(/[^\n]/g, ' ')
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, blank)   // block comments
+    .replace(/\/\/[^\n]*/g, blank)         // line comments
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, blank) // single-quoted strings
+    .replace(/"(?:[^"\\\n]|\\.)*"/g, blank) // double-quoted strings
+    .replace(/`(?:[^`\\]|\\.)*`/g, blank)   // template literals
+}
+
+/** Every application source file (excluding tests), comments and strings removed. */
 function appSources(): { path: string; text: string }[] {
   const files: string[] = []
   for (const d of SOURCE_DIRS) collectSourceFiles(join(ROOT, d), files)
   return files
     .filter(f => !f.includes('__tests__'))
-    .map(path => ({ path, text: readFileSync(path, 'utf8') }))
+    .map(path => ({ path, text: stripTsCommentsAndStrings(readFileSync(path, 'utf8')) }))
+}
+
+/** Raw text of one source file, comments intact. */
+function raw(rel: string): string {
+  return readFileSync(join(ROOT, rel), 'utf8')
 }
 
 const migration027 = readFileSync(
@@ -56,9 +81,19 @@ const migration027 = readFileSync(
   'utf8'
 )
 
-// ── F-1: public registration is gone ─────────────────────────────────────────
+// ── F-1: client-side self-registration stays gone ────────────────────────────
+//
+// XPA-6A opens PUBLIC registration by ratified decision (1, 2). That changes the
+// POLICY, not the finding. SEC-1/F-1 was never "the public can register" — it
+// was that registration was a CLIENT-side call straight to Supabase with no
+// validation, no rate limit, no audit trail and a client-supplied role.
+//
+// Every assertion below still pins that. What was removed is only the
+// assertion that the signup PAGE must refuse to create an account, which the
+// ratified decision supersedes; it is replaced by stronger assertions that the
+// new path carries all four controls the old one lacked.
 
-describe('F-1 — public self-registration is removed', () => {
+describe('F-1 — client-side self-registration is impossible', () => {
   it('no source file calls auth.signUp()', () => {
     const offenders = appSources()
       .filter(f => /\bauth\s*\.\s*signUp\s*\(/.test(f.text))
@@ -73,24 +108,72 @@ describe('F-1 — public self-registration is removed', () => {
     expect(offenders).toEqual([])
   })
 
-  it('the signup page contains no password field and cannot create an account', () => {
-    const page = readFileSync(join(ROOT, 'app/(auth)/signup/page.tsx'), 'utf8')
-    expect(page).not.toMatch(/\bauth\s*\.\s*signUp\s*\(/)
-    expect(page).not.toMatch(/type=["']password["']/)
-    expect(page).not.toMatch(/autoComplete=["']new-password["']/)
+  it('the registration form never touches Supabase directly', () => {
+    const form = stripTsCommentsAndStrings(raw('app/(auth)/signup/RegisterForm.tsx'))
+    expect(form).not.toMatch(/\bauth\s*\.\s*signUp\s*\(/)
+    expect(form).not.toMatch(/createClient\s*\(/)
+    expect(form).not.toMatch(/supabase/i)
+    // It submits to the server action and nothing else.
+    expect(raw('app/(auth)/signup/RegisterForm.tsx')).toMatch(/registerLearner\(/)
   })
 
-  it('the signup page states that access is invitation-only', () => {
-    const page = readFileSync(join(ROOT, 'app/(auth)/signup/page.tsx'), 'utf8')
-    expect(page).toMatch(/invitation/i)
+  it('the browser cannot submit a role, status or entitlement', () => {
+    const schemas = raw('lib/validation/schemas.ts')
+    const registration = schemas.slice(
+      schemas.indexOf('export const RegistrationSchema'),
+      schemas.indexOf('export const ResendVerificationSchema'),
+    )
+    // The field simply does not exist in the accepted shape, so there is
+    // nothing to strip, ignore or forget to ignore.
+    expect(registration).not.toMatch(/platform_role|platformRole/)
+    expect(registration).not.toMatch(/account_status|accountStatus/)
+    expect(registration).not.toMatch(/enrollment|entitlement/i)
   })
 
-  it('exactly one provisioning path exists: the admin server action', () => {
+  it('the server action assigns platform_role from a server-side literal', () => {
+    const action = raw('app/actions/auth.ts')
+    expect(action).toMatch(/platform_role:\s*'user'/)
+    // Never from the request.
+    expect(stripTsCommentsAndStrings(action)).not.toMatch(/platform_role:\s*(input|data|parsed)\./)
+  })
+
+  it('every account-creating path is server-only, authorized or rate limited, and audited', () => {
     const offenders = appSources()
       .filter(f => /auth\s*\.\s*admin\s*\.\s*createUser\s*\(/.test(f.text))
-      .map(f => f.path.replace(ROOT, '').replace(/\\/g, '/'))
-    expect(offenders).toHaveLength(1)
-    expect(offenders[0]).toContain('/admin/users/new/actions.ts')
+      .map(f => f.path.replace(ROOT, '').replace(/\\/g, '/').replace(/\\/g, '/'))
+      .sort()
+
+    // Exactly two, both known and both server actions.
+    expect(offenders).toHaveLength(2)
+    expect(offenders.join('\n')).toContain('/admin/users/new/actions.ts')
+    expect(offenders.join('\n')).toContain('/app/actions/auth.ts')
+
+    for (const rel of ['app/(admin)/admin/users/new/actions.ts', 'app/actions/auth.ts']) {
+      const src = raw(rel)
+      expect(src, `${rel} must be a server module`).toMatch(/^'use server'/m)
+      expect(src, `${rel} must rate limit`).toMatch(/rateLimitDb\(/)
+      expect(src, `${rel} must audit`).toMatch(/logAuditEvent\(/)
+    }
+  })
+
+  it('public registration is validated, rate limited, audited and CAPTCHA-seamed', () => {
+    const action = raw('app/actions/auth.ts')
+    expect(action).toMatch(/RegistrationSchema\.safeParse/)
+    expect(action).toMatch(/rateLimitDb\(`register:ip:/)
+    expect(action).toMatch(/rateLimitDb\(`register:email:/)
+    expect(action).toMatch(/verifyCaptcha\(/)
+    expect(action).toMatch(/logAuditEvent\(/)
+  })
+
+  it('Supabase disable_signup is NOT relaxed to open registration', () => {
+    // The deploy gate still demands disable_signup === true. Public
+    // registration runs through the admin API instead, so POST
+    // /auth/v1/signup stays closed to the internet permanently.
+    const gate = raw('scripts/security/verify-prod-config.mjs')
+    expect(gate).toMatch(/disable_signup/)
+    expect(gate).toMatch(/DEPLOYMENT BLOCKED/)
+    const pkg = JSON.parse(raw('package.json'))
+    expect(pkg.scripts.prebuild).toContain('verify-prod-config.mjs')
   })
 })
 
@@ -102,9 +185,22 @@ describe('login and password reset are preserved', () => {
     expect(login).toMatch(/signInWithPassword\s*\(/)
   })
 
-  it('password reset still calls resetPasswordForEmail', () => {
-    const forgot = readFileSync(join(ROOT, 'app/(auth)/forgot-password/page.tsx'), 'utf8')
-    expect(forgot).toMatch(/resetPasswordForEmail\s*\(/)
+  /**
+   * XPA-6A moved recovery from the browser into a server action, so that it can
+   * be rate limited and audited and so the recovery link is composed from the
+   * canonical domain rather than from `location.origin`. The call still exists —
+   * it simply runs somewhere it can be controlled.
+   */
+  it('password reset still calls resetPasswordForEmail, now server-side', () => {
+    const action = raw('app/actions/auth.ts')
+    expect(action).toMatch(/resetPasswordForEmail\s*\(/)
+    expect(action).toMatch(/rateLimitDb\(`password-reset:/)
+    expect(action).toMatch(/logAuditEvent\(/)
+
+    // And the browser no longer talks to Supabase for it.
+    const page = stripTsCommentsAndStrings(raw('app/(auth)/forgot-password/page.tsx'))
+    expect(page).not.toMatch(/resetPasswordForEmail\s*\(/)
+    expect(page).not.toMatch(/location\.origin/)
   })
 })
 

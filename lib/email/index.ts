@@ -25,6 +25,11 @@ import {
   enrollmentEmailText,
   type EnrollmentEmailData,
 } from './templates/enrollment'
+import {
+  verificationEmailHtml,
+  verificationEmailText,
+  type VerificationEmailData,
+} from './templates/verification'
 
 const log = createLogger('email')
 
@@ -114,5 +119,27 @@ export async function sendEnrollmentEmail(
     subject: `Inscription confirmée — ${data.courseTitle}`,
     html:    enrollmentEmailHtml(data),
     text:    enrollmentEmailText(data),
+  })
+}
+
+/**
+ * XPA-6A — account email verification.
+ *
+ * ⚠️ OPERATIONAL DEPENDENCY, stated rather than assumed: this is the only
+ * channel by which a learner can activate an account, so if Resend is in dry-run
+ * (no RESEND_API_KEY, or an unverified sender domain — decision register Q-D)
+ * every public registration produces an account that can never be used. The
+ * caller treats a send failure as non-fatal and surfaces "resend"; the failure
+ * is logged and audited, never silent.
+ */
+export async function sendVerificationEmail(
+  to: string,
+  data: VerificationEmailData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: 'Confirmez votre adresse email — XP Client Academy',
+    html:    verificationEmailHtml(data),
+    text:    verificationEmailText(data),
   })
 }

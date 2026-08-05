@@ -22,6 +22,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { createLogger } from '@/lib/logger'
 import { AI_COACH_ENABLED } from '@/lib/ai/flags'
+import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
 import {
   runCompetencyEngine,
   type CompetencyConfig,
@@ -30,6 +31,34 @@ import {
 } from '@/lib/ai/competency-engine'
 
 const log = createLogger('actions/ai-practice')
+
+/**
+ * Resolve scenario → lesson → module → course with the service client.
+ *
+ * The service client is required, not a shortcut: after migration 035 the
+ * lessons and modules rows for a course the caller cannot access are invisible
+ * to them, so an RLS-bound lookup would return null and the gate would deny
+ * everyone — including entitled learners. Authorization is decided afterwards,
+ * by resolveCourseAccessById(), on the caller's own identity.
+ */
+async function courseIdForLesson(
+  admin: ReturnType<typeof createAdminClient>,
+  lessonId: string,
+): Promise<string | null> {
+  const { data: lesson } = await admin
+    .from('lessons')
+    .select('module_id')
+    .eq('id', lessonId)
+    .maybeSingle()
+  if (!lesson?.module_id) return null
+
+  const { data: mod } = await admin
+    .from('modules')
+    .select('course_id')
+    .eq('id', lesson.module_id)
+    .maybeSingle()
+  return (mod?.course_id as string | undefined) ?? null
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -303,9 +332,36 @@ export async function startVoiceSession(
     const admin = createAdminClient()
     const { data: scenario, error: scErr } = await admin
       .from('ai_scenarios')
-      .select('id, is_published, provider, agent_id')
+      .select('id, lesson_id, is_published, provider, agent_id')
       .eq('id', scenarioId)
       .single()
+
+    // ── XPA-6A: Voice Practice is course material ────────────────────────
+    // Starting a session mints a signed ElevenLabs URL — the expensive,
+    // protected action. Registration alone must not reach it. Resolved from
+    // the SCENARIO, never from client input, so the caller cannot nominate a
+    // course they happen to be enrolled in.
+    //
+    // This closes the pilot's anonymous voice path. The 11 existing pilot
+    // sessions and 36 turns are untouched historical records.
+    if (scenario?.lesson_id) {
+      const courseId = await courseIdForLesson(admin, scenario.lesson_id as string)
+      const access = courseId
+        ? await resolveCourseAccessById(courseId)
+        : { allowed: false, reason: 'course_not_found' as const }
+
+      if (!access.allowed) {
+        log.warn(
+          { scenarioId, reason: access.reason },
+          'startVoiceSession: refused — no course access',
+        )
+        return {
+          error:  denialMessage(access.reason ?? 'not_enrolled').body,
+          detail: `course access denied: ${access.reason}`,
+        }
+      }
+    }
+
     if (scErr || !scenario || !scenario.is_published) {
       log.error({ scenarioId, dbError: scErr?.message, found: !!scenario }, 'startVoiceSession: scenario unavailable')
       return {

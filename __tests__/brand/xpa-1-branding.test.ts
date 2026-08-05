@@ -124,14 +124,27 @@ describe('XPA-1 — dual-domain architecture preserved (NO routing regression)',
     const src = read('middleware.ts')
     expect(src).toMatch(/isAdminHost\(resolveHost\(request\.headers\)\)/)
     expect(src).toMatch(/isOwnerEmail\(user\.email\)/)
-    expect(src).toMatch(/\/api\/auth\/signout\?error=forbidden/)
   })
 
-  it('middleware was NOT modified by the branding sweep', () => {
-    // Branding must not have touched auth: no brand import, no canonical URL.
+  /**
+   * XPA-6A supersedes the original form of this test.
+   *
+   * It used to assert that middleware imported nothing from @/lib/brand at all.
+   * That was the right assertion for XPA-1, whose whole point was that a
+   * BRANDING sweep must not wander into authentication code.
+   *
+   * XPA-6A makes the middleware deliberately domain-aware: an ordinary learner
+   * who lands on the internal host is redirected to the commercial site, which
+   * requires knowing what the commercial site is. The property still worth
+   * protecting is therefore not "no brand import" but "no hardcoded domain" —
+   * the canonical origin must come from lib/brand, so it stays overridable by
+   * NEXT_PUBLIC_SITE_URL and cannot drift into a second literal.
+   */
+  it('middleware never hardcodes the canonical domain — it uses publicUrl()', () => {
     const src = read('middleware.ts')
-    expect(src).not.toMatch(/@\/lib\/brand/)
     expect(src).not.toContain(CANONICAL)
+    expect(src).toMatch(/import \{ publicUrl \} from '@\/lib\/brand'/)
+    expect(src).toMatch(/publicUrl\(/)
   })
 
   it('the carve-out files are the ONLY place the Vercel host appears in code', () => {

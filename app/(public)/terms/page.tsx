@@ -1,17 +1,34 @@
 import type { Metadata } from 'next'
 import { CONTACT_EMAIL } from '@/lib/brand'
+import { TERMS_VERSION, LEGAL_TEXT_PENDING_REVIEW } from '@/lib/legal/versions'
 
 export const metadata: Metadata = {
   title: "Conditions générales d'utilisation",
   description: "Conditions générales d'utilisation de XP Client Academy.",
 }
 
+/**
+ * XPA-6A: the page now DECLARES its version, because registration records
+ * acceptance against that version. The body text is unchanged — XPA-6A does not
+ * write legal wording, and the notice below says so plainly rather than letting
+ * a summary pass for counsel-approved terms.
+ */
 export default function TermsPage() {
   return (
     <section className="cx-section">
       <div className="cx-container max-w-4xl text-dark">
         <div className="cx-card p-8">
-          <h1 className="text-3xl font-extrabold mb-4">Conditions Générales d’Utilisation</h1>
+          <h1 className="text-3xl font-extrabold mb-2">Conditions Générales d’Utilisation</h1>
+          <p className="text-xs text-cx-gray font-mono mb-4">Version {TERMS_VERSION}</p>
+
+          {LEGAL_TEXT_PENDING_REVIEW && (
+            <div className="mb-5 px-4 py-3 rounded-cx bg-amber-50 border border-amber-200 text-sm text-amber-900">
+              <strong>Document en cours de validation juridique.</strong> Le texte ci-dessous est un
+              résumé des règles d’utilisation. Il sera remplacé par la version définitive validée
+              par un conseil juridique.
+            </div>
+          )}
+
           <p className="text-base text-cx-gray leading-relaxed mb-4">
             En utilisant XP Client Academy, vous acceptez nos conditions générales d’utilisation. Celles-ci définissent
             les règles d’accès, de cotisation et de support à nos formations.

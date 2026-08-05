@@ -1,4 +1,5 @@
 import { createAdminClient } from '@/lib/supabase/admin'
+import { requirePlatformAdmin } from '@/lib/auth/session'
 import Link from 'next/link'
 import { Users, BookOpen, CreditCard, Award, TrendingUp, ArrowRight } from 'lucide-react'
 import type { Metadata } from 'next'
@@ -6,6 +7,17 @@ import type { Metadata } from 'next'
 export const metadata: Metadata = { title: 'Admin — Tableau de bord' }
 
 export default async function AdminDashboardPage() {
+  // XPA-6A: this page was the ONE admin entry point relying solely on the
+  // route-group layout for authorization, while itself using the service-role
+  // client to read user counts, payment totals and recent learner emails.
+  //
+  // The layout guard is real and did run, so this was not an open door — but
+  // "every entry point checks for itself" is the invariant the other 40+ admin
+  // pages and actions hold, and an invariant with one exception is one nobody
+  // can rely on. It also means the privileged queries below no longer execute
+  // at all for an unauthorized caller.
+  await requirePlatformAdmin()
+
   const supabase = createAdminClient()
 
   const [

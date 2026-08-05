@@ -90,3 +90,24 @@ export function isAdminHostPublicPath(pathname: string): boolean {
     p => pathname === p || pathname.startsWith(p.endsWith('/') ? p : p + '/')
   )
 }
+
+/**
+ * Is this request addressed to the COMMERCIAL learner application? (XPA-6A)
+ *
+ * Defined as the complement of the admin host rather than as an equality test
+ * against the production domain, and that is deliberate:
+ *
+ *   * Equality would break local development and every preview URL, so the
+ *     first person to run `npm run dev` would "fix" it by loosening it.
+ *   * The complement is the property that actually matters. `isAdminHost()`
+ *     already denies the production admin alias AND every *.vercel.app
+ *     deployment, so "not admin" means "a real customer-facing domain".
+ *
+ * Used to refuse public registration on the internal host. It is a
+ * SUPPLEMENTARY control, never the only one: the middleware host boundary
+ * blocks the registration page there too, and authorization never depends on
+ * the hostname (a spoofed Host cannot grant anything — see requirePlatformAdmin).
+ */
+export function isCommercialHost(host: string | null | undefined): boolean {
+  return !isAdminHost(host)
+}

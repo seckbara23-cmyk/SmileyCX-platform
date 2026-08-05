@@ -21,6 +21,14 @@ export type AuditEventType =
   | 'user.deleted'
   | 'user.role_changed'
   | 'user.registration_blocked'
+  // XPA-6A — public learner registration lifecycle. `event_type` is free text
+  // in the table (no check constraint), so extending this union needs no
+  // migration; the union exists to keep call sites honest.
+  | 'user.registered'
+  | 'user.email_verified'
+  | 'user.verification_resent'
+  | 'user.password_reset_requested'
+  | 'user.legal_accepted'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

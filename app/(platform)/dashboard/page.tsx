@@ -1,8 +1,9 @@
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
-import { BookOpen, Award, ArrowRight, Play, CheckCircle, ClipboardList, Star, ExternalLink } from 'lucide-react'
+import { BookOpen, Award, ArrowRight, Play, CheckCircle, ClipboardList, Star, ExternalLink, Mail, AlertTriangle, Compass } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
+import ResendVerificationButton from './ResendVerificationButton'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = { title: 'Mon Espace' }
@@ -16,7 +17,10 @@ type NextStep = 'lesson' | 'quiz' | 'final-exam' | 'certificate' | 'done'
 export default async function DashboardPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect(PILOT_MODE ? '/courses' : '/login')
+  // XPA-6A: the dashboard is a learner's own space and always requires a
+  // session. It previously sent anonymous visitors to /courses in pilot mode,
+  // which quietly turned "you are not signed in" into "here is the catalogue".
+  if (!user) redirect('/login?next=/dashboard')
 
   const [{ data: profile }, { data: enrollments }] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
@@ -119,7 +123,9 @@ export default async function DashboardPage() {
     .eq('user_id', user.id)
     .order('issued_at', { ascending: false })
 
-  const firstName         = (profile.full_name || profile.email).split(' ')[0]
+  const firstName         = (profile.first_name || profile.full_name || profile.email).split(' ')[0]
+  const emailVerified     = Boolean(user.email_confirmed_at)
+  const accountStatus     = (profile.account_status as string | undefined) ?? 'active'
   const inProgress        = progressData.filter(p => p.percentage < 100)
   const completedCourses  = progressData.filter(p => p.percentage === 100)
   const totalStepsDone    = progressData.reduce((n, p) => n + p.completed, 0)
@@ -133,6 +139,41 @@ export default async function DashboardPage() {
           <h1 className="text-xl md:text-2xl font-extrabold text-dark">Bonjour, {firstName} 👋</h1>
           <p className="text-sm text-cx-gray mt-0.5">Votre espace d&apos;apprentissage XP Client Academy</p>
         </div>
+
+        {/* ── Account status (XPA-6A) ───────────────────────────────────────
+            Stated plainly rather than inferred from an empty screen. A learner
+            whose email is unverified or whose account is suspended should be
+            told so, not left wondering why nothing works. */}
+        {!emailVerified && (
+          <div className="cx-card p-4 mb-4 border-amber-300 bg-amber-50/60">
+            <div className="flex items-start gap-3">
+              <Mail className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-dark text-sm mb-1">Confirmez votre adresse email</p>
+                <p className="text-xs text-cx-gray leading-relaxed mb-2">
+                  Votre adresse <strong className="text-dark">{profile.email}</strong> n&apos;a pas
+                  encore été confirmée. La confirmation est nécessaire pour accéder au contenu des
+                  formations.
+                </p>
+                <ResendVerificationButton email={profile.email} />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {accountStatus !== 'active' && (
+          <div className="cx-card p-4 mb-4 border-red-300 bg-red-50/60">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-bold text-dark text-sm mb-1">Compte {accountStatus === 'suspended' ? 'suspendu' : 'désactivé'}</p>
+                <p className="text-xs text-cx-gray leading-relaxed">
+                  Votre compte n&apos;est pas actif. Contactez-nous pour rétablir votre accès.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Stats strip */}
         <div className="cx-card flex divide-x divide-black/[0.06] mb-7 overflow-hidden">
@@ -271,20 +312,50 @@ export default async function DashboardPage() {
           </section>
         )}
 
-        {/* Empty state */}
+        {/* ── Empty state (XPA-6A) ───────────────────────────────────────────
+            Honest and commercial. It says "you are not enrolled", not "browse
+            the catalogue", because a published course is NOT an accessible one:
+            having an account and having access are separate facts, and a
+            dashboard that blurs them sets up a support ticket. */}
         {progressData.length === 0 && (
           <div className="cx-card p-8 text-center mb-7">
             <BookOpen className="w-10 h-10 text-primary/30 mx-auto mb-3" />
-            <h3 className="font-bold text-dark mb-1.5">Aucune formation en cours</h3>
-            <p className="text-sm text-cx-gray mb-4">
-              Découvrez le catalogue et commencez votre parcours CX.
+            <h3 className="font-bold text-dark mb-1.5">
+              Vous n&apos;êtes inscrit à aucune formation
+            </h3>
+            <p className="text-sm text-cx-gray mb-1.5 max-w-md mx-auto leading-relaxed">
+              Votre compte est créé, mais l&apos;accès à une formation est activé séparément.
             </p>
-            <Link
-              href="/courses"
-              className="inline-flex items-center gap-2 px-5 py-2.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all text-sm"
-            >
-              Voir les formations <ArrowRight className="w-4 h-4" />
-            </Link>
+            <p className="text-xs text-cx-gray/80 mb-5 max-w-md mx-auto leading-relaxed">
+              Parcourez le catalogue pour choisir une formation, puis contactez-nous pour
+              activer votre accès.
+            </p>
+            <div className="flex flex-wrap gap-2 justify-center">
+              <Link
+                href="/courses"
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all text-sm"
+              >
+                Voir les formations <ArrowRight className="w-4 h-4" />
+              </Link>
+              <Link
+                href="/parcours"
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-light border border-black/[0.08] text-cx-gray font-semibold rounded-cx hover:bg-white transition-colors text-sm"
+              >
+                <Compass className="w-4 h-4" /> Les parcours
+              </Link>
+            </div>
+          </div>
+        )}
+
+        {/* Certificates empty state — shown only once there is nothing else to
+            report, so the page never looks empty AND silent at the same time. */}
+        {progressData.length === 0 && (certs ?? []).length === 0 && (
+          <div className="cx-card p-5 text-center">
+            <Award className="w-7 h-7 text-amber-500/30 mx-auto mb-2" />
+            <p className="text-sm font-bold text-dark mb-0.5">Aucun certificat</p>
+            <p className="text-xs text-cx-gray">
+              Vos certificats apparaîtront ici une fois une formation terminée.
+            </p>
           </div>
         )}
 

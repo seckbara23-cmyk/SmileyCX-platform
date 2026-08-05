@@ -11,7 +11,23 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   // CX-AUTH-1: shown after the middleware signs out an authenticated
   // non-owner on the administration portal.
   forbidden:     'Accès non autorisé.',
+  // XPA-6A email verification (app/auth/verify).
+  verify_invalid: "Ce lien de confirmation n'est pas valide. Demandez-en un nouveau depuis votre espace.",
+  verify_expired: 'Ce lien de confirmation a expiré ou a déjà été utilisé. Connectez-vous, puis demandez un nouvel email de confirmation.',
 }
+
+/**
+ * XPA-6A: sign-in failure message.
+ *
+ * Deliberately does NOT distinguish "wrong password" from "email not
+ * confirmed", even though Supabase returns different error codes for them.
+ * Distinguishing would turn the login form into an account-enumeration oracle —
+ * an attacker could confirm that an address is registered without knowing its
+ * password. The verification hint is appended unconditionally instead: it helps
+ * the legitimate unverified user and tells an attacker nothing.
+ */
+const SIGN_IN_FAILED =
+  "Email ou mot de passe incorrect — ou votre adresse email n'a pas encore été confirmée."
 
 interface Props {
   next?: string
@@ -59,7 +75,7 @@ export default function LoginForm({ next, error: callbackErrorProp, adminPortal 
       const { data, error: authError } = result as Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>
 
       if (authError) {
-        setError('Email ou mot de passe incorrect. Vérifiez vos identifiants.')
+        setError(SIGN_IN_FAILED)
         return
       }
 

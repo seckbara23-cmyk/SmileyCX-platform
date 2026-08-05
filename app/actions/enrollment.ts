@@ -22,9 +22,34 @@ import { PUBLIC_SITE_URL } from '@/lib/brand'
 
 const log = createLogger('actions/enrollment')
 
+/**
+ * XPA-6A — free self-enrollment is CLOSED unless explicitly re-opened.
+ *
+ * This action let any authenticated user grant themselves an active enrollment
+ * in any published course. Under the pilot that was the point. With public
+ * registration open it becomes "registration grants course access", which
+ * directly contradicts ratified decisions 3 and 5.
+ *
+ * Deliberately NOT gated on PLATFORM_MODE alone: that variable defaults to
+ * 'pilot' when unset, so an environment that merely forgot to set it would have
+ * self-enrollment switched ON. The flag below defaults to OFF and must be set to
+ * the literal string 'true' to re-open it — a missing or misspelled value
+ * denies. Fail closed, and fail closed on absence.
+ */
+const SELF_ENROLLMENT_OPEN =
+  process.env.NEXT_PUBLIC_ALLOW_FREE_SELF_ENROLLMENT === 'true'
+
 export async function enrollForFree(
   courseId: string
 ): Promise<{ error?: string }> {
+  // XPA-6A: deny by default, before anything else runs.
+  if (!SELF_ENROLLMENT_OPEN) {
+    return {
+      error:
+        "La création d'un compte ne donne pas accès aux formations. L'accès doit être activé pour votre compte.",
+    }
+  }
+
   // TEMP_FREE_ACCESS: Guard — only available in pilot mode
   if (!FREE_ACCESS_MODE) {
     return { error: 'Free enrollment is not available outside pilot mode.' }

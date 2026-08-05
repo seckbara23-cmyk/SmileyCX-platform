@@ -2,16 +2,33 @@
 import { Suspense, useState } from 'react'
 import Link from 'next/link'
 import { Mail, ArrowLeft, CheckCircle } from 'lucide-react'
-import { createClient } from '@/lib/supabase/client'
 import { Input } from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
+import { requestPasswordReset } from '@/app/actions/auth'
 
+/**
+ * Password recovery request (XPA-6A).
+ *
+ * Moved from a direct browser→Supabase `resetPasswordForEmail` call to a server
+ * action. Two defects went away with it:
+ *
+ *   1. `redirectTo` was `${location.origin}/...`, so a request made while on the
+ *      internal deployment host produced a recovery link on that host. The
+ *      server action composes the target from PUBLIC_SITE_URL and never reads
+ *      the request origin.
+ *   2. The application server was not in the request path, so recovery could not
+ *      be rate limited or audited at all. Both now apply.
+ *
+ * Enumeration resistance is unchanged in appearance and stronger underneath:
+ * the neutral message is now produced by the server for every outcome,
+ * including the rate-limited one, rather than by the client swallowing an error.
+ */
 function ForgotPasswordForm() {
-  const supabase = createClient()
   const [email,   setEmail]   = useState('')
   const [loading, setLoading] = useState(false)
   const [done,    setDone]    = useState(false)
   const [error,   setError]   = useState('')
+  const [notice,  setNotice]  = useState('')
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -19,24 +36,11 @@ function ForgotPasswordForm() {
 
     setError('')
     setLoading(true)
-
-    // redirectTo points to our callback which will detect it is a recovery
-    // flow and forward the user to /reset-password
-    const redirectTo =
-      `${location.origin}/auth/callback?next=/reset-password&type=recovery`
-
-    const { error: authError } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo,
-    })
-
+    const result = await requestPasswordReset({ email })
     setLoading(false)
 
-    if (authError) {
-      console.error('[forgot-password] resetPasswordForEmail error:', authError.message)
-      // Show generic success to prevent email enumeration
-    }
-
-    // Always show success (prevents email enumeration)
+    if (!result.ok) { setError(result.message ?? 'Une erreur est survenue.'); return }
+    setNotice(result.message ?? '')
     setDone(true)
   }
 
@@ -46,10 +50,7 @@ function ForgotPasswordForm() {
         <div className="bg-white rounded-2xl shadow-md border border-black/[0.06] p-8">
           <CheckCircle className="w-14 h-14 text-success mx-auto mb-4" />
           <h2 className="text-2xl font-extrabold text-dark mb-2">Email envoyé !</h2>
-          <p className="text-cx-gray text-sm mb-2">
-            Si un compte existe pour <strong>{email}</strong>, vous recevrez un email
-            avec un lien pour réinitialiser votre mot de passe.
-          </p>
+          <p className="text-cx-gray text-sm mb-2">{notice}</p>
           <p className="text-cx-gray text-sm mb-6">
             Vérifiez aussi votre dossier <em>spam</em> si vous ne le voyez pas.
           </p>

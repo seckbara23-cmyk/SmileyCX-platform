@@ -226,9 +226,36 @@ describe('CX-AUTH-1 — middleware host enforcement', () => {
     expect(block).toMatch(/\/login/)
   })
 
-  it('signs out an authenticated NON-owner instead of leaving the session', () => {
+  /**
+   * XPA-6A — ratified behaviour change, NOT a relaxation.
+   *
+   * This previously asserted that an authenticated NON-owner on the admin host
+   * was SIGNED OUT. That was correct when every account on the platform was an
+   * administrator: a non-owner session there could only be an anomaly.
+   *
+   * With public learner registration open (decisions 1-2, 7-8), that visitor is
+   * now almost always an ordinary learner following a stale link, and
+   * destroying their commercial session as a penalty for hitting the wrong
+   * hostname is hostile. Decision 8 says such learners must be REDIRECTED to
+   * the commercial domain.
+   *
+   * The security property is unchanged and is what this test now pins: a
+   * non-owner is still refused the internal host, and — critically — the
+   * hostname is not what authorizes anything. Every admin page and action calls
+   * requirePlatformAdmin() independently, asserted separately below.
+   */
+  it('redirects an authenticated NON-owner to the commercial domain', () => {
     expect(mw).toMatch(/isOwnerEmail\(user\.email\)/)
-    expect(mw).toMatch(/\/api\/auth\/signout\?error=forbidden/)
+    expect(mw).toMatch(/safeCommercialDeepLink\(/)
+    expect(mw).toMatch(/publicUrl\(/)
+  })
+
+  it('never preserves an internal deep link when bouncing a learner', () => {
+    const fn = mw.slice(mw.indexOf('function safeCommercialDeepLink'))
+    const body = fn.slice(0, fn.indexOf('\n}'))
+    expect(body).toMatch(/startsWith\('\/admin'\)/)
+    expect(body).toMatch(/startsWith\('\/api'\)/)
+    expect(body).toMatch(/publicUrl\('\/'\)/)
   })
 
   /**
@@ -241,9 +268,28 @@ describe('CX-AUTH-1 — middleware host enforcement', () => {
     expect(mw).not.toMatch(/RESERVED_PORTAL_PREFIXES/)
   })
 
+  /**
+   * Anchored on the admin-host boundary, not on the first `pathname ===
+   * '/login'` in the file — the deep-link helper contains that string too, and
+   * anchoring on it silently searched the wrong block.
+   */
+  const adminHostLoginBlock = () => {
+    const start = mw.indexOf('isAdminHostPublicPath(pathname)')
+    expect(start).toBeGreaterThan(-1)
+    return mw.slice(start, start + 1200)
+  }
+
   it('sends an authenticated owner on /login to the landing page at /', () => {
-    const block = mw.slice(mw.indexOf("pathname === '/login'"))
-    expect(block.slice(0, 400)).toMatch(/redirect\(new URL\('\/', request\.url\)\)/)
+    expect(adminHostLoginBlock()).toMatch(/redirect\(new URL\('\/', request\.url\)\)/)
+  })
+
+  /**
+   * XPA-6A: a learner who signs in on the internal host keeps their session but
+   * is sent to the commercial dashboard. Their session was never an
+   * administration session — signing in there does not make it one.
+   */
+  it('sends an authenticated NON-owner on /login to the commercial dashboard', () => {
+    expect(adminHostLoginBlock()).toMatch(/publicUrl\('\/dashboard'\)/)
   })
 
   it('the admin nav still points at /admin/* (clean routes do not exist)', () => {
