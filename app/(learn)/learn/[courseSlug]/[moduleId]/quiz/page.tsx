@@ -1,5 +1,6 @@
 'use client'
 import { useEffect, useState, useCallback } from 'react'
+import { buildDisplayOptions, orderQuestions, newAttemptSeed } from '@/lib/quiz/presentation'
 import Link from 'next/link'
 import Image from 'next/image'
 import { CheckCircle, ChevronLeft, ChevronRight, Loader2, Award, Star } from 'lucide-react'
@@ -17,6 +18,10 @@ interface QuizRow {
   id:            string
   title:         string
   passing_score: number | null
+  // XPA-4 (migration 032). Both default false, so a quiz that has not opted in
+  // renders exactly as before. Presentation only — never affects grading.
+  randomize_questions?: boolean | null
+  randomize_options?:   boolean | null
 }
 interface QuestionRow {
   id:                 string
@@ -63,6 +68,9 @@ export default function ModuleQuizPage() {
   const [hasFinalExam,     setHasFinalExam]      = useState(false)
 
   const [answers,          setAnswers]           = useState<AnswerMap>({})
+  // XPA-4: per-attempt shuffle seed. Held for the attempt's lifetime so a
+  // re-render never reshuffles under the learner's cursor. Presentation only.
+  const [shuffleSeed,      setShuffleSeed]       = useState(() => newAttemptSeed())
   const [submitted,        setSubmitted]         = useState(false)
   const [submitting,       setSubmitting]        = useState(false)
   const [submitError,      setSubmitError]       = useState('')
@@ -84,6 +92,10 @@ export default function ModuleQuizPage() {
       .select('id')
       .eq('course_id', course.id)
       .is('module_id', null)
+      // XPA-4: deterministic even for an existence check, so "does a final exam
+      // exist" can never depend on which row Postgres happens to return.
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .limit(1)
       .maybeSingle()
     setHasFinalExam(!!finalExamQuiz)
@@ -138,8 +150,16 @@ export default function ModuleQuizPage() {
     // Primary: module-level quiz (lesson_id = NULL, module_id = this module)
     const { data: modQuiz, error: quizErr } = await supabase
       .from('quizzes')
-      .select('id, title, passing_score')
+      .select('id, title, passing_score, randomize_questions, randomize_options')
       .eq('module_id', resolvedId)
+      // XPA-4: deterministic selection. `.limit(1)` with no ORDER BY made this an
+      // ACCIDENTAL selector — with more than one matching quiz Postgres may return
+      // any row, and a different one between page loads. Ordering by creation time
+      // (then id, to break ties) makes the served quiz stable and reproducible.
+      // Random selection among several quizzes is a separate, opt-in capability
+      // and is deliberately NOT what an unordered limit provides.
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .limit(1)
       .maybeSingle()
 
@@ -151,10 +171,15 @@ export default function ModuleQuizPage() {
     if (!quizData) {
       const lessonIds = curLessons.map((l: LessonMeta) => l.id)
       if (lessonIds.length > 0) {
+        // XPA-4: deterministic. This fallback matches ANY quiz attached to ANY
+        // lesson of the module, so it is the lookup most likely to have several
+        // candidates — precisely where an unordered limit(1) is unsafe.
         const { data: lessonQuiz, error: lqErr } = await supabase
           .from('quizzes')
-          .select('id, title, passing_score')
+          .select('id, title, passing_score, randomize_questions, randomize_options')
           .in('lesson_id', lessonIds)
+          .order('created_at', { ascending: true })
+          .order('id', { ascending: true })
           .limit(1)
           .maybeSingle()
         if (lqErr) console.error('[quiz:lesson-fallback]', lqErr.message, lqErr.code)
@@ -229,6 +254,7 @@ export default function ModuleQuizPage() {
 
   function handleRetry() {
     setAnswers({})
+    setShuffleSeed(newAttemptSeed())   // XPA-4: fresh presentation order per attempt
     setSubmitted(false)
     setSubmissionResult(null)
     setSubmitError('')
@@ -318,7 +344,7 @@ export default function ModuleQuizPage() {
               )}
 
               <div className="flex flex-col gap-6">
-                {questions.map((q, qi) => {
+                {orderQuestions(questions, !!quiz?.randomize_questions, shuffleSeed).map((q, qi) => {
                   const qType = q.question_type
 
                   // ── Drag & Match ─────────────────────────────────────────────
@@ -460,13 +486,21 @@ export default function ModuleQuizPage() {
                   }
 
                   // ── Multiple Choice (default) ─────────────────────────────────
-                  const opts          = q.options as string[]
+                  // XPA-4: display order may be shuffled, but every option carries the
+                  // index it holds in the STORED options array, and that ORIGINAL index is
+                  // what gets submitted. correct_answer therefore keeps its exact meaning
+                  // and shuffling can never change which answer is correct.
+                  const opts          = buildDisplayOptions(
+                                          q.options as string[],
+                                          !!quiz?.randomize_options,
+                                          shuffleSeed + qi,
+                                        )
                   const serverCorrect = submissionResult?.correctAnswers?.[q.id]
                   return (
                     <div key={q.id}>
                       <p className="text-sm font-semibold text-white mb-3">{qi + 1}. {q.question}</p>
                       <div className="flex flex-col gap-2">
-                        {opts.map((opt, oi) => {
+                        {opts.map(({ originalIndex: oi, text: opt }, slot) => {
                           const isSelected   = answers[q.id] === oi
                           const isCorrectOpt = submitted && oi === serverCorrect
                           const isWrongOpt   = submitted && isSelected && oi !== serverCorrect
@@ -479,7 +513,7 @@ export default function ModuleQuizPage() {
                                 : isSelected ? 'border-primary bg-primary/20 text-white'
                                 : 'border-white/10 bg-white/5 text-white/70 hover:bg-white/10 hover:text-white disabled:cursor-default'
                               }`}>
-                              <span className="font-semibold mr-1.5">{OPTION_LABELS[oi]}.</span>{opt}
+                              <span className="font-semibold mr-1.5">{OPTION_LABELS[slot]}.</span>{opt}
                             </button>
                           )
                         })}

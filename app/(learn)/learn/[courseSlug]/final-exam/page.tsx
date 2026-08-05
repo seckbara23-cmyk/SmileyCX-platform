@@ -91,8 +91,16 @@ export default function FinalExamPage() {
     // Load final exam quiz first (needed for accurate already-passed check)
     const { data: fq, error: fqErr } = await supabase
       .from('quizzes')
-      .select('id, title, passing_score')
+      .select('id, title, passing_score, randomize_questions, randomize_options')
       .eq('course_id', course.id)
+      // XPA-4: deterministic selection. `.limit(1)` with no ORDER BY made this an
+      // ACCIDENTAL selector — with more than one matching quiz Postgres may return
+      // any row, and a different one between page loads. Ordering by creation time
+      // (then id, to break ties) makes the served quiz stable and reproducible.
+      // Random selection among several quizzes is a separate, opt-in capability
+      // and is deliberately NOT what an unordered limit provides.
+      .order('created_at', { ascending: true })
+      .order('id', { ascending: true })
       .limit(1)
       .maybeSingle()
 
