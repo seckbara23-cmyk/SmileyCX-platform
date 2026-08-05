@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import ContactForm from './ContactForm'
 import { Mail, Phone, MapPin } from 'lucide-react'
+import { CONTACT_EMAIL } from '@/lib/brand'
 
 export const metadata: Metadata = {
   title: 'Contact',
@@ -41,8 +42,8 @@ export default async function ContactPage({ searchParams }: Props) {
                   <Mail className="w-4 h-4 text-primary shrink-0 mt-0.5" />
                   <div>
                     <p className="text-xs text-cx-gray font-semibold mb-0.5">Email</p>
-                    <a href="mailto:bonjour@smileycx.com" className="text-sm text-dark hover:text-primary transition-colors">
-                      bonjour@smileycx.com
+                    <a href={`mailto:${CONTACT_EMAIL}`} className="text-sm text-dark hover:text-primary transition-colors">
+                      {CONTACT_EMAIL}
                     </a>
                   </div>
                 </div>

@@ -7,7 +7,7 @@
  * Setup:
  *   1. Create a Resend account and verify your sending domain.
  *   2. Add RESEND_API_KEY to .env.local (and Vercel env vars).
- *   3. Set EMAIL_FROM to your verified sender address (e.g. noreply@smileycx.com).
+ *   3. Set EMAIL_FROM to your verified sender address on the academy domain.
  *
  * In development without a real API key, emails are logged to the console
  * instead of sent. Set EMAIL_DRY_RUN=true to force this behavior in any env.
@@ -28,7 +28,20 @@ import {
 
 const log = createLogger('email')
 
-const FROM = process.env.EMAIL_FROM ?? 'XP Client <noreply@smileycx.com>'
+/**
+ * Sender identity.
+ *
+ * XPA-1 corrected the DISPLAY NAME to the full brand. The sending ADDRESS is
+ * deliberately left on its current domain and driven entirely by EMAIL_FROM.
+ *
+ * Rationale (decision register Q-D): Resend only delivers from a domain it has
+ * verified. Switching this fallback to @xpclient-academy.com before that domain
+ * is verified would make every transactional email fail — welcome, enrollment
+ * and password mail — with no error surfaced to the user. Completing the
+ * migration is a one-variable operator action: verify the domain in Resend,
+ * then set EMAIL_FROM. No code change is required.
+ */
+const FROM = process.env.EMAIL_FROM ?? 'XP Client Academy <noreply@smileycx.com>'
 const DRY_RUN =
   process.env.EMAIL_DRY_RUN === 'true' || !process.env.RESEND_API_KEY
 
@@ -86,7 +99,7 @@ export async function sendWelcomeEmail(
 ): Promise<SendResult> {
   return sendEmail({
     to,
-    subject: 'Bienvenue sur XP Client !',
+    subject: 'Bienvenue sur XP Client Academy !',
     html:    welcomeEmailHtml(data),
     text:    welcomeEmailText(data),
   })

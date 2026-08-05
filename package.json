@@ -20,7 +20,8 @@
     "scan:bundle": "node scripts/security/check-bundle-secrets.mjs",
     "audit:prod": "npm audit --omit=dev --audit-level=critical",
     "verify:prod-config": "node scripts/security/verify-prod-config.mjs",
-    "verify": "npm run typecheck && npm run lint && npm run lint:sql && npm run test:ci && npm run scan:secrets"
+    "verify": "npm run typecheck && npm run lint && npm run lint:sql && npm run test:ci && npm run scan:secrets && npm run scan:public-assets",
+    "scan:public-assets": "node scripts/security/check-public-assets.mjs"
   },
   "dependencies": {
     "@11labs/client": "^0.2.0",

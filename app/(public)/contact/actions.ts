@@ -2,6 +2,7 @@
 
 import { createLogger } from '@/lib/logger'
 import { Resend } from 'resend'
+import { BRAND_NAME, CONTACT_EMAIL } from '@/lib/brand'
 
 const log = createLogger('contact')
 
@@ -39,8 +40,8 @@ export async function sendContactMessage(
 
   try {
     const resend = new Resend(process.env.RESEND_API_KEY)
-    const from = process.env.EMAIL_FROM ?? 'noreply@smileycx.com'
-    const to   = process.env.CONTACT_EMAIL ?? 'bonjour@smileycx.com'
+    const from = process.env.EMAIL_FROM ?? `${BRAND_NAME} <noreply@smileycx.com>`
+    const to   = process.env.CONTACT_EMAIL ?? CONTACT_EMAIL
 
     await resend.emails.send({
       from,

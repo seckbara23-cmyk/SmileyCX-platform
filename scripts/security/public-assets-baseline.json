@@ -1,0 +1,29 @@
+{
+  "$comment": [
+    "Baseline for scripts/security/check-public-assets.mjs (XPA-1, D-Q5).",
+    "",
+    "'known' = sensitive source files ALREADY tracked under public/ when the guard",
+    "was introduced. They are reported on every run but do not fail the build, so",
+    "CI stays green while relocation is scheduled. Anything NOT listed fails",
+    "immediately. This is a to-do list, not a permanent exemption.",
+    "",
+    "'allowed' = files under public/ in a blocked format that are GENUINE public",
+    "downloads and should never be flagged. Each needs a justification here.",
+    "",
+    "XPA-1 does not delete or move anything (the phase brief forbids it); the",
+    "relocation is performed and tested in a dedicated change."
+  ],
+  "known": [
+    "public/images/Certificate of Completion.pptx"
+  ],
+  "allowed": [],
+  "notes": {
+    "public/images/Certificate of Completion.pptx": {
+      "what": "Editable PowerPoint source for the completion certificate design.",
+      "status": "LIVE in production — verified HTTP 200 at /images/Certificate%20of%20Completion.pptx",
+      "why_not_a_learner_download": "Zero references in app/, components/ or lib/ (XPA-0 audit). No UI links to it; it is design source material that followed the image assets into public/.",
+      "risk": "An editable certificate template is publicly downloadable, which lowers the effort to forge a convincing certificate. Verification is by certificate number against the public verify page, so this is a credibility risk rather than an authentication bypass.",
+      "action": "Relocate to docs/source-material/xp-client-academy/ and untrack from public/ in a dedicated change with production verification."
+    }
+  }
+}

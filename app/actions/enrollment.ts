@@ -18,6 +18,7 @@ import { EnrollSchema } from '@/lib/validation/schemas'
 import { sendEnrollmentEmail } from '@/lib/email'
 import { createLogger } from '@/lib/logger'
 import { FREE_ACCESS_MODE } from '@/lib/pilot'
+import { PUBLIC_SITE_URL } from '@/lib/brand'
 
 const log = createLogger('actions/enrollment')
 
@@ -106,7 +107,8 @@ export async function enrollForFree(
 }
 
 function fireEnrollmentEmail(to: string, fullName: string, courseTitle: string, courseSlug: string) {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'https://smileycx.com'
+  // XPA-1: canonical public academy domain (was a bare smileycx.com fallback).
+  const baseUrl = PUBLIC_SITE_URL
   sendEnrollmentEmail(to, {
     fullName,
     courseTitle,

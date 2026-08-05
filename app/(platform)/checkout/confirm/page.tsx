@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { formatPrice } from '@/lib/utils/cn'
 import { FREE_ACCESS_MODE } from '@/lib/pilot'
 import type { Metadata } from 'next'
+import { CONTACT_EMAIL } from '@/lib/brand'
 
 export const metadata: Metadata = { title: 'Paiement confirmé' }
 
@@ -94,7 +95,7 @@ export default async function ConfirmPage({ searchParams }: Props) {
                 ? 'Pour toute question : '
                 : 'Nous vous contacterons dès que le paiement sera confirmé.'}
             {isFailed && (
-              <a href="mailto:bonjour@smileycx.com" className="text-primary hover:underline"> bonjour@smileycx.com</a>
+              <a href={`mailto:${CONTACT_EMAIL}`} className="text-primary hover:underline"> {CONTACT_EMAIL}</a>
             )}
           </p>
         </div>

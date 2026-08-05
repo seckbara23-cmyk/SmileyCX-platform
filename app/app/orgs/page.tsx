@@ -21,7 +21,7 @@ export default async function OrgsPage() {
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <p className="text-2xl font-extrabold text-gray-900">
-            Smiley<span className="text-[#ff7b54]">CX</span>
+            XP<span className="text-[#ff7b54]"> Client Academy</span>
           </p>
           <h1 className="text-xl font-bold text-gray-800 mt-4">Select your organization</h1>
           <p className="text-sm text-gray-400 mt-1">Choose the workspace you want to open</p>

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { CONTACT_EMAIL } from '@/lib/brand'
 
 export const metadata: Metadata = {
   title: "Conditions générales d'utilisation",
@@ -33,7 +34,7 @@ export default function TermsPage() {
             <div>
               <h2 className="font-semibold text-dark mb-2">Support</h2>
               <p>
-                Pour toute question, contactez-nous à bonjour@smileycx.com. Nous répondons rapidement aux demandes.
+                Pour toute question, contactez-nous à {CONTACT_EMAIL}. Nous répondons rapidement aux demandes.
               </p>
             </div>
           </div>

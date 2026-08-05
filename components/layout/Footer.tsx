@@ -1,6 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { Mail, Phone, MapPin, Facebook, Twitter, Linkedin, Instagram } from 'lucide-react'
+import { CONTACT_EMAIL } from '@/lib/brand'
 
 const SERVICES_LINKS = [
   'Stratégie CX', 'Parcours Client', 'Voix du Client',
@@ -89,8 +90,8 @@ export default function Footer() {
               </div>
               <div className="flex items-center gap-3 text-sm text-white/60">
                 <Mail className="w-4 h-4 shrink-0 text-secondary" />
-                <a href="mailto:bonjour@smileycx.com" className="hover:text-white transition-colors">
-                  bonjour@smileycx.com
+                <a href={`mailto:${CONTACT_EMAIL}`} className="hover:text-white transition-colors">
+                  {CONTACT_EMAIL}
                 </a>
               </div>
             </div>

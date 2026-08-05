@@ -9,6 +9,7 @@ import {
 import { notFound } from 'next/navigation'
 import { deleteUser } from './actions'
 import type { Metadata } from 'next'
+import { PUBLIC_SITE_URL } from '@/lib/brand'
 
 export const metadata: Metadata = { title: 'Admin — Profil apprenant' }
 
@@ -68,7 +69,10 @@ function StatCard({ icon: Icon, label, value, color }: {
   )
 }
 
-const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? 'https://smiley-cx-platform.vercel.app'
+// XPA-1: certificate links must resolve on the PUBLIC academy domain.
+// This previously defaulted to the private admin portal host, so a shared
+// certificate link sent recipients to a page that redirects them to /login.
+const SITE_URL = PUBLIC_SITE_URL
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 

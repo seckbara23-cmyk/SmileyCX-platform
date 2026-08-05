@@ -1,3 +1,15 @@
+> ## ⚠️ SUPERSEDED — historical reference only
+>
+> This document describes the **pilot** phase of the platform under its former
+> SmileyCX identity. It is retained for history and is **no longer accurate**:
+>
+> - It instructs setting `NEXT_PUBLIC_FREE_ACCESS_MODE`, which is now a derived
+>   legacy flag (see `lib/pilot.ts`) and must not be set manually.
+> - The pilot is complete. The platform runs in **invite-only development mode**.
+>
+> **Current operating documentation:** [`docs/security/operating-mode.md`](docs/security/operating-mode.md)
+> **Brand and domain policy:** [`docs/xpa-decision-register.md`](docs/xpa-decision-register.md)
+
 # XP Client Academy Platform — Pilot Deployment Guide
 
 This document covers everything needed to deploy and run the free pilot program on Vercel.

@@ -1,6 +1,7 @@
 'use server'
 import { z } from 'zod'
 import { createLogger } from '@/lib/logger'
+import { BRAND_NAME, CONTACT_EMAIL } from '@/lib/brand'
 
 const log = createLogger('actions/waitlist')
 
@@ -18,8 +19,8 @@ export async function joinWaitlist(
   }
 
   const { name, email } = parsed.data
-  const adminEmail = process.env.CONTACT_EMAIL ?? 'bonjour@smileycx.com'
-  const from       = process.env.EMAIL_FROM    ?? 'XP Client Academy <noreply@smileycx.com>'
+  const adminEmail = process.env.CONTACT_EMAIL ?? CONTACT_EMAIL
+  const from       = process.env.EMAIL_FROM    ?? `${BRAND_NAME} <noreply@smileycx.com>`
   const isDryRun   = process.env.EMAIL_DRY_RUN === 'true' || !process.env.RESEND_API_KEY
 
   if (isDryRun) {

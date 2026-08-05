@@ -4,6 +4,7 @@ import React from 'react'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { CertificatePDFDocument } from '@/lib/pdf/CertificatePDF'
+import { certificateVerifyUrl } from '@/lib/brand'
 
 // Force Node.js runtime — @react-pdf/renderer does not run on Edge
 export const runtime = 'nodejs'
@@ -50,6 +51,8 @@ export async function GET(req: NextRequest, { params }: RouteContext) {
     courseTitle,
     certNumber:  cert.certificate_number,
     issuedAt:    cert.issued_at,
+    // XPA-1: always the public academy domain, never the admin portal host.
+    verifyUrl:   certificateVerifyUrl(cert.id as string),
   })
   const buffer = await renderToBuffer(doc as React.ReactElement)
 

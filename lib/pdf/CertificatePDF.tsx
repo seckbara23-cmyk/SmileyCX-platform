@@ -5,6 +5,15 @@ interface Props {
   courseTitle: string
   certNumber: string
   issuedAt: string
+  /**
+   * Public verification URL (XPA-1). Optional so existing callers keep working.
+   * When supplied it is printed in the footer, which is what makes a downloaded
+   * certificate independently checkable — the PDF previously carried only a
+   * number and a date, with no way to reach the verification page.
+   * Callers build this with certificateVerifyUrl() so it always resolves on the
+   * public academy domain, never the private admin portal host.
+   */
+  verifyUrl?: string
 }
 
 function formatDateFR(dateStr: string) {
@@ -89,6 +98,7 @@ const s = StyleSheet.create({
     width: '100%',
   },
   footerText: { fontSize: 7, color: '#9ca3af' },
+  verify: { marginTop: 6, alignItems: 'center' as const },
   certNum: { fontSize: 7, fontFamily: 'Courier', color: PRIMARY },
 })
 
@@ -102,7 +112,7 @@ function MedalSvg() {
   )
 }
 
-export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, issuedAt }: Props) {
+export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, issuedAt, verifyUrl }: Props) {
   return (
     <Document title={`Certificat — ${learnerName}`} author="XP Client Academy">
       <Page size="A4" orientation="landscape" style={s.page}>
@@ -167,6 +177,11 @@ export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, i
             <Text style={s.footerText}>Délivré le {formatDateFR(issuedAt)}</Text>
             <Text style={s.certNum}>N° {certNumber}</Text>
           </View>
+          {verifyUrl ? (
+            <View style={s.verify}>
+              <Text style={s.footerText}>Vérifier l&apos;authenticité : {verifyUrl}</Text>
+            </View>
+          ) : null}
         </View>
       </Page>
     </Document>
