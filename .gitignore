@@ -39,3 +39,7 @@ yarn-error.log*
 # ── Test coverage ─────────────────────────────────────────────────────────────
 coverage/
 .nyc_output/
+
+# Supabase CLI local state (project ref, pooler URL, version pins).
+# Machine-local link artifacts — never commit.
+supabase/.temp/

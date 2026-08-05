@@ -8,7 +8,7 @@ source of truth for decisions. Superseded entries are struck, never deleted.
 
 ---
 
-## D-Q1 — Seven-course launch subset · 🔴 OPEN (blocking, narrowly)
+## D-Q1 — Seven-course launch subset · 🔴 STILL OPEN (carried into XPA-3)
 
 **Decision:** Do **not** guess the seventh launch course. Do **not** invent launch status.
 Schema, catalogues, paths and path↔course relationships may proceed without it.
@@ -17,7 +17,18 @@ Schema, catalogues, paths and path↔course relationships may proceed without it
 **Evidence:** the « Lancement Soft » document is absent from the repository
 (searched `public/`, `docs/`, all source). Six coded courses exist in the database.
 
-**Blocks:** XPA-2 status backfill only. Does **not** block XPA-1 or the XPA-2 schema/seed.
+**Status after XPA-2 (verified in production 2026-08-05):** honoured exactly.
+`course_codes` holds **zero** rows with `status = 'launch'`; 16 are `undecided`
+and only C2-F6 is `backlog` (stated by V4 §10 itself). The seed's `ON CONFLICT`
+deliberately excludes `status`, so re-running can never clobber a decision
+recorded later.
+
+**Blocks:** the launch-status backfill, and any launch-cohort filtering in XPA-3.
+Does **not** block XPA-3 discovery, which renders paths and produced courses
+without reference to launch status.
+
+**To close:** supply the « Lancement Soft » document, then a single
+`update course_codes set status='launch' where code in (…)` — no schema change.
 
 ---
 
@@ -175,6 +186,34 @@ All user-facing URLs, metadata, certificates, emails and canonical links must us
 **Explicit carve-out:** `lib/hosts.ts` and `middleware.ts` reference
 `smiley-cx-platform.vercel.app` as the **private admin host**. That is correct and
 **must not be "corrected"** — it is deployment infrastructure, not branding.
+
+---
+
+## D-LEDGER — Migrations 001–027 CLI history · ⏸ DEFERRED (non-blocking)
+
+**Ratified 2026-08-05.** `supabase migration list` reports migrations 001–027 as
+**Local only**. Migrations 028–030 now read local == remote.
+
+**Decision:** record 001–027 as **historical migration-ledger debt**. Do **not**
+repair them blindly. A separate object-by-object audit is required first.
+
+**Why not a blanket repair:** `migration repair --status applied` writes history
+without executing anything. Repairing 27 unverified files would assert "applied"
+for each; if any were only partially applied, that assertion would permanently
+hide the gap — the same class of error that produced the false "partial 028"
+report, but silently and at 27× the scope.
+
+**Why it is non-blocking:** this is bookkeeping, not schema. Those migrations
+demonstrably ran — the platform depends on their objects daily (RLS policies,
+`audit_log`, migration 027's anti-escalation trigger, the certificates bucket),
+all verified in earlier phases. The only real risk is `supabase db push`, which
+would try to replay unrecorded migrations.
+
+**Operating rule until the audit is done:** do **not** run `supabase db push`
+against production. Apply migrations explicitly, as was done for 028–030.
+
+**To close:** audit each migration's objects (tables, columns, constraints,
+indexes, triggers, policies), then repair only those proven complete.
 
 ---
 

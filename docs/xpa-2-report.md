@@ -1,11 +1,24 @@
 # XPA-2 — Course Catalogue & Learning Path Foundation
 
-**Status:** implemented · **Schema:** strictly additive · **Migrations written:** 028, 029, 030
+**Status: ✅ CLOSED — 2026-08-05** · Schema strictly additive · Migrations 028, 029, 030 **applied and verified in production**
 **Source of truth:** `public/Architecture_Catalogues_Parcours_XP-Client-Academy_V4.pdf`
 **Decisions applied:** [decision register](xpa-decision-register.md) D-Q1, D-Q2
 
-> **Migrations are applied by an operator, not by CI or the app.** Writing these
-> files changed no production data. See §Deployment.
+> **Production initialization: PASS.** Independently re-verified against project
+> `eqoqcxkdcxeosjqaafhs` — 3 catalogues, 17 course codes, 15 paths, 71 relations,
+> 6 immutable course codes, and anonymous access to all four tables returning
+> zero rows. Full evidence: [XPA-2 reconciliation](xpa-2-reconciliation.md).
+>
+> **One correction was required after initial application.** Production had been
+> migrated with the pre-fix version of 028, which granted public `SELECT` and
+> exposed the unproduced roadmap to anonymous callers. It was detected via the
+> public anon key, corrected by the operator, and verified closed. See §5 of the
+> reconciliation document.
+>
+> **Carried forward:** D-Q1 (launch subset) remains **open** — no course is
+> marked `launch`, and none was invented. Migrations 001–027 remain
+> **local-only in the CLI ledger**: non-blocking historical debt requiring an
+> object-by-object audit before any repair.
 
 ---
 
