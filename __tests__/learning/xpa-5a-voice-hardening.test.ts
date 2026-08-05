@@ -149,6 +149,51 @@ describe('XPA-5A — the base registry is closed to public roles', () => {
     expect(MIGRATION).not.toMatch(/grant\s+(insert|update|delete|all)\s+on public\./i)
   })
 
+  /**
+   * The view must be REVOKED before it is granted.
+   *
+   * Supabase applies `ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO anon,
+   * authenticated` to the public schema, so a new view is born holding SELECT,
+   * INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES and TRIGGER. A bare
+   * `grant select` is additive and restricts nothing.
+   *
+   * This is not cosmetic: the view is security_invoker = false and
+   * auto-updatable, so writes through it run as the view owner and BYPASS the
+   * base table's RLS. Production verification confirmed anon could UPDATE and
+   * DELETE through it before this correction.
+   */
+  it('REVOKES the view from public roles before granting — default privileges are ALL', () => {
+    const revokeIdx = MIGRATION.search(/revoke all on public\.public_voice_scenarios/i)
+    const grantIdx  = MIGRATION.search(/grant select on public\.public_voice_scenarios/i)
+
+    expect(revokeIdx, 'view is never revoked — it keeps Supabase default ALL privileges').toBeGreaterThan(-1)
+    expect(grantIdx).toBeGreaterThan(-1)
+    expect(revokeIdx, 'revoke must precede grant, or the grant is a no-op').toBeLessThan(grantIdx)
+  })
+
+  it('revokes the view from every public role, including PUBLIC itself', () => {
+    for (const role of ['public', 'anon', 'authenticated']) {
+      expect(
+        MIGRATION,
+        `view not revoked from ${role}`
+      ).toMatch(new RegExp(`revoke all on public\\.public_voice_scenarios from ${role}`, 'i'))
+    }
+  })
+
+  it('asserts the exact privilege matrix at apply time', () => {
+    // The migration must fail loudly rather than leave a silent write vector.
+    expect(MIGRATION).toMatch(/role_table_grants/)
+    expect(MIGRATION).toMatch(/expected SELECT only/)
+    expect(MIGRATION).toMatch(/expected none/)
+  })
+
+  it('grants no write privilege to any public role, on any object', () => {
+    const writeGrants = [...MIGRATION.matchAll(
+      /grant\s+([a-z, ]*?(insert|update|delete|truncate|references|trigger)[a-z, ]*?)\s+on/gi
+    )]
+    expect(writeGrants.map(m => m[0])).toEqual([])
+  })
+
   it('weakens no RLS policy and drops nothing', () => {
     expect(MIGRATION).not.toMatch(/drop policy|create policy|alter policy/i)
     expect(MIGRATION).not.toMatch(/using\s*\(\s*true\s*\)/i)

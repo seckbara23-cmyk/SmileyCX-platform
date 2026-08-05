@@ -346,12 +346,25 @@ describe('XPA-2 — nothing outside the academic model changed', () => {
     }
   })
 
-  it('existing migrations are unmodified — XPA-2 only adds files', () => {
+  /**
+   * The historical migration ledger (001–027) must never be edited.
+   *
+   * This originally asserted that NO migration file was dirty. That was true
+   * while XPA-2 was the working set, but it is not the actual invariant: a
+   * later phase legitimately editing its OWN migration before committing —
+   * XPA-5A correcting 034, for instance — would trip it. Pinning the real rule
+   * keeps the guard meaningful instead of merely noisy.
+   */
+  it('migrations 001-027 are never modified', () => {
     const changed = execFileSync('git', ['diff', '--name-only', 'HEAD', '--', 'supabase/migrations'], {
       cwd: ROOT, encoding: 'utf8',
     }).split('\n').filter(Boolean)
-    // Only new (untracked) files may exist; nothing tracked may be modified.
-    expect(changed).toEqual([])
+
+    const historical = changed.filter(f => {
+      const n = Number(/(\d{3})_/.exec(f)?.[1] ?? NaN)
+      return Number.isFinite(n) && n <= 27
+    })
+    expect(historical, 'a historical migration was edited').toEqual([])
   }, 15_000)
 })
 

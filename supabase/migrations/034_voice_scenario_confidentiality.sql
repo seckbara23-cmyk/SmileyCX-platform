@@ -77,10 +77,35 @@ comment on view public.public_voice_scenarios is
 revoke all on public.ai_scenarios from anon;
 revoke all on public.ai_scenarios from authenticated;
 
--- Learner-safe view is readable by everyone; it contains nothing confidential.
+-- ── 3. Make the view STRICTLY READ-ONLY ──────────────────────────────────
+-- REVOKE FIRST. This is not defensive tidiness — without it the view is
+-- writable by anonymous callers.
+--
+-- Supabase configures `ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO
+-- anon, authenticated` for the public schema, so EVERY newly created table or
+-- view inherits ALL privileges (SELECT, INSERT, UPDATE, DELETE, TRUNCATE,
+-- REFERENCES, TRIGGER) the moment it is created. A bare `grant select` is
+-- therefore ADDITIVE and restricts nothing — the write privileges are already
+-- there.
+--
+-- That matters more for a view than a table. This view is
+-- `security_invoker = false` (the default, and required here so the learner
+-- projection can read past the base table's RLS). It is also auto-updatable:
+-- one FROM entry, no aggregate or DISTINCT. So writes through it execute as
+-- the VIEW OWNER and BYPASS the base table's RLS entirely.
+--
+-- Verified against production before this correction: an anonymous caller
+-- could UPDATE and DELETE through the view, and INSERT reached foreign-key
+-- validation (23503) rather than being refused on permissions. Read-only was
+-- assumed; it was never enforced.
+revoke all on public.public_voice_scenarios from public;
+revoke all on public.public_voice_scenarios from anon;
+revoke all on public.public_voice_scenarios from authenticated;
+
+-- Now grant exactly one privilege, and only to the roles that need it.
 grant select on public.public_voice_scenarios to anon, authenticated;
 
--- ── 3. Verification ──────────────────────────────────────────────────────
+-- ── 4. Verification ──────────────────────────────────────────────────────
 do $$
 declare
   leaked   text;
@@ -109,10 +134,50 @@ begin
   raise notice 'XPA-5A: learner-safe view exposes % published scenario(s), 0 confidential columns', n_view;
 end $$;
 
+-- ── 5. Assert the EXACT privilege matrix ─────────────────────────────────
+-- The intended matrix, and nothing else:
+--   ai_scenarios            anon: none        authenticated: none
+--   public_voice_scenarios  anon: SELECT      authenticated: SELECT
+--
+-- Asserted here rather than trusted, because the failure mode is silent: a
+-- default-privilege grant leaves the object looking correct while quietly
+-- carrying write access.
+do $$
+declare
+  base_privs text;
+  view_privs text;
+begin
+  select string_agg(distinct privilege_type, ', ' order by privilege_type)
+    into base_privs
+  from information_schema.role_table_grants
+  where table_schema = 'public'
+    and table_name = 'ai_scenarios'
+    and grantee in ('anon', 'authenticated');
+
+  if base_privs is not null then
+    raise exception 'ai_scenarios still grants [%] to anon/authenticated — expected none', base_privs;
+  end if;
+
+  select string_agg(distinct privilege_type, ', ' order by privilege_type)
+    into view_privs
+  from information_schema.role_table_grants
+  where table_schema = 'public'
+    and table_name = 'public_voice_scenarios'
+    and grantee in ('anon', 'authenticated');
+
+  if view_privs is distinct from 'SELECT' then
+    raise exception 'public_voice_scenarios grants [%] to anon/authenticated — expected SELECT only',
+      coalesce(view_privs, 'none');
+  end if;
+
+  raise notice 'XPA-5A: privilege matrix verified — base: none, view: SELECT only';
+end $$;
+
 -- ============================================================
 -- ROLLBACK (manual):
 --   drop view if exists public.public_voice_scenarios;
 --   grant select on public.ai_scenarios to anon, authenticated;
--- Note the rollback RESTORES the exposure; it exists for completeness only.
+-- Note the rollback RESTORES BOTH exposures (confidential columns AND the
+-- writable-view vector). It exists for completeness only and should not be run.
 -- No session, turn, feedback or score row is affected either way.
 -- ============================================================
