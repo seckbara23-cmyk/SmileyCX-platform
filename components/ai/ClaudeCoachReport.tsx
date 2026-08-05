@@ -11,16 +11,19 @@ interface Props {
   onRetry: () => void
 }
 
-function scoreColor(s: number): string {
-  if (s >= 7) return 'text-success'
-  if (s >= 5) return 'text-amber-300'
-  return 'text-red-300'
-}
-function scoreBar(s: number): string {
-  if (s >= 7) return 'bg-success'
-  if (s >= 5) return 'bg-amber-400'
-  return 'bg-red-400'
-}
+/**
+ * XPA-5A: score-to-colour and score-to-bar helpers were removed.
+ *
+ * The Voice Training specification is explicit that the bot "does not score the
+ * learner's performance out of 10", and management ratified qualitative-only
+ * feedback. Colouring or sizing anything by score reintroduces the same ranking
+ * signal in a different costume, so the helpers are gone rather than repurposed
+ * — there is nothing left to accidentally call.
+ *
+ * `overall_score` and per-competency `score` still exist in the stored report
+ * and remain available to instructor reporting. They are simply never rendered
+ * to the learner.
+ */
 
 const ANNOTATION_STYLE = {
   positive:    { border: 'border-success/30',    bg: 'bg-success/[0.08]',    Icon: ThumbsUp,      icon: 'text-success' },
@@ -45,29 +48,25 @@ export default function ClaudeCoachReport({ report, turns, personaName, onRetry 
         <p className="text-sm font-semibold">Analyse IA de votre coach</p>
       </div>
 
-      {/* Overall + summary */}
-      <div className="flex items-start gap-4 px-4 py-3.5 rounded-xl bg-white/[0.03] border border-white/10">
-        <span className={`text-3xl font-extrabold tabular-nums shrink-0 ${scoreColor(report.overall_score)}`}>
-          {report.overall_score}<span className="text-base text-white/40 font-semibold">/10</span>
-        </span>
+      {/* Summary — qualitative only. The numeric "N/10" that stood here was
+          removed in XPA-5A: this exercise trains posture and listening, and a
+          grade turns practice into assessment. */}
+      <div className="px-4 py-3.5 rounded-xl bg-white/[0.03] border border-white/10">
         <p className="text-sm text-white/75 leading-relaxed">{report.summary}</p>
       </div>
 
-      {/* Competency scores + comments */}
-      {report.competencies.length > 0 && (
+      {/* Per-competency observations.
+          The score bar and number are gone; the coach's COMMENT is the
+          feedback. A competency with no comment has nothing to say to the
+          learner and is omitted rather than shown as an empty row. */}
+      {report.competencies.some(c => c.comment) && (
         <div>
-          <p className="text-[11px] font-bold text-white/40 uppercase tracking-widest mb-2.5">Compétences</p>
+          <p className="text-[11px] font-bold text-white/40 uppercase tracking-widest mb-2.5">Observations</p>
           <div className="flex flex-col gap-3">
-            {report.competencies.map(c => (
-              <div key={c.key}>
-                <div className="flex items-center gap-3">
-                  <span className="w-44 shrink-0 text-[13px] text-white/75 truncate">{c.key}</span>
-                  <div className="flex-1 h-2 bg-white/[0.08] rounded-full overflow-hidden">
-                    <div className={`h-full rounded-full ${scoreBar(c.score)}`} style={{ width: `${c.score * 10}%` }} />
-                  </div>
-                  <span className={`w-8 text-right text-[13px] font-bold tabular-nums ${scoreColor(c.score)}`}>{c.score}</span>
-                </div>
-                {c.comment && <p className="text-xs text-white/50 mt-1 ml-0 leading-relaxed">{c.comment}</p>}
+            {report.competencies.filter(c => c.comment).map(c => (
+              <div key={c.key} className="px-3.5 py-3 rounded-lg bg-white/[0.03] border border-white/10">
+                <p className="text-[13px] text-white/75 mb-1">{c.key}</p>
+                <p className="text-xs text-white/50 leading-relaxed">{c.comment}</p>
               </div>
             ))}
           </div>

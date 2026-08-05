@@ -142,16 +142,22 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
   if (!Uuid.safeParse(lessonId).success) return null
 
   try {
+    // XPA-5A: reads the LEARNER-SAFE VIEW, not the base table.
+    //
+    // The base table is revoked from anon/authenticated in migration 034, so
+    // this must not query it. More importantly the view is the structural
+    // guarantee: it cannot return prompt_template, agent_id or
+    // coach_prompt_overrides because it does not select them. The explicit
+    // mapping below is now a second layer, not the only one.
+    //
+    // The view already filters to published rows; the eq() below is kept as a
+    // belt-and-braces assertion of the same intent.
     const supabase = await createClient()
-    // select('*') keeps this resilient to additive columns that may not exist
-    // yet (e.g. `briefing` before migration 025). This runs server-side only:
-    // agent_id / prompt_template are read to derive `voiceAvailable` but are
-    // never returned to the browser — the mapping below is the contract.
     const { data, error } = await supabase
-      .from('ai_scenarios')
+      .from('public_voice_scenarios')
       .select('*')
       .eq('lesson_id', lessonId)
-      .eq('is_published', true)
+      .order('order_index', { ascending: true })
       .limit(1)
       .maybeSingle()
 
@@ -161,11 +167,11 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
     }
     if (!data) return null
 
-    const voiceAvailable =
-      data.provider === 'elevenlabs' &&
-      typeof data.agent_id === 'string' &&
-      data.agent_id.trim() !== '' &&
-      !!process.env.ELEVENLABS_API_KEY
+    // XPA-5A: the view exposes `voice_configured` — a boolean derived in the
+    // database from provider + agent_id — so the agent id itself never has to
+    // travel, not even inside this server process. The API-key check stays
+    // here because the database cannot see it.
+    const voiceAvailable = data.voice_configured === true && !!process.env.ELEVENLABS_API_KEY
 
     return {
       id:             data.id,
