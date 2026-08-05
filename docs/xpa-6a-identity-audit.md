@@ -295,3 +295,91 @@ Five new tests pin both root causes and the idempotency guarantees.
 Extend `public.has_course_access()` with one `or exists (… active entitlement …)`
 arm, and the mirrored arm in `resolveCourseAccessById()`. No policy, page, layout
 or route changes. Both sites are marked `XPA-6B` in the source.
+
+---
+
+## 14c. Migration 036 — the recursion incident
+
+Migration 035 applied cleanly, was ledger-reconciled, and **passed every
+structural check**. It was still wrong.
+
+```
+anon SELECT modules         500  42P17
+anon SELECT lessons         500  42P17
+anon SELECT quizzes         500  42P17
+anon SELECT quiz_questions  500  42P17
+```
+
+`42P17` is *infinite recursion detected in policy for relation*. All four
+content tables became unreadable by **every** caller that goes through RLS —
+anonymous visitors, verified learners, learners with a legitimately ACTIVE
+enrollment, and platform admins. Only `service_role`, which bypasses RLS, could
+still read them.
+
+**Cause — two policies that query each other:**
+
+```
+lessons_visible  ->  exists (select 1 from public.modules ...)   fires modules_visible
+modules_visible  ->  exists (select 1 from public.lessons ...)   fires lessons_visible
+```
+
+The modules arm existed so a module containing a preview lesson still renders
+its sidebar. Reasonable in isolation; it closed a cycle. `quizzes` and
+`quiz_questions` query modules and lessons, so they inherited it.
+
+### Why it was not caught — two verification failures
+
+1. **Every check was structural.** Grants, column existence, policy text. None
+   *exercised* a policy. A policy can be perfectly formed and unevaluatable.
+2. **The probe scored "denied" as `status >= 400`.** A 500 from a recursion
+   error counted as a PASS for "anonymous callers are refused". **DENIED and
+   BROKEN are different results, and a check that cannot tell them apart is not
+   a security check.**
+
+### Fix
+
+Migration 036. No content policy may query another RLS-protected table; every
+cross-table lookup goes through a SECURITY DEFINER resolver
+(`course_of_module`, `course_of_lesson`, `module_has_preview_lesson`,
+`course_of_quiz`). Authorization semantics are unchanged — `has_course_access()`
+is not touched. Only *how* a policy reaches the course id changes.
+
+Migration 036 also **exercises** each policy as `anon` and `authenticated` at
+apply time via `SET ROLE`, and re-asserts that anon still sees zero protected
+rows while the catalogue stays readable. Had that check existed in 035, it would
+have failed loudly instead of succeeding into an outage.
+
+`scripts/security/verify-xpa-6a.mjs` is the standing verification, with a
+`classify()` that names DENIED / ALLOWED / **BROKEN** separately. BROKEN is
+never a pass, whichever answer was wanted.
+
+### Live impact while broken
+
+Public pages stayed up (`/`, `/courses`, `/parcours`, `/secteurs` and all six
+course detail pages returned 200) because the catalogue reads `courses`, which
+is unaffected, and HOTFIX-2's graceful degradation absorbed the curriculum
+outline error. Admin pages use the service-role client and were unaffected. No
+learner lost access they had, because there were no enrollments.
+
+---
+
+## 22. Migration ledger — 031-034 recorded as verified but unreconciled
+
+| Migration | Individually verified | Ledger |
+|---|---|---|
+| 031 public discovery projection | ✅ XPA-3 | **unreconciled** |
+| 032 quiz randomization flags | ✅ XPA-4 | **unreconciled** |
+| 033 voice practice production | ✅ XPA-5 | **unreconciled** |
+| 034 voice scenario confidentiality | ✅ XPA-5A, incl. the grant correction | **unreconciled** |
+| 035 learner identity and access | ✅ | reconciled (local == remote) |
+| 036 content policy recursion fix | ⏳ pending apply | — |
+
+Each of 031-034 was verified against production **by observed effect** — the
+projection returns rows, the randomization flags exist, the voice tables and
+policies behave as specified, the privilege matrix is exact. What is missing is
+the CLI ledger entry, not the object.
+
+**Do not repair blindly.** Reconciling them means `supabase migration repair`
+per version, after confirming object-by-object that the remote state matches the
+file — the same discipline applied to 001-027 (D-LEDGER). Recorded here as
+tracked debt.

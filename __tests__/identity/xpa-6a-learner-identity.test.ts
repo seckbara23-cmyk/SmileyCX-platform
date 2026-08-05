@@ -24,6 +24,7 @@ const ROOT = process.cwd()
 const read = (rel: string) => readFileSync(join(ROOT, rel), 'utf8')
 
 const MIGRATION_035 = 'supabase/migrations/035_learner_identity_and_access.sql'
+const MIGRATION_036 = 'supabase/migrations/036_fix_content_policy_recursion.sql'
 const VERCEL_HOST = 'smiley-cx-platform.vercel.app'
 
 /** Blank comments and strings, preserving offsets — assert on CODE, not prose. */
@@ -392,6 +393,117 @@ describe('XPA-6A course access', () => {
     expect(sqlCode).not.toMatch(/create policy "courses_visible"/)
     expect(sqlCode).not.toMatch(/revoke .* on public\.courses/i)
   })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CONTENT POLICY RECURSION — migration 036
+//
+// Migration 035 applied cleanly, passed every structural check, and left all
+// four content tables unreadable by every caller that goes through RLS
+// (42P17, infinite recursion). lessons_visible queried modules, modules_visible
+// queried lessons.
+//
+// A policy can be perfectly formed and still be unevaluatable. These tests pin
+// the structural rule that prevents it; the migration itself adds the
+// behavioural check that catches whatever the rule misses.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('XPA-6A content policies are evaluatable (migration 036)', () => {
+  const sql036 = stripSql(read(MIGRATION_036))
+  const CONTENT_TABLES = ['lessons', 'modules', 'quizzes', 'quiz_questions']
+
+  it('no content policy queries another RLS-protected content table', () => {
+    for (const table of CONTENT_TABLES) {
+      const start = sql036.indexOf(`create policy "${table}_visible"`)
+      expect(start, `${table}_visible must be redefined in 036`).toBeGreaterThan(-1)
+      const policy = sql036.slice(start, sql036.indexOf(';', start))
+
+      // Scope to the USING expression. The statement itself contains
+      // `for select`, so scanning the whole thing flags every policy.
+      const using = policy.slice(policy.indexOf('using ('))
+      expect(using.length, `${table}_visible must have a USING clause`).toBeGreaterThan(8)
+
+      // This single rule is what the outage came down to. Every cross-table
+      // lookup must go through a SECURITY DEFINER resolver instead.
+      expect(using, `${table}_visible USING must contain no subquery`).not.toMatch(/\bselect\b/i)
+      expect(using, `${table}_visible USING must contain no EXISTS`).not.toMatch(/\bexists\b/i)
+      for (const other of CONTENT_TABLES) {
+        expect(using, `${table}_visible must not read public.${other}`)
+          .not.toMatch(new RegExp(`public\\.${other}\\b`, 'i'))
+      }
+    }
+  })
+
+  it('every cross-table resolver is SECURITY DEFINER with a pinned search_path', () => {
+    for (const fn of [
+      'course_of_module', 'course_of_lesson', 'module_has_preview_lesson', 'course_of_quiz',
+    ]) {
+      const start = sql036.indexOf(`create or replace function public.${fn}`)
+      expect(start, `${fn} must exist`).toBeGreaterThan(-1)
+      const body = sql036.slice(start, sql036.indexOf('$$;', start))
+      expect(body, fn).toMatch(/security definer/i)
+      expect(body, fn).toMatch(/set search_path/i)
+      expect(body, fn).toMatch(/\bstable\b/i)
+    }
+  })
+
+  it('resolvers revoke default EXECUTE before granting it to the app roles', () => {
+    for (const fn of [
+      'course_of_module(uuid)', 'course_of_lesson(uuid)',
+      'module_has_preview_lesson(uuid)', 'course_of_quiz(uuid)',
+    ]) {
+      const r = sql036.indexOf(`revoke all on function public.${fn}`)
+      const g = sql036.indexOf(`grant execute on function public.${fn}`)
+      expect(r, `${fn} must be revoked from public`).toBeGreaterThan(-1)
+      expect(g, `${fn} must be granted to the app roles`).toBeGreaterThan(-1)
+      expect(r).toBeLessThan(g)
+    }
+  })
+
+  it('authorization semantics are unchanged — the seam itself is not touched', () => {
+    // 036 fixes HOW a policy reaches the course id, never WHO gets access.
+    expect(sql036).not.toMatch(/create or replace function public\.has_course_access/)
+    for (const table of CONTENT_TABLES) {
+      const start = sql036.indexOf(`create policy "${table}_visible"`)
+      const policy = sql036.slice(start, sql036.indexOf(';', start))
+      if (table === 'modules' || table === 'lessons') {
+        expect(policy).toMatch(/public\.has_course_access\(/)
+      } else {
+        // Assessments have no preview arm and nothing else.
+        expect(policy).toMatch(/^[\s\S]*public\.has_course_access\(public\.course_of_quiz\(/)
+        expect(policy).not.toMatch(/is_preview/)
+      }
+      expect(policy).not.toMatch(/is_free|is_published/)
+    }
+  })
+
+  /**
+   * The check migration 035 should have had. Structural assertions cannot tell
+   * "correctly denied" from "raises 42P17" — only reading the table as the real
+   * role can.
+   */
+  it('exercises every policy as anon AND authenticated at apply time', () => {
+    expect(sql036).toMatch(/set role %I|set role anon/)
+    expect(sql036).toMatch(/array\['anon', 'authenticated'\]/)
+    expect(sql036).toMatch(/select 1 from public\.%I limit 1/)
+    expect(sql036).toMatch(/raise exception 'content policy is not evaluatable as role/)
+    expect(sql036).toMatch(/reset role/)
+  })
+
+  it('re-asserts that anon still sees nothing, and discovery still works', () => {
+    expect(sql036).toMatch(/raise exception 'anonymous caller can still read protected content/)
+    expect(sql036).toMatch(/raise exception 'anonymous caller can no longer read the course catalogue/)
+  })
+
+  it('does not edit the applied migration 035', () => {
+    // 035 is applied and ledger-reconciled. Corrections go forward.
+    const changed = execFileSync(
+      'git', ['log', '--oneline', '-1', '--', MIGRATION_035],
+      { cwd: ROOT, encoding: 'utf8' },
+    )
+    expect(changed.length).toBeGreaterThan(0)
+    expect(read(MIGRATION_036)).toMatch(/forward fix/i)
+  }, 20_000)
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
