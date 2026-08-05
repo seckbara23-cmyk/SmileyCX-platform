@@ -217,6 +217,41 @@ indexes, triggers, policies), then repair only those proven complete.
 
 ---
 
+## D-GRANT — Supabase default privileges are ALL · ✅ RECORDED (XPA-5A)
+
+**Recorded 2026-08-06.** Supabase applies
+`ALTER DEFAULT PRIVILEGES ... GRANT ALL ON TABLES TO anon, authenticated` to the
+`public` schema. Every newly created table **or view** is therefore born holding
+SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES and TRIGGER.
+
+**Consequence:** a bare `GRANT SELECT` is **additive and restricts nothing**. It
+reads like a limit and is not one.
+
+**This was exploitable, not theoretical.** In XPA-5A the learner-safe view
+`public_voice_scenarios` was writable by anonymous callers: the view is
+`security_invoker = false` (required, so the projection can read past RLS) and
+auto-updatable, so writes executed as the **view owner** and bypassed the base
+table's RLS. Verified in production before correction — UPDATE and DELETE were
+allowed, and INSERT reached foreign-key validation rather than being refused.
+
+**Rule for every future view or table exposed to public roles:**
+
+```sql
+REVOKE ALL ON public.<object> FROM PUBLIC, anon, authenticated;
+GRANT SELECT ON public.<object> TO anon, authenticated;
+```
+
+Revoke **first** — order is load-bearing. Then assert the resulting matrix via
+`information_schema.role_table_grants` in the migration itself, because the
+failure mode is silent: the object looks correct while carrying write access.
+
+**Related pattern, recorded because it recurred three times:** a statement that
+reads like a restriction but only widens — RLS `USING (true)` (XPA-2), column-blind
+RLS (XPA-5A round 1), and this. In each case the fix was to **assert the resulting
+state** rather than trust the statement.
+
+---
+
 ## Open questions raised by these decisions
 
 | # | Question | Blocks |
