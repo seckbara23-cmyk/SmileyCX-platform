@@ -358,20 +358,49 @@ describe('XPA-6B privileges and controls', () => {
    * it revoked anon's privileges and then asserted the table was readable as
    * anon. Every probe is now classified explicitly.
    */
-  it('classifies every apply-time probe explicitly', () => {
-    expect(sql).toMatch(/return 'EXPECTED_DENIAL'/)
+  it('classifies write outcomes with FOUR names, not two', () => {
+    // Attempt 2 failed by demanding 42501 and calling 55000 broken. A view that
+    // cannot be written to at all is a STRONGER guarantee than a missing grant.
+    expect(sql).toMatch(/return 'REFUSED_BY_PRIVILEGE'/)
+    expect(sql).toMatch(/return 'REFUSED_BY_VIEW'/)
     expect(sql).toMatch(/return 'ALLOWED'/)
     expect(sql).toMatch(/return 'BROKEN:'/)
     expect(sql).toMatch(/when insufficient_privilege then/)
-    expect(sql).toMatch(/anon SELECT entitlements: expected EXPECTED_DENIAL/)
-    expect(sql).toMatch(/anon write on entitlements: expected EXPECTED_DENIAL/)
-    expect(sql).toMatch(/authenticated SELECT entitlements: expected EXPECTED_DENIAL/)
-    expect(sql).toMatch(/authenticated SELECT my_course_access: expected ALLOWED/)
+    expect(sql).toMatch(/when object_not_in_prerequisite_state or feature_not_supported then/)
+  })
+
+  it('accepts both safe refusals for a write through the view', () => {
+    expect(sql).toMatch(/v not in \('REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW'\)/)
+    // ...but never ALLOWED.
+    expect(sql).toMatch(/wrote through my_course_access/)
+  })
+
+  it('proves a refused write changed nothing, rather than trusting the error', () => {
+    expect(sql).toMatch(/create or replace function public\.xpa6b_snapshot/)
+    expect(sql).toMatch(/snap_before := public\.xpa6b_snapshot\(\)/)
+    expect(sql).toMatch(/snap_after := public\.xpa6b_snapshot\(\)/)
+    expect(sql).toMatch(/snap_before is distinct from snap_after/)
+    expect(sql).toMatch(/still changed data/)
+    expect(sql).toMatch(/mutated live data/)
+  })
+
+  it('runs the write probes against LIVE data, not only an empty table', () => {
+    // On an empty table "unchanged" is trivially true and proves nothing.
+    const live = sql.indexOf('a learner wrote through my_course_access with live data')
+    const grant = sql.indexOf('an ACTIVE in-window entitlement did not grant access')
+    expect(live).toBeGreaterThan(-1)
+    expect(grant).toBeGreaterThan(-1)
+    expect(grant, 'live write probes must run after an entitlement exists').toBeLessThan(live)
   })
 
   it('never asserts that entitlements is readable as anon', () => {
     // The exact contradiction that failed the first apply.
     expect(sql).not.toMatch(/entitlements is not readable as anon/)
+  })
+
+  it('drops every apply-time helper it created', () => {
+    expect(sql).toMatch(/drop function if exists public\.xpa6b_probe/)
+    expect(sql).toMatch(/drop function if exists public\.xpa6b_snapshot/)
   })
 
   it('exercises the whole lifecycle at apply time', () => {
@@ -400,7 +429,6 @@ describe('XPA-6B privileges and controls', () => {
     expect(sql).toMatch(/XPA6B_ROLLBACK_TEST_DATA/)
     expect(sql).toMatch(/raise exception 'behavioural checks left % entitlement row/)
     expect(sql).toMatch(/raise exception 'behavioural checks left an enrollment behind'/)
-    expect(sql).toMatch(/drop function if exists public\.xpa6b_probe/)
   })
 
   it('confirms the four content policies still evaluate', () => {

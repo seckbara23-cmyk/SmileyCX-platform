@@ -81,6 +81,33 @@ function classify({ status, code, total }) {
   return total > 0 ? 'ALLOWED' : 'DENIED_EMPTY'
 }
 
+/**
+ * Classify a WRITE probe. Reads and writes fail in different ways, and a write
+ * has a second safe outcome a read does not:
+ *
+ *   REFUSED_BY_PRIVILEGE  42501           no grant — this caller may not
+ *   REFUSED_BY_VIEW       55000 / 0A000   not an updatable view — nobody can
+ *   ALLOWED               2xx             a failure for every probe here
+ *   BROKEN                anything else
+ *
+ * REFUSED_BY_VIEW is the STRONGER guarantee: `my_course_access` aggregates, so
+ * the write is rejected during query rewrite before privileges are consulted,
+ * and it stays rejected even for a role that is later over-granted.
+ *
+ * A migration attempt failed by demanding 42501 here and calling 55000 broken.
+ * Both are safe; neither is taken on trust — callers must also prove the data
+ * did not change.
+ */
+function classifyWrite({ status, code }) {
+  if (status >= 200 && status < 300) return 'ALLOWED'
+  if (code === '42501') return 'REFUSED_BY_PRIVILEGE'
+  if (code === '55000' || code === '0A000') return 'REFUSED_BY_VIEW'
+  if (status === 401 || status === 403) return 'REFUSED_BY_PRIVILEGE'
+  return `BROKEN:${status}:${code ?? '?'}`
+}
+
+const SAFE_REFUSALS = ['REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW']
+
 async function rest(path, { key = ANON, jwt = null, method = 'GET', body, count = true } = {}) {
   const headers = {
     apikey: key,
@@ -179,8 +206,9 @@ try {
     ['DELETE', { method: 'DELETE', count: false }],
   ]) {
     const r = await rest('entitlements?id=eq.00000000-0000-0000-0000-000000000000', opts)
-    record(`anon entitlements ${verb}`, `${r.status} ${r.code ?? ''}`,
-      r.status === 401 && r.code === '42501')
+    const w = classifyWrite(r)
+    record(`anon entitlements ${verb}`, `${w} (${r.status} ${r.code ?? ''})`,
+      w === 'REFUSED_BY_PRIVILEGE')
   }
 
   const viewAnon = await rest('my_course_access?select=course_id&limit=1')
@@ -270,6 +298,34 @@ try {
   record('entitled learner CANNOT read entitlements',
     `${classify(entLearner)} (${entLearner.status} ${entLearner.code ?? ''})`,
     classify(entLearner) === 'EXPECTED_DENIAL')
+
+  // ── No write through the view may alter data ─────────────────────────
+  // Both refusal shapes are safe, and the refusal is not taken on trust: each
+  // probe is bracketed by a fingerprint of the underlying row. "It errored" is
+  // not proof that nothing changed.
+  const fingerprint = async () => {
+    const r = await rest(
+      `entitlements?id=eq.${entitlementId}&select=id,status,source,starts_at,expires_at,revoked_at,revoked_reason`,
+      { key: SVC, count: false })
+    return JSON.stringify(r.json ?? null)
+  }
+
+  for (const [verb, opts] of [
+    ['INSERT', { method: 'POST', count: false, body: JSON.stringify({
+      course_id: '00000000-0000-0000-0000-000000000000', has_access: true, access_ended: false }) }],
+    ['UPDATE', { method: 'PATCH', count: false, body: JSON.stringify({ has_access: true }) }],
+    ['DELETE', { method: 'DELETE', count: false }],
+  ]) {
+    const before = await fingerprint()
+    const r = await rest('my_course_access', { jwt: learnerJwt, ...opts })
+    const w = classifyWrite(r)
+    const after = await fingerprint()
+
+    record(`learner ${verb} my_course_access refused`,
+      `${w} (${r.status} ${r.code ?? ''})`, SAFE_REFUSALS.includes(w))
+    record(`learner ${verb} left the data unchanged`,
+      before === after ? 'byte-identical' : `MUTATED: ${before} -> ${after}`, before === after)
+  }
 
   // Suspension revokes access immediately, with no job in the loop.
   await rest(`entitlements?id=eq.${entitlementId}`, {

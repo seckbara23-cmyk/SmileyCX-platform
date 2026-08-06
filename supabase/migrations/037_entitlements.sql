@@ -3,23 +3,45 @@
 --
 -- Run as a SINGLE TRANSACTION.
 --
--- ── WHY THE FIRST ATTEMPT FAILED ───────────────────────────────────────────
+-- ── TWO FAILED APPLIES, BOTH IN THE VERIFIER, NEITHER IN THE MODEL ─────────
 --
+-- Attempt 1:
 --   P0001: entitlements is not readable as anon:
 --          permission denied for table entitlements (42501)
 --
--- The migration revoked every privilege from anon — correctly — and then
--- asserted the table was READABLE as anon. Those two contracts contradict each
--- other, and the assertion was the wrong one: 42501 is the intended result.
+--   The migration revoked every privilege from anon — correctly — and then
+--   asserted the table was READABLE as anon. Two contracts in one file
+--   contradicting each other, and the wrong one was the assertion: 42501 is
+--   the intended result.
 --
--- This is the D-VERIFY mistake, made again and inverted. XPA-6A's outage came
--- from treating a BROKEN result as a denial. This treated an EXPECTED DENIAL as
--- broken. Writing the rule down was not enough; the assertion block has to
--- apply it, so §8 below now classifies every probe explicitly:
+-- Attempt 2:
+--   expected 42501, received SQLSTATE 55000:
+--          cannot delete from view "my_course_access"
 --
---   EXPECTED_DENIAL  SQLSTATE 42501            the privilege model working
---   ALLOWED          query succeeded           authorization intended here
---   BROKEN           any other SQLSTATE        never passes, whichever way
+--   The write WAS refused, for a BETTER reason than a missing privilege:
+--   `my_course_access` aggregates with GROUP BY, so it is not auto-updatable
+--   and PostgreSQL rejects the statement during rewrite, before privileges are
+--   consulted. A DELETE that cannot be planned cannot be granted either. The
+--   verifier demanded one specific SQLSTATE and so called a stronger guarantee
+--   a failure.
+--
+-- Three variants of one mistake now: XPA-6A scored BROKEN as denied, attempt 1
+-- scored an expected denial as broken, attempt 2 scored a structural refusal as
+-- broken. The fix is not "also accept 55000". It is that a probe must classify
+-- the OUTCOME — was the write refused, and did the data change? — instead of
+-- pattern-matching an error code:
+--
+--   REFUSED_BY_PRIVILEGE  42501           no grant — the caller may not
+--   REFUSED_BY_VIEW       55000 / 0A000   not updatable — nobody can
+--   ALLOWED               statement ran   a failure for any write probe here
+--   BROKEN                anything else   never passes, whichever way
+--
+-- And "it errored" is not accepted as proof: every write probe is bracketed by
+-- a content fingerprint of all entitlement rows, which must be byte-identical
+-- afterwards.
+--
+-- THE SECURITY MODEL IS UNCHANGED across all three attempts. Only the
+-- verification of it was wrong.
 --
 -- ── THE RATIFIED MODEL (Q-L) ───────────────────────────────────────────────
 --
@@ -333,8 +355,38 @@ grant select on public.my_course_access to authenticated;
 
 -- ══ 8. APPLY-TIME VERIFICATION ════════════════════════════════════════════
 --
--- Classifies every probe as EXPECTED_DENIAL / ALLOWED / BROKEN. The helper is
--- dropped at the end of this section, so it leaves nothing behind.
+-- ── WHY THIS CLASSIFIER HAS FOUR OUTCOMES, NOT THREE ──────────────────────
+--
+-- The second apply attempt failed here:
+--
+--   expected 42501, received SQLSTATE 55000: cannot delete from view
+--   "my_course_access"
+--
+-- The write WAS refused. It was refused for a BETTER reason than a missing
+-- privilege: `my_course_access` aggregates with GROUP BY, so it is not an
+-- auto-updatable view and PostgreSQL rejects the statement during rewrite,
+-- before privileges are ever consulted. A DELETE that cannot be planned cannot
+-- be granted either.
+--
+-- The classifier demanded one specific SQLSTATE and therefore called a stronger
+-- guarantee a failure. That is the third variant of the same mistake in this
+-- programme: XPA-6A scored BROKEN as denied, the first 037 attempt scored an
+-- expected denial as broken, and this scored a structural refusal as broken.
+-- The lesson is not "add 55000" — it is that a probe must classify the OUTCOME
+-- (was the write refused, and did the data change?) rather than pattern-match
+-- one error code.
+--
+--   REFUSED_BY_PRIVILEGE  42501           no grant — the caller may not
+--   REFUSED_BY_VIEW       55000 / 0A000   not updatable — nobody can
+--   ALLOWED               statement ran   a failure for any write probe here
+--   BROKEN                anything else   never passes, whichever way
+--
+-- Both refusals are safe. Neither is accepted on faith: every write probe is
+-- bracketed by a snapshot of the underlying rows (§ xpa6b_snapshot) and the
+-- data must be byte-identical afterwards. "It errored" is not proof that
+-- nothing changed.
+--
+-- Helpers are dropped at the end of this section.
 create or replace function public.xpa6b_probe(p_role text, p_sql text)
 returns text
 language plpgsql
@@ -345,67 +397,115 @@ begin
   reset role;
   return 'ALLOWED';
 exception
-  when insufficient_privilege then      -- 42501
+  when insufficient_privilege then                              -- 42501
     reset role;
-    return 'EXPECTED_DENIAL';
+    return 'REFUSED_BY_PRIVILEGE';
+  when object_not_in_prerequisite_state or feature_not_supported then  -- 55000 / 0A000
+    reset role;
+    return 'REFUSED_BY_VIEW';
   when others then
     reset role;
     return 'BROKEN:' || sqlstate || ':' || replace(sqlerrm, E'\n', ' ');
 end $$;
 
+-- Content fingerprint of every entitlement row. Bracketing a write probe with
+-- this turns "the statement errored" into "the data is provably unchanged".
+create or replace function public.xpa6b_snapshot()
+returns text
+language sql
+stable
+as $$
+  select coalesce(
+    count(*)::text || ':' || md5(string_agg(
+      id::text || '|' || status || '|' || source || '|' ||
+      coalesce(starts_at::text, '') || '|' ||
+      coalesce(expires_at::text, '') || '|' ||
+      coalesce(revoked_at::text, '') || '|' ||
+      coalesce(revoked_reason, '') || '|' ||
+      coalesce(granted_reason, ''),
+      E'\n' order by id)),
+    '0:empty')
+  from public.entitlements
+$$;
+
 do $$
 declare
-  v        text;
-  bad      text;
-  n        integer;
-  v_user   uuid;
-  v_other  uuid;
-  v_course uuid;
-  v_ent    uuid;
-  cols     text;
+  v            text;
+  bad          text;
+  cols         text;
+  n            integer;
+  v_user       uuid;
+  v_other      uuid;
+  v_course     uuid;
+  v_ent        uuid;
+  snap_before  text;
+  snap_after   text;
 begin
-  -- ── 1 & 2. anon has NO direct privilege on entitlements ────────────────
-  --    42501 is the CORRECT answer. This is the assertion the first attempt
-  --    got backwards.
-  v := public.xpa6b_probe('anon', 'select 1 from public.entitlements limit 1');
-  if v <> 'EXPECTED_DENIAL' then
-    raise exception 'anon SELECT entitlements: expected EXPECTED_DENIAL (42501), got %', v;
-  end if;
-
-  foreach bad in array array[
-    'insert into public.entitlements (user_id, course_id, source) values (gen_random_uuid(), gen_random_uuid(), ''MANUAL_ADMIN'')',
-    'update public.entitlements set status = ''ACTIVE'' where false',
-    'delete from public.entitlements where false'
-  ] loop
-    v := public.xpa6b_probe('anon', bad);
-    if v <> 'EXPECTED_DENIAL' then
-      raise exception 'anon write on entitlements: expected EXPECTED_DENIAL (42501), got % for %', v, left(bad, 40);
+  -- ── 2. No application role may reach the base table, at all ────────────
+  --    42501 for every verb: anon and authenticated hold no grant on it.
+  foreach bad in array array['anon', 'authenticated'] loop
+    v := public.xpa6b_probe(bad, 'select 1 from public.entitlements limit 1');
+    if v <> 'REFUSED_BY_PRIVILEGE' then
+      raise exception '% SELECT entitlements: expected REFUSED_BY_PRIVILEGE (42501), got %', bad, v;
     end if;
+
+    foreach cols in array array[
+      'insert into public.entitlements (user_id, course_id, source) values (gen_random_uuid(), gen_random_uuid(), ''MANUAL_ADMIN'')',
+      'update public.entitlements set status = ''ACTIVE'' where false',
+      'delete from public.entitlements where false'
+    ] loop
+      v := public.xpa6b_probe(bad, cols);
+      if v <> 'REFUSED_BY_PRIVILEGE' then
+        raise exception '% write on entitlements: expected REFUSED_BY_PRIVILEGE (42501), got % for %',
+          bad, v, left(cols, 40);
+      end if;
+    end loop;
   end loop;
 
-  -- anon must not reach the learner view either.
+  -- ── 1 & 4. The learner view: anon nothing, authenticated SELECT only ───
   v := public.xpa6b_probe('anon', 'select 1 from public.my_course_access limit 1');
-  if v <> 'EXPECTED_DENIAL' then
-    raise exception 'anon SELECT my_course_access: expected EXPECTED_DENIAL (42501), got %', v;
+  if v <> 'REFUSED_BY_PRIVILEGE' then
+    raise exception 'anon SELECT my_course_access: expected REFUSED_BY_PRIVILEGE (42501), got %', v;
   end if;
 
-  -- ── 3. An authenticated learner cannot reach the BASE table ────────────
-  v := public.xpa6b_probe('authenticated', 'select 1 from public.entitlements limit 1');
-  if v <> 'EXPECTED_DENIAL' then
-    raise exception 'authenticated SELECT entitlements: expected EXPECTED_DENIAL (42501), got %', v;
-  end if;
-
-  -- ...and the view it CAN reach is read-only.
   v := public.xpa6b_probe('authenticated', 'select 1 from public.my_course_access limit 1');
   if v <> 'ALLOWED' then
     raise exception 'authenticated SELECT my_course_access: expected ALLOWED, got %', v;
   end if;
-  v := public.xpa6b_probe('authenticated', 'delete from public.my_course_access where false');
-  if v <> 'EXPECTED_DENIAL' then
-    raise exception 'authenticated DELETE my_course_access: expected EXPECTED_DENIAL (42501), got %', v;
-  end if;
 
-  -- ── 4. The learner view leaks no provenance, timing or revocation data ──
+  -- ── 3. No write through the view can alter data ────────────────────────
+  --    Both refusal shapes are safe and BOTH are expected here in practice:
+  --    the view aggregates, so it is not auto-updatable (55000) — a stronger
+  --    guarantee than a missing grant, because it holds for every role
+  --    including one that is later granted more than it should be.
+  --
+  --    The refusal is not taken on trust: each probe is bracketed by a content
+  --    fingerprint of every entitlement row.
+  foreach bad in array array['anon', 'authenticated'] loop
+    foreach cols in array array[
+      'insert into public.my_course_access (course_id, has_access, access_ended) values (gen_random_uuid(), true, false)',
+      'update public.my_course_access set has_access = true where false',
+      'delete from public.my_course_access where false'
+    ] loop
+      snap_before := public.xpa6b_snapshot();
+      v := public.xpa6b_probe(bad, cols);
+
+      if v = 'ALLOWED' then
+        raise exception '% wrote through my_course_access — the view must never be writable: %', bad, left(cols, 40);
+      end if;
+      if v not in ('REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW') then
+        raise exception '% write on my_course_access: unsafe outcome % for %', bad, v, left(cols, 40);
+      end if;
+
+      snap_after := public.xpa6b_snapshot();
+      if snap_before is distinct from snap_after then
+        raise exception 'a refused write through my_course_access still changed data (% -> %) for %',
+          snap_before, snap_after, left(cols, 40);
+      end if;
+    end loop;
+  end loop;
+
+  -- ── 5. The learner view leaks no provenance, timing or revocation data ──
   select string_agg(column_name, ', ') into cols
   from information_schema.columns
   where table_schema = 'public' and table_name = 'my_course_access'
@@ -519,6 +619,41 @@ begin
           raise exception 'an ACTIVE in-window entitlement did not grant access';
         end if;
 
+        -- ── 3 (with real data). Writes through the view still change nothing.
+        --    The earlier round ran against an empty table, where "unchanged"
+        --    is trivially true. This round runs with a live entitlement the
+        --    learner can actually see through the view, so the fingerprint is
+        --    proving something.
+        foreach cols in array array[
+          'insert into public.my_course_access (course_id, has_access, access_ended) values (gen_random_uuid(), true, false)',
+          'update public.my_course_access set has_access = true',
+          'update public.my_course_access set access_ended = false',
+          'delete from public.my_course_access'
+        ] loop
+          snap_before := public.xpa6b_snapshot();
+          v := public.xpa6b_probe('authenticated', cols);
+
+          if v = 'ALLOWED' then
+            raise exception 'a learner wrote through my_course_access with live data: %', left(cols, 45);
+          end if;
+          if v not in ('REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW') then
+            raise exception 'unsafe outcome % writing through my_course_access: %', v, left(cols, 45);
+          end if;
+
+          snap_after := public.xpa6b_snapshot();
+          if snap_before is distinct from snap_after then
+            raise exception 'a refused write through my_course_access mutated live data (% -> %): %',
+              snap_before, snap_after, left(cols, 45);
+          end if;
+        end loop;
+
+        -- And the learner still cannot reach the base table even now that they
+        -- legitimately hold an entitlement in it.
+        v := public.xpa6b_probe('authenticated', 'select 1 from public.entitlements limit 1');
+        if v <> 'REFUSED_BY_PRIVILEGE' then
+          raise exception 'an entitled learner reached the entitlements base table: %', v;
+        end if;
+
         -- 8. Suspension -> no access.
         update public.entitlements set status = 'SUSPENDED' where id = v_ent;
         if public.has_course_access(v_course) then
@@ -609,6 +744,7 @@ begin
 end $$;
 
 drop function if exists public.xpa6b_probe(text, text);
+drop function if exists public.xpa6b_snapshot();
 
 
 -- ══ ROLLBACK ══════════════════════════════════════════════════════════════
