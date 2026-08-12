@@ -3,6 +3,7 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { CheckCircle, Clock, BookOpen, Users, Award, Play, Lock, ChevronDown, ClipboardList, Star } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
+import { learnEntryHref } from '@/lib/learn/routes'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
 import { FLAGSHIP_COURSE, COURSE_MODULES, COURSE_COPY } from '@/data/seed'
 import { FREE_ACCESS_MODE, PILOT_MODE, PLATFORM_MODE } from '@/lib/pilot'
@@ -165,7 +166,10 @@ export default async function CourseDetailPage({ params }: Props) {
     )
     const allLessonIds = allLessonPairs.map(x => x.lessonId)
     const moduleIds    = modules.map((m: any) => m.id as string)
-    const lessonHrefFallback = `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
+    // UAT-ROUTE-01: never interpolate a possibly-absent segment. `modules` is
+    // RLS-filtered, so it is empty for an unentitled learner and the old
+    // template produced "/learn/<slug>/undefined/undefined".
+    const lessonHrefFallback = learnEntryHref(slug, modules)
 
     const [{ data: lessonProgress }, { data: modQuizRaw }, { data: finalExamQ }] = await Promise.all([
       supabase.from('lesson_progress').select('lesson_id')
@@ -227,7 +231,9 @@ export default async function CourseDetailPage({ params }: Props) {
   const coverImage     = dbCourse?.cover_url      ?? meta?.image ?? null
   const introVideoUrl  = (dbCourse as Record<string, unknown> | null)?.intro_video_url as string | null ?? null
 
-  const lessonHref = `/learn/${slug}/${modules[0]?.slug}/${modules[0]?.lessons?.[0]?.slug}`
+  // UAT-ROUTE-01: resolves a real first lesson, or degrades to the public
+  // course page. It can never emit an `undefined` segment.
+  const lessonHref = learnEntryHref(slug, modules)
   const learnHref = PILOT_MODE
     ? lessonHref
     : isEnrolled

@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { Lock, ArrowRight, Mail } from 'lucide-react'
 import { resolveCourseAccess, denialMessage } from '@/lib/auth/course-access'
+import { coursePageHref } from '@/lib/learn/routes'
 
 /**
  * Course-access gate for every learning route (XPA-6A).
@@ -51,11 +52,18 @@ export default async function CourseAccessLayout({
         <p className="text-sm text-cx-gray leading-relaxed mb-6">{body}</p>
 
         <div className="flex flex-col gap-2">
+          {/*
+            UAT-ROUTE-01. This said "Voir la formation" — the same words the
+            learner clicked to arrive here, pointing back at the page they came
+            from. It read as "try again" and simply looped. The destination was
+            always correct (a public course page, never a gated lesson route);
+            only the label promised entry it cannot grant.
+          */}
           <Link
-            href={`/courses/${params.courseSlug}`}
+            href={coursePageHref(params.courseSlug)}
             className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-primary text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm"
           >
-            Voir la formation <ArrowRight className="w-4 h-4" />
+            Retour à la fiche de formation <ArrowRight className="w-4 h-4" />
           </Link>
           <Link
             href="/dashboard"

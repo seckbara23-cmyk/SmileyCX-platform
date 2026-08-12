@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { enrollForFree } from '@/app/actions/enrollment'
 import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
+import { moduleQuizHref } from '@/lib/learn/routes'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
@@ -414,7 +415,10 @@ export default function LessonPlayerPage() {
     // Quiz gate: always route through the module quiz before advancing further,
     // even when this is the very last lesson of the course.
     if (isLastLessonInModule && currentModHasQuiz && !currentModPassed) {
-      return { href: `/learn/${courseSlug}/${module?.id}/quiz`, label: 'Quiz du module' }
+      // UAT-ROUTE-01: `module` is state and can be null before resolution, so
+      // `${module?.id}` would have produced "/learn/<slug>/undefined/quiz".
+      const quizHref = moduleQuizHref(courseSlug, module)
+      if (quizHref) return { href: quizHref, label: 'Quiz du module' }
     }
     if (isLastLesson && hasFinalExam && !finalExamPassed) {
       return { href: `/learn/${courseSlug}/final-exam`, label: 'Examen final' }
