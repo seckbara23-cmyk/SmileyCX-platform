@@ -129,9 +129,32 @@ Service-role truth: 3 modules. The projection matches reality and adds nothing.
 - `verify-xpa-6d.mjs` — **22 checks, 0 failures**
 - `verify-xpa-6a.mjs` — **57 checks, 0 failures**
 
-### Deployed page
+### Deployed page — `5cd6c78`
 
-Recorded below once this commit ships.
+`GET https://www.xpclient-academy.com/courses/les-fondamentaux-de-l-experience-client`,
+anonymous:
+
+| Check | Before | After |
+|---|---|---|
+| Module counter | `0 modules` | **`3 modules complets`** |
+| Lesson counter | `0 leçons` | **`17 leçons`** |
+| Primary CTA label | `Commencer gratuitement` | **`Demander un accès`** |
+| Primary CTA href | `/courses/les-fondamentaux-…` (self-link) | **`/login?next=%2Flearn%2F…%2Fcomprendre-cx%2Fintroduction`** |
+| `Aucun compte requis` | present | **absent** |
+| `Accès sur demande · Compte requis · Activation par un administrateur` | absent | **present** |
+| occurrences of `/undefined` | 1 (pre-UAT-ROUTE-01) | **0** |
+| occurrences of `/null` | — | **0** |
+| `video_url` / `subtitle_url` in payload | — | **absent** |
+
+The CTA now carries a **genuinely resolved** lesson in its `next` parameter —
+`comprendre-cx/introduction`, real module and lesson slugs — so after sign-in the
+learner lands on a real route rather than a manufactured one. UAT-ROUTE-01's
+invariant holds throughout.
+
+**Authenticated, unentitled:** the database probe above shows the same 3 / 17
+counts (the projection is not entitlement-gated) while `resolveCourseAccess`
+denies, so the CTA renders `Demander un accès` and the access gate still refuses
+`/learn/*`. Entitlement enforcement is unchanged in both directions.
 
 ---
 
