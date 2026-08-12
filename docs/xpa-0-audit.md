@@ -172,7 +172,7 @@ All 6 SEC compositions specified (socle C1-F1+C1-F2 + complements). Coverage: SE
 |---|---|---|
 | Lesson-linked quizzes | **Supported** (constraint: exactly one of lesson/module/course id; player resolves both) | migrations 021/022; but only **1 quiz exists in the DB (3 questions)** |
 | Random quizzes | **Not supported** — no shuffle/randomization anywhere | grep across quiz actions/components: 0 hits |
-| Answers & feedback | Server-side scoring with per-question explanations | `app/actions/quiz.ts` (correct answers never sent to client) |
+| Answers & feedback | Server-side scoring with per-question explanations | `app/actions/quiz.ts` — see the XPA-6D correction below |
 | Auto progression | Present (`AutoAdvanceBanner`, next-step CTA logic) | `components/lms/`, course detail progress block |
 | Exercise completion | System built (migration 023, admin CRUD, `ExerciseBlock`) but **0 exercises exist** | DB count |
 | Lesson PDFs | `lessons.pdf_url` exists; **3 lessons have one**. The two voice-scenario PDFs (cheat-sheet on F2-M2-L5, checklist on F2-M4-L2) are **not in the repo** and not verifiably attached | migration 007; DB count |
@@ -181,6 +181,26 @@ All 6 SEC compositions specified (socle C1-F1+C1-F2 + complements). Coverage: SE
 | Learner activity | **All zero** — enrollments, progress, attempts wiped in the reset | DB counts |
 
 The engineering for the learning flow is largely done; the **assessment content layer is empty**.
+
+> **Correction to this audit (XPA-6D, 2026-08-12).** The row above originally
+> read "correct answers never sent to client". That was wrong, and the repository
+> evidence disproves it: `app/actions/quiz.ts` returns `correctAnswers`,
+> `multipleAnswerCorrect`, `dragMatchAnswers` and `explanations`, and the
+> final-exam page renders them at four sites (`submissionResult?.correctAnswers?.[q.id]`
+> and siblings). Correct answers **are** sent to the client — deliberately, and
+> only after submission, as generated feedback.
+>
+> The distinction the original line was reaching for is real and is now enforced
+> at the database boundary by migration 038: a learner may never read the
+> authoritative key from `quiz_questions`, but does receive a post-submission
+> feedback payload built server-side. Exposure of the reusable key and generation
+> of feedback are different things; only the first was ever a defect.
+>
+> One consequence is **not** closed and is recorded in
+> [xpa-6d-closure.md](xpa-6d-closure.md) as a residual risk: that payload covers
+> every question in the quiz, and retries are permitted, so a learner may submit
+> once, harvest the feedback, and retry. Narrowing it is a product decision that
+> XPA-6D deliberately did not make.
 
 ## 11. Voice-Practice Reuse Audit
 

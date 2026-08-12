@@ -2,6 +2,8 @@
 
 import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { scoreExercise, type ExerciseScore } from '@/lib/exercises/scoring'
 import { createLogger } from '@/lib/logger'
 
 const log = createLogger('actions/exercise')
@@ -13,12 +15,7 @@ const SubmitSchema = z.object({
   placements: z.record(UuidSchema, UuidSchema), // itemId → selectedCategoryId
 })
 
-export interface ExerciseSubmitResult {
-  score:       number
-  correct:     number
-  total:       number
-  itemResults: Record<string, { correct: boolean; correctCategoryId: string }>
-}
+export type ExerciseSubmitResult = ExerciseScore
 
 export async function submitExercise(
   input: { exerciseId: string; placements: Record<string, string> }
@@ -29,7 +26,14 @@ export async function submitExercise(
   const { exerciseId, placements } = parsed.data
   const supabase = await createClient()
 
-  const { data: items, error: itemsErr } = await supabase
+  // XPA-6D. The answer key is read with the SERVICE ROLE, never the caller's
+  // session. Migration 038 revoked `correct_category_id` from anon and
+  // authenticated, so this is not a convenience — a session-client read here
+  // now fails with 42501. Scoring is the trusted path; the key must not be
+  // reachable by the role that submits the answers.
+  const admin = createAdminClient()
+
+  const { data: items, error: itemsErr } = await admin
     .from('exercise_items')
     .select('id, correct_category_id')
     .eq('exercise_id', exerciseId)
@@ -39,19 +43,8 @@ export async function submitExercise(
     return { error: 'Erreur lors du chargement de l\'exercice.' }
   }
 
-  const itemResults: Record<string, { correct: boolean; correctCategoryId: string }> = {}
-  let correctCount = 0
-
-  for (const item of items) {
-    const placed    = placements[item.id]
-    const isCorrect = placed === item.correct_category_id
-    if (isCorrect) correctCount++
-    itemResults[item.id] = { correct: isCorrect, correctCategoryId: item.correct_category_id }
-  }
-
-  const total  = items.length
-  const score  = total > 0 ? Math.round((correctCount / total) * 100) : 0
-  const result: ExerciseSubmitResult = { score, correct: correctCount, total, itemResults }
+  const result: ExerciseSubmitResult = scoreExercise(items, placements)
+  const { itemResults, score } = result
 
   // Persist if authenticated (silently skipped for pilot/anon users)
   const { data: { user } } = await supabase.auth.getUser()

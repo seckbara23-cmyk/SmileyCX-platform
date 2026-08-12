@@ -282,7 +282,11 @@ export default function LessonPlayerPage() {
 
     supabase
       .from('exercises')
-      .select('id, title, instructions, exercise_categories(id, name, color, order_index), exercise_items(id, label, correct_category_id, order_index)')
+      // XPA-6D: `correct_category_id` must never be selected here. This is the
+      // BROWSER client, so anything named in this projection is shipped to the
+      // learner. Migration 038 also revokes the column, so adding it back turns
+      // this query into a 42501 rather than a silent leak.
+      .select('id, title, instructions, exercise_categories(id, name, color, order_index), exercise_items(id, label, order_index)')
       .eq('lesson_id', lesson.id)
       .eq('is_published', true)
       .order('order_index')
@@ -601,7 +605,7 @@ export default function LessonPlayerPage() {
             )}
 
             {exercises.map(ex => (
-              <ExerciseBlock key={ex.id} exercise={ex} pilotMode={PILOT_MODE} />
+              <ExerciseBlock key={ex.id} exercise={ex} />
             ))}
 
             {AI_VOICE_ENABLED && voiceScenario && (

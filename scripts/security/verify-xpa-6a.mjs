@@ -194,10 +194,15 @@ try {
   }
 
   console.log('\n── 2. correct_answer confidentiality ───────────────────────────')
+  // XPA-6D strengthened this. It used to be DENIED_EMPTY: the column was
+  // granted, and only RLS withheld the rows — so a caller who satisfied the
+  // row predicate got the key (finding B-4). Migration 038 revoked the column,
+  // so the correct answer is now EXPECTED_DENIAL — refused before RLS is even
+  // consulted. Accepting DENIED_EMPTY here again would mean the grant is back.
   const ca = await rest('quiz_questions?select=id,correct_answer&limit=5')
   record('anon quiz_questions.correct_answer',
     `${classify(ca)} (${ca.status}${ca.code ? ' ' + ca.code : ''}, ${ca.total} rows)`,
-    classify(ca) === 'DENIED_EMPTY')
+    classify(ca) === 'EXPECTED_DENIAL')
 
   console.log('\n── 3. Public discovery still available ─────────────────────────')
   const courses = await rest('courses?select=id,slug&limit=100')

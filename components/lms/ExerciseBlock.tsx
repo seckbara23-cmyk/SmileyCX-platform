@@ -11,10 +11,13 @@ export interface ExerciseCategory {
   color: string | null
 }
 
+// XPA-6D. `correct_category_id` is deliberately absent. It was here, it was
+// fetched by the browser, and correctness was compared against it client-side —
+// the answer key was in the page on every lesson render. The authoritative
+// mapping now arrives only in the scoring result, after submission.
 export interface ExerciseItem {
-  id:                  string
-  label:               string
-  correct_category_id: string
+  id:    string
+  label: string
 }
 
 export interface ExerciseData {
@@ -26,14 +29,14 @@ export interface ExerciseData {
 }
 
 interface Props {
-  exercise:  ExerciseData
-  pilotMode: boolean
+  exercise: ExerciseData
 }
 
-export default function ExerciseBlock({ exercise, pilotMode }: Props) {
+export default function ExerciseBlock({ exercise }: Props) {
   const [placements,  setPlacements]  = useState<Record<string, string>>({})
   const [submitted,   setSubmitted]   = useState(false)
   const [result,      setResult]      = useState<ExerciseSubmitResult | null>(null)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [isPending,   startTransition] = useTransition()
 
   const options: DragMatchOptions = {
@@ -43,8 +46,12 @@ export default function ExerciseBlock({ exercise, pilotMode }: Props) {
 
   const allPlaced = exercise.items.every(item => item.id in placements)
 
-  const correctPlacements: Record<string, string> = submitted
-    ? Object.fromEntries(exercise.items.map(i => [i.id, i.correct_category_id]))
+  // Derived from the SERVER's result, not from the exercise payload. Before
+  // submission `result` is null, so there is nothing here to reveal.
+  const correctPlacements: Record<string, string> = result
+    ? Object.fromEntries(
+        Object.entries(result.itemResults).map(([itemId, r]) => [itemId, r.correctCategoryId]),
+      )
     : {}
 
   function handleValidate() {
@@ -52,25 +59,16 @@ export default function ExerciseBlock({ exercise, pilotMode }: Props) {
     setSubmitted(true)
 
     startTransition(async () => {
-      // pilotMode: submit for local feedback only (no auth, skip persistence)
-      if (!pilotMode) {
-        const { result: res } = await submitExercise({
-          exerciseId: exercise.id,
-          placements,
-        })
-        if (res) setResult(res)
-      } else {
-        // Compute result client-side for pilot users
-        let correct = 0
-        const itemResults: ExerciseSubmitResult['itemResults'] = {}
-        for (const item of exercise.items) {
-          const isCorrect = placements[item.id] === item.correct_category_id
-          if (isCorrect) correct++
-          itemResults[item.id] = { correct: isCorrect, correctCategoryId: item.correct_category_id }
-        }
-        const total = exercise.items.length
-        setResult({ score: total > 0 ? Math.round((correct / total) * 100) : 0, correct, total, itemResults })
-      }
+      // Always scored server-side. The former `pilotMode` branch graded in the
+      // browser against a client-held key; the server action handles anonymous
+      // and pilot callers alike (it scores for everyone and persists only for
+      // an authenticated user), so there is no case left that needs it.
+      const { result: res, error } = await submitExercise({
+        exerciseId: exercise.id,
+        placements,
+      })
+      if (res) setResult(res)
+      else if (error) setSubmitError(error)
     })
   }
 
@@ -78,6 +76,7 @@ export default function ExerciseBlock({ exercise, pilotMode }: Props) {
     setPlacements({})
     setSubmitted(false)
     setResult(null)
+    setSubmitError(null)
   }
 
   return (
@@ -105,8 +104,16 @@ export default function ExerciseBlock({ exercise, pilotMode }: Props) {
         placements={placements}
         onPlacementsChange={setPlacements}
         submitted={submitted}
-        correctPlacements={submitted ? correctPlacements : undefined}
+        correctPlacements={result ? correctPlacements : undefined}
       />
+
+      {/* Scoring failed — say so rather than silently showing no feedback */}
+      {submitted && submitError && (
+        <div className="mt-4 px-4 py-3 rounded-xl border bg-red-500/10 border-red-500/30">
+          <p className="text-sm font-semibold text-white">{submitError}</p>
+          <p className="text-xs text-white/40 mt-0.5">Réessayez dans un instant.</p>
+        </div>
+      )}
 
       {/* Result banner */}
       {submitted && result && (
