@@ -151,11 +151,42 @@ exactly one `/learn/` href:
 matching the reported URL exactly, and confirming the trigger is an RLS-emptied
 module list rather than anything user-specific.
 
-### After
+### After — `51fb8e5` deployed
 
-Recorded in the section below once this commit is deployed — the fix cannot be
-observed in production before it ships. Local gates and both production security
-verifiers passed first.
+The fix cannot be observed in production before it ships, so local gates and both
+production security verifiers were required to pass first; CI was green on
+`51fb8e5` before this section was written.
+
+**Course page, anonymous visitor** — `GET /courses/les-fondamentaux-de-l-experience-client`
+
+| Check | Result |
+|---|---|
+| HTTP | 200 |
+| occurrences of `undefined/undefined` | **0** (was 1) |
+| `/learn/` hrefs rendered | **none** — an anonymous visitor is offered signup/checkout, not a lesson |
+| links to the public course page | 2 |
+
+**The exact reported URL, entered manually** —
+`GET /learn/les-fondamentaux-de-l-experience-client/undefined/undefined`
+
+| Check | Result |
+|---|---|
+| final HTTP | 200 after 1 redirect |
+| final URL | `/login?next=%2Flearn%2F…%2Fundefined%2Fundefined` |
+| application error / stack trace in body | **0** |
+| lesson content markers (`<video`, `video_url`, `lesson-content`) | **0** — nothing protected leaked |
+
+It fails safely: the access gate intercepts before any lesson query runs and
+redirects an unauthenticated caller to sign-in. The `next` parameter still
+carries the malformed path, which is harmless — on return the gate re-evaluates
+and either denies (unentitled) or the player's `resolveLesson` falls through to
+the first real lesson (entitled). Neither path renders an error or exposes
+content.
+
+**Entitlement enforcement unchanged.** `verify-xpa-6d.mjs` 22/22 and
+`verify-xpa-6a.mjs` 57/57 were re-run against production during this fix; an
+entitled synthetic learner still reads learner-safe content and an unentitled one
+still reads none.
 
 ---
 
