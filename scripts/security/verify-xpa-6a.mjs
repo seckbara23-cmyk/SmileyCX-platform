@@ -83,30 +83,50 @@ function classify({ status, code, total }) {
 
 /**
  * Classify a WRITE probe. Reads and writes fail in different ways, and a write
- * has a second safe outcome a read does not:
+ * has safe outcomes a read does not:
  *
  *   REFUSED_BY_PRIVILEGE  42501           no grant — this caller may not
  *   REFUSED_BY_VIEW       55000 / 0A000   not an updatable view — nobody can
+ *   REFUSED_BY_API        21000           PostgREST refused it before Postgres
  *   ALLOWED               2xx             a failure for every probe here
  *   BROKEN                anything else
  *
- * REFUSED_BY_VIEW is the STRONGER guarantee: `my_course_access` aggregates, so
+ * REFUSED_BY_VIEW is the STRONGEST guarantee: `my_course_access` aggregates, so
  * the write is rejected during query rewrite before privileges are consulted,
  * and it stays rejected even for a role that is later over-granted.
  *
- * A migration attempt failed by demanding 42501 here and calling 55000 broken.
- * Both are safe; neither is taken on trust — callers must also prove the data
- * did not change.
+ * ── WHY 21000 IS NAMED, AND WHY IT IS NOT ENOUGH ON ITS OWN ───────────────
+ *
+ * The fourth variant of the same mistake. These probes sent an UNFILTERED
+ * PATCH/DELETE, and PostgREST rejects those itself — 400 / 21000, "UPDATE
+ * requires a WHERE clause" — before the statement ever reaches Postgres. The
+ * classifier scored that BROKEN, so a correct system reported a failure.
+ *
+ * But the deeper fault was not the classification. An unfiltered probe never
+ * exercises the view at all, so the check was proving "PostgREST rejects
+ * unfiltered writes" while claiming to prove "a learner cannot write through
+ * this view". Those are different statements, and only the second is the
+ * security invariant.
+ *
+ * So 21000 is a refusal and is named as one — but every view write is now
+ * probed BOTH ways: unfiltered (the API guard) and filtered (which reaches the
+ * rewriter and must come back 55000). Measured, not assumed:
+ *
+ *   unfiltered PATCH/DELETE -> 400 21000  "requires a WHERE clause"
+ *   filtered   PATCH/DELETE -> 500 55000  "cannot update/delete view"
+ *
+ * Neither is taken on trust — callers must also prove the data did not change.
  */
 function classifyWrite({ status, code }) {
   if (status >= 200 && status < 300) return 'ALLOWED'
   if (code === '42501') return 'REFUSED_BY_PRIVILEGE'
   if (code === '55000' || code === '0A000') return 'REFUSED_BY_VIEW'
+  if (code === '21000') return 'REFUSED_BY_API'
   if (status === 401 || status === 403) return 'REFUSED_BY_PRIVILEGE'
   return `BROKEN:${status}:${code ?? '?'}`
 }
 
-const SAFE_REFUSALS = ['REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW']
+const SAFE_REFUSALS = ['REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW', 'REFUSED_BY_API']
 
 async function rest(path, { key = ANON, jwt = null, method = 'GET', body, count = true } = {}) {
   const headers = {
@@ -310,19 +330,30 @@ try {
     return JSON.stringify(r.json ?? null)
   }
 
-  for (const [verb, opts] of [
-    ['INSERT', { method: 'POST', count: false, body: JSON.stringify({
-      course_id: '00000000-0000-0000-0000-000000000000', has_access: true, access_ended: false }) }],
-    ['UPDATE', { method: 'PATCH', count: false, body: JSON.stringify({ has_access: true }) }],
-    ['DELETE', { method: 'DELETE', count: false }],
+  // Every write is probed BOTH ways. An unfiltered PATCH/DELETE is rejected by
+  // PostgREST itself (21000) and never reaches the view, so on its own it
+  // proves nothing about the view. The FILTERED probe reaches the rewriter and
+  // is the one that actually tests the invariant — it must be refused by the
+  // DATABASE, not by the API layer.
+  const DB_LEVEL_REFUSALS = ['REFUSED_BY_PRIVILEGE', 'REFUSED_BY_VIEW']
+  const F = `my_course_access?course_id=eq.${courseId}`
+
+  for (const [verb, path, method, body, mustBeDbLevel] of [
+    ['INSERT',            'my_course_access', 'POST', JSON.stringify({
+      course_id: '00000000-0000-0000-0000-000000000000', has_access: true, access_ended: false }), true],
+    ['UPDATE unfiltered', 'my_course_access', 'PATCH',  JSON.stringify({ has_access: true }), false],
+    ['DELETE unfiltered', 'my_course_access', 'DELETE', undefined, false],
+    ['UPDATE filtered',   F,                  'PATCH',  JSON.stringify({ has_access: true }), true],
+    ['DELETE filtered',   F,                  'DELETE', undefined, true],
   ]) {
     const before = await fingerprint()
-    const r = await rest('my_course_access', { jwt: learnerJwt, ...opts })
+    const r = await rest(path, { jwt: learnerJwt, method, body, count: false })
     const w = classifyWrite(r)
     const after = await fingerprint()
 
+    const ok = mustBeDbLevel ? DB_LEVEL_REFUSALS.includes(w) : SAFE_REFUSALS.includes(w)
     record(`learner ${verb} my_course_access refused`,
-      `${w} (${r.status} ${r.code ?? ''})`, SAFE_REFUSALS.includes(w))
+      `${w} (${r.status} ${r.code ?? ''})${mustBeDbLevel ? ' [database-level required]' : ''}`, ok)
     record(`learner ${verb} left the data unchanged`,
       before === after ? 'byte-identical' : `MUTATED: ${before} -> ${after}`, before === after)
   }

@@ -1,7 +1,9 @@
 # XPA-6B — Enrollments & Course Entitlements
 
-**Status:** brief only — **not implemented**. Awaiting GO.
-**Blocked on:** migration 036 applied and `verify-xpa-6a.mjs` green (see §2).
+**Status:** ✅ **CLOSED** — implemented in `fa4164a`; migration 037 applied to
+production 2026-08-12; production PASS, 57 checks, 0 failures. Closure record:
+[xpa-6b-closure.md](xpa-6b-closure.md).
+**Blocked on:** ~~migration 036 applied and `verify-xpa-6a.mjs` green (see §2)~~ — satisfied.
 **Inputs:** [XPA-6A audit](xpa-6a-identity-audit.md) · [decision register](xpa-decision-register.md) — D-ACCESS, D-GRANT
 
 ---
