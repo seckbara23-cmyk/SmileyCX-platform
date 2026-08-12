@@ -3,7 +3,8 @@ import Link from 'next/link'
 import Image from 'next/image'
 import { CheckCircle, Clock, BookOpen, Users, Award, Play, Lock, ChevronDown, ClipboardList, Star } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
-import { learnEntryHref } from '@/lib/learn/routes'
+import { learnEntryHref, coursePageHref } from '@/lib/learn/routes'
+import { resolveCourseAccess } from '@/lib/auth/course-access'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
 import { FLAGSHIP_COURSE, COURSE_MODULES, COURSE_COPY } from '@/data/seed'
 import { FREE_ACCESS_MODE, PILOT_MODE, PLATFORM_MODE } from '@/lib/pilot'
@@ -125,17 +126,42 @@ export default async function CourseDetailPage({ params }: Props) {
 
   if (!dbCourse && slug !== FLAGSHIP_COURSE.slug) notFound()
 
-  // Load modules + lessons separately so a join issue never hides the course
+  // UAT-ROUTE-02: read the PUBLIC projection, not the protected tables.
+  //
+  // This page previously loaded `modules` / `lessons` with the learner's session
+  // client. XPA-6A/6B/6D correctly hide those from anyone without an
+  // entitlement, so an anonymous visitor got zero rows and the page rendered
+  // "0 modules · 0 leçons" with no resolvable first lesson — which is what made
+  // the primary CTA inert.
+  //
+  // A syllabus is marketing copy; lesson bodies are not. Migration 039 projects
+  // exactly the former. `content`, `video_url`, `subtitle_url` and `pdf_url` are
+  // structurally absent from these views, so this cannot widen into a leak.
   if (dbCourse) {
-    const { data: dbModules } = await supabase
-      .from('modules')
-      .select('*, lessons(*)')
-      .eq('course_id', dbCourse.id)
-      .order('order_index')
+    const [{ data: pubModules }, { data: pubLessons }] = await Promise.all([
+      supabase
+        .from('public_course_modules')
+        .select('id, slug, title, order_index')
+        .eq('course_id', dbCourse.id)
+        .order('order_index'),
+      supabase
+        .from('public_course_lessons')
+        .select('id, module_id, slug, title, duration_minutes, is_preview, order_index')
+        .eq('course_id', dbCourse.id)
+        .order('order_index'),
+    ])
 
-    modules = (dbModules ?? []).map((m: any) => ({
+    const lessonsByModule = new Map<string, any[]>()
+    for (const l of pubLessons ?? []) {
+      const bucket = lessonsByModule.get(l.module_id as string) ?? []
+      bucket.push(l)
+      lessonsByModule.set(l.module_id as string, bucket)
+    }
+
+    modules = (pubModules ?? []).map((m: any) => ({
       ...m,
-      lessons: [...(m.lessons ?? [])].sort((a: any, b: any) => a.order_index - b.order_index),
+      lessons: (lessonsByModule.get(m.id as string) ?? [])
+        .sort((a: any, b: any) => a.order_index - b.order_index),
     }))
   }
 
@@ -234,15 +260,33 @@ export default async function CourseDetailPage({ params }: Props) {
   // UAT-ROUTE-01: resolves a real first lesson, or degrades to the public
   // course page. It can never emit an `undefined` segment.
   const lessonHref = learnEntryHref(slug, modules)
-  const learnHref = PILOT_MODE
-    ? lessonHref
-    : isEnrolled
-      ? (enrolledProgress?.continueUrl ?? lessonHref)
-      : PLATFORM_MODE === 'private'
-        ? '/signup'
-        : user
-          ? `/checkout?course=${dbCourse?.id ?? slug}`
-          : `/login?next=/checkout?course=${dbCourse?.id ?? slug}`
+
+  // ── UAT-ROUTE-02: the CTA must always DO something ────────────────────────
+  //
+  // Two rules, both learned from this defect:
+  //
+  //   1. It must never link to the page it is already on. When no lesson could
+  //      be resolved, `learnEntryHref` degrades to the course page — correct as
+  //      a route, useless as a CTA, and the reason the button appeared dead.
+  //   2. It must not promise entry the access gate will refuse. Membership is
+  //      decided by `resolveCourseAccess` — the same seam `(learn)/layout.tsx`
+  //      enforces — not by `enrollments`, which XPA-6B made non-authorizing and
+  //      which is empty in production.
+  const ctaAccess = await resolveCourseAccess(slug)
+
+  const accessRequestHref = !user
+    ? `/login?next=${encodeURIComponent(lessonHref)}`
+    : PLATFORM_MODE === 'private'
+      ? '/signup'
+      : `/checkout?course=${dbCourse?.id ?? slug}`
+
+  const resolvedLearnHref = ctaAccess.allowed
+    ? (enrolledProgress?.continueUrl ?? lessonHref)
+    : accessRequestHref
+
+  // Belt and braces: whatever the branches produced, a self-link is inert.
+  const learnHref =
+    resolvedLearnHref === coursePageHref(slug) ? accessRequestHref : resolvedLearnHref
 
   return (
     <div>
@@ -327,11 +371,17 @@ export default async function CourseDetailPage({ params }: Props) {
                     className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-sm"
                   >
                     <Play className="w-4 h-4" />
-                    {PILOT_MODE || FREE_ACCESS_MODE
-                      ? 'Commencer gratuitement'
-                      : PLATFORM_MODE === 'private'
-                        ? "Rejoindre la liste d'attente"
-                        : COURSE_COPY.enrollment_cta}
+                    {/* UAT-ROUTE-02: the label must match where the link goes.
+                        "Commencer gratuitement" pointing at /login is the same
+                        false promise as the access note above. A learner who
+                        actually holds access still gets an entry label. */}
+                    {ctaAccess.allowed
+                      ? (enrolledProgress?.continueUrl ? 'Reprendre la formation' : 'Commencer la formation')
+                      : PILOT_MODE || FREE_ACCESS_MODE
+                        ? 'Demander un accès'
+                        : PLATFORM_MODE === 'private'
+                          ? "Rejoindre la liste d'attente"
+                          : COURSE_COPY.enrollment_cta}
                   </Link>
                 )}
                 <a
@@ -346,7 +396,13 @@ export default async function CourseDetailPage({ params }: Props) {
               {PILOT_MODE && (
                 <p className="text-xs text-cx-gray flex items-center gap-1.5">
                   <CheckCircle className="w-3.5 h-3.5 text-success shrink-0" />
-                  Accès libre · Phase pilote · Aucun compte requis
+                  {/* UAT-ROUTE-02: this said "Aucun compte requis". It was
+                      false. resolveCourseAccess has no pilot arm, so /learn/*
+                      redirects an anonymous visitor to /login regardless of
+                      PLATFORM_MODE, and operating-mode.md records invite-only
+                      as the official mode. The page must not promise entry the
+                      gate refuses. */}
+                  Accès sur demande · Compte requis · Activation par un administrateur
                 </p>
               )}
               {FREE_ACCESS_MODE && !PILOT_MODE && (
@@ -566,8 +622,10 @@ export default async function CourseDetailPage({ params }: Props) {
           {/* Bottom CTA */}
           <div className="mt-10 bg-light rounded-2xl p-8 text-center border border-black/[0.05]">
             <p className="text-sm text-cx-gray mb-5">
+              {/* UAT-ROUTE-02: see the hero access note. Same false claim, same
+                  correction — the access gate ignores PLATFORM_MODE. */}
               {PILOT_MODE
-                ? 'Accès libre · Phase pilote · Aucun compte requis'
+                ? 'Accès sur demande · Compte requis · Activation par un administrateur'
                 : FREE_ACCESS_MODE
                 ? 'Accès gratuit · Certificat inclus · Phase pilote'
                 : PLATFORM_MODE === 'private'
@@ -587,10 +645,11 @@ export default async function CourseDetailPage({ params }: Props) {
                 className="inline-flex items-center gap-2 px-10 py-4 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
               >
                 <Play className="w-5 h-5" />
-                {PILOT_MODE
-                  ? 'Commencer maintenant'
-                  : FREE_ACCESS_MODE
-                  ? 'Commencer gratuitement'
+                {/* UAT-ROUTE-02: same correction as the hero CTA. */}
+                {ctaAccess.allowed
+                  ? (enrolledProgress?.continueUrl ? 'Reprendre la formation' : 'Commencer la formation')
+                  : PILOT_MODE || FREE_ACCESS_MODE
+                  ? 'Demander un accès'
                   : PLATFORM_MODE === 'private'
                   ? "Rejoindre la liste d'attente"
                   : COURSE_COPY.payment_cta}
