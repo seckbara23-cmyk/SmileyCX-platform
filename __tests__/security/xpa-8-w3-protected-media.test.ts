@@ -474,6 +474,50 @@ describe('XPA-8 W3 signed-URL lifetime', () => {
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
+// AUTHORITATIVE READS MUST NOT COME FROM A CACHE
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('XPA-8 W3 no authoritative read is cached', () => {
+  // Found in production during W3 verification: the media route returned 404
+  // for one lesson and 401 for every other. The difference was that this one
+  // lesson's row had been fetched minutes earlier, while video_object_path was
+  // still NULL, and Next 14's fetch Data Cache was still serving that row after
+  // migration 042 populated it.
+  //
+  // `dynamic = 'force-dynamic'` does NOT prevent this — it governs rendering,
+  // the Data Cache is a separate layer keyed on the request URL.
+
+  it('the service-role client disables the fetch cache', () => {
+    const s = stripTs(read('lib/supabase/admin.ts'))
+    expect(s).toMatch(/global:\s*\{[\s\S]{0,160}cache:\s*'no-store'/)
+  })
+
+  it('the session client disables it too — revocation must be immediate', () => {
+    const s = stripTs(read('lib/supabase/server.ts'))
+    expect(s).toMatch(/global:\s*\{[\s\S]{0,200}cache:\s*'no-store'/)
+  })
+
+  it('the reason is recorded where the next person will look', () => {
+    expect(read('lib/supabase/admin.ts')).toMatch(/Data Cache/)
+    // The sentence wraps across comment lines, so match on one line's worth.
+    expect(read('lib/supabase/server.ts')).toMatch(/revoked or expired/)
+  })
+
+  it('a failed lookup is a 503, never a 404', () => {
+    for (const r of [LESSON_ROUTE, CERT_ROUTE]) {
+      const s = stripTs(readOr(r))
+      expect(s, `${r} still destructures data without error`).toMatch(/const \{ data: \w+, error \}/)
+      expect(s).toMatch(/status: 503/)
+    }
+  })
+
+  it('rate limiting reads through the uncached client', () => {
+    // A cached read here would silently weaken the limiter.
+    expect(stripTs(read('lib/rate-limit.ts'))).toContain('createAdminClient')
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
 // NOTHING ELSE MOVED
 // ═══════════════════════════════════════════════════════════════════════════
 

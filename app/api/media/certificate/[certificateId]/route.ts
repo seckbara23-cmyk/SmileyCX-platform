@@ -48,11 +48,18 @@ export async function GET(_req: NextRequest, { params }: RouteContext) {
   }
 
   const admin = createAdminClient()
-  const { data: cert } = await admin
+  const { data: cert, error } = await admin
     .from('certificates')
     .select('id, user_id, certificate_number, pdf_object_path')
     .eq('id', certificateId)
     .maybeSingle()
+
+  // As in the lesson route: a failed query is a 503, not a 404. Reporting an
+  // outage as "not found" is how a broken lookup gets mistaken for missing data.
+  if (error) {
+    console.error('[media/certificate] lookup failed:', error.code, error.message)
+    return NextResponse.json({ error: 'Service indisponible' }, { status: 503 })
+  }
 
   if (!cert) return notFound()
 

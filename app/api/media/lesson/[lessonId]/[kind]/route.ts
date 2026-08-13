@@ -71,11 +71,20 @@ export async function GET(_req: NextRequest, { params }: RouteContext) {
   // COLUMN[kind] into the query: a template string defeats PostgREST's typed
   // parser, and building SQL identifiers from request input is a habit worth
   // not having even when the value is validated against an allowlist first.
-  const { data: lesson } = await admin
+  const { data: lesson, error } = await admin
     .from('lessons')
     .select('id, video_object_path, pdf_object_path, subtitle_object_path, modules!inner(course_id)')
     .eq('id', lessonId)
     .maybeSingle()
+
+  // An infrastructure failure is NOT "no such lesson". The first version of
+  // this handler destructured only `data`, so a failed query became a 404
+  // indistinguishable from a missing asset — which is exactly how a stale
+  // cached row hid as a content problem during W3 verification. Say which it is.
+  if (error) {
+    console.error('[media/lesson] lookup failed:', error.code, error.message)
+    return NextResponse.json({ error: 'Service indisponible' }, { status: 503 })
+  }
 
   if (!lesson) return notFound()
 
