@@ -19,6 +19,14 @@ and an untested legacy product is reachable by any authenticated user.
 
 None of the three blockers is large. All are precise.
 
+> **Update — 2026-08-13, after W1 and W2.** B-1 and B-3 are **closed**. The
+> verdict stays **NO-GO**, and the reason has shifted: B-2 is only partly
+> addressed, and two new findings (**F-1**, **F-2**) came out of W2's production
+> verifier run. **F-2 — course videos are served from public buckets with no
+> entitlement check — is now the most serious open item on the platform.**
+> `verify-xpa-6a` currently reports 52/57 for a single root cause explained
+> under F-1; the other three verifiers remain green (30/30, 22/22, 32/32).
+
 ---
 
 ## Score
@@ -27,8 +35,9 @@ None of the three blockers is large. All are precise.
 |---|---|
 | Security / access model | 🟢 **Strong** — 141 production checks, 0 failures |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
-| Course content | 🔴 **Blocker** — one course published empty; no assessments anywhere |
-| Legacy surfaces | 🔴 **Blocker** — `/app/[orgSlug]` reachable and partly broken |
+| Course content | 🔴 **Blocker** — B-2 partly addressed (C2-F2 filled), but **0 of 102 lessons have a body**; no assessments anywhere |
+| Media protection | 🔴 **New blocker (F-2)** — course video buckets are public; `has_course_access()` does not govern the file |
+| Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired; see `xpa-8-w2-legacy-org-surface.md` |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
 | Email / invitations | 🟠 **High** — sender defaults to the old domain |
 | B2B / organizations | 🟡 **Medium** — sound, but MVP-thin |
@@ -81,7 +90,51 @@ onboarding model, and it is being asked to serve as one.
 **This must be resolved before the mode can be flipped, and the mode must be
 flipped before launch.** The two are locked together.
 
-### B-2 — A published course has no content
+### F-2 — Course video media has no entitlement check ⚠️ **NEW BLOCKER** (found during W2)
+
+All three storage buckets are `public=true` (`course-videos`, `course-media`,
+`certificates`). A video URL belonging to a lesson that RLS **correctly hides**
+from anonymous callers still returns the file with **no credentials at all** —
+measured, three separate lessons, `HTTP 200 · video/mp4 · 13–16 MB`, while the
+API returns 0 rows for those same lessons.
+
+90 of 102 lessons carry a `video_url`. `has_course_access()` governs the lesson
+**row**, not the **file**. The only thing protecting paid media is that the
+bucket is not listable — the URLs are secret, not protected.
+
+This is already live in combination with F-1: the 20 anonymously-readable C2-F2
+lessons hand out their own video URLs, so that course's entire video content is
+currently downloadable by the public. `certificates` being public also warrants
+review — certificates carry learner names.
+
+Standard fix: private bucket + short-lived signed URLs minted server-side behind
+`has_course_access()`.
+
+### F-1 — C2-F2's new content is entirely flagged public preview (found during W2)
+
+C2-F2 has been filled with 20 lessons, and **all 20** carry `is_preview = true`
+— the only course on the platform with any preview lessons. Migration `001:143`
+gives the lessons policy an `OR is_preview = true` arm, so those rows and their
+4 parent modules are anonymously readable. Anon sees **exactly** the preview set
+(20 lessons, 4 modules), zero non-preview leakage; quizzes, quiz_questions,
+exercises and exercise_items still return 0 rows, so XPA-6D holds.
+
+The column defaults to `false`, so this was deliberate — but 20 of 20 is the
+blanket-preview pattern migration 035 was written to eliminate.
+
+**Consequence for CI:** `verify-xpa-6a` is now **52/57**. All five failures share
+this one root cause — the verifier hardcodes the post-035 snapshot (*preview
+count is 0*; *anon reads of `modules`/`lessons` are `DENIED_EMPTY`*) as though it
+were an invariant, which 035's own comment contradicts. **Not edited during W2**;
+recommended fix is to assert the invariant instead — *anon-visible lessons equal
+exactly the `is_preview` set, carry no body, and never include a non-preview
+row.*
+
+### B-2 — A published course has no content · 🟠 **partly addressed**
+
+C2-F2 now has 20 lessons where it had 0. **Not closed:** no lesson anywhere on
+the platform has a `content` body (**0 of 102**, measured service-role), and
+H-1's total absence of assessments is unchanged.
 
 | Course | Modules | Lessons | Issues |
 |---|---|---|---|
@@ -98,23 +151,31 @@ but it is protecting the learner from a content defect, not a routing one.
 
 Either unpublish it or fill it. Do not route around it.
 
-### B-3 — The legacy `/app/[orgSlug]` product is reachable and partly broken
+### B-3 — The legacy `/app/[orgSlug]` product is reachable · ✅ **CLOSED (W2)**
 
 - `middleware.ts` lists `/app` under `AUTH_REQUIRED` — so it is reachable by
   **any authenticated user**, not restricted to admins.
 - `app/(admin)/layout.tsx:86` links to `/app/orgs` from the admin shell.
 - `components/layout/AppSidebar.tsx` offers Dashboard / Feedback / Journeys /
   Actions.
-- Its backing tables are **partly absent**: `journeys` is deployed and empty;
-  **`feedback` and `actions` return `PGRST205` — they do not exist.** Those
-  pages cannot render.
 - It now reads `organizations`/`organization_memberships` whose policies XPA-7
   changed, and it has never been tested against them.
 
-An untested parallel organization product, reachable by any learner, half of it
-guaranteed to error. **Recommendation: guard it behind platform-admin or remove
-the routes.** Retiring is cleanest; XPA-7 already provides the organization UX
-this duplicates.
+**Correction to this audit.** It originally claimed `feedback` and `actions`
+"return `PGRST205` — they do not exist" and that the pages could not render.
+**That was wrong.** Those were table names invented for the probe from the route
+names; the pages query `journeys`, `touchpoints`, `action_plans` and
+`feedback_entries`, **all of which exist in production and are empty.** The
+pages rendered — they rendered nothing. The disposition is unaffected.
+
+**Closed by W2 (`xpa-8-w2-legacy-org-surface.md`): retired, not guarded.** All
+10 routes and 4 exclusive shell components deleted; the admin-shell link
+repointed to `/admin/organizations`; a single catch-all handler redirects by
+caller identity without ever reading the slug (no existence oracle, no open
+redirect). W2 also deleted `requireOrgMembership`, which read
+`organization_memberships` with **no `status` filter** — after XPA-7 added the
+PENDING/ACTIVE/REMOVED lifecycle, a REMOVED ex-employee would still have passed
+it. `verify-xpa-7` remains 32/32.
 
 ---
 
@@ -258,13 +319,20 @@ break-glass path (service-role SQL editor) with who holds it.
 | Wave | Content | Gate |
 |---|---|---|
 | **W1** | **B-1** — replace the source-code allowlist with a data-driven check (entitlement- or profile-based), then prove the `private` flip admits all three real accounts | BLOCKER |
-| **W2** | **B-3** — guard or retire `/app/[orgSlug]`; remove the admin-shell link | BLOCKER |
-| **W3** | **B-2** — unpublish C2-F2 or fill it; add a published-course completeness check to CI | BLOCKER |
+| ~~**W2**~~ | ~~**B-3** — guard or retire `/app/[orgSlug]`~~ · ✅ **DONE** — retired | BLOCKER |
+| **W3** | **B-2** — C2-F2 filled but every lesson body is empty; add a published-course completeness check to CI | BLOCKER |
+| **W3b** | **F-2** — private media bucket + signed URLs behind `has_course_access()`; review the public `certificates` bucket | BLOCKER |
+| **W3c** | **F-1** — rule on C2-F2's 20/20 preview flags; re-base `verify-xpa-6a` onto the invariant instead of the snapshot | BLOCKER |
 | **W4** | **H-3** confirm `EMAIL_FROM` / `RESEND_API_KEY` in Vercel and send a real invitation; **H-4** make `PLATFORM_MODE` fail closed | HIGH |
 | **W5** | **H-1** decide the assessment model and the harvest-and-retry policy together; fix the orphan quiz | HIGH |
 | **W6** | **H-2** wire the four remaining voice personas, or scope launch to Ibrahima explicitly | HIGH |
 | **W7** | **M-1/M-2** relocate the PPTX and the two PDFs; **M-4/M-5** brand tag and pilot copy | MEDIUM |
 | **W8** | **M-6** ledger reconciliation; runbook; launch UAT execution | MEDIUM |
+
+**Progress:** B-1 closed (W1), B-3 closed (W2). The remaining NO-GO set is
+**B-2, F-1 and F-2** — F-1 and F-2 were both found during W2's verifier run and
+did not exist in the original blocker list. F-2 is the most serious item now
+open on the platform: paid video content is served with no entitlement check.
 
 **W1–W3 are the NO-GO set.** With those closed and W4 confirmed, this becomes a
 **CONDITIONAL GO** — conditional on accepting H-1 (no assessments) and H-2

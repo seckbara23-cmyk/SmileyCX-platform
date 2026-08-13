@@ -83,7 +83,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         {/* Footer */}
         <div className="p-3 border-t border-white/[0.06] space-y-1">
           <Link
-            href="/app/orgs"
+            href="/admin/organizations"
             className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs text-white/40 hover:text-white/70 transition-colors"
           >
             <ExternalLink className="w-3.5 h-3.5" /> App

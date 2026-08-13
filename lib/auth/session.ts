@@ -3,7 +3,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { getOwnerSession } from '@/lib/auth/owner'
 import { redirect } from 'next/navigation'
 import type { Profile } from '@/types/cx'
-import type { OrganizationMembership, Organization } from '@/types/cx'
+import type { OrganizationMembership } from '@/types/cx'
 
 // ── Get the current authenticated user profile ────────────────────────────────
 // Redirects to /login if not authenticated
@@ -22,44 +22,19 @@ export async function requireAuth(): Promise<Profile> {
   return profile as Profile
 }
 
-// ── Get current user's org memberships ───────────────────────────────────────
-export async function getUserMemberships(userId: string): Promise<OrganizationMembership[]> {
-  const supabase = await createClient()
-  const { data } = await supabase
-    .from('organization_memberships')
-    .select('*, organization:organizations(*)')
-    .eq('user_id', userId)
-    .order('created_at', { ascending: true })
-
-  return (data ?? []) as OrganizationMembership[]
-}
-
-// ── Require org membership — redirects if not a member ───────────────────────
-export async function requireOrgMembership(
-  userId: string,
-  orgSlug: string
-): Promise<{ org: Organization; membership: OrganizationMembership }> {
-  const supabase = await createClient()
-
-  const { data: org } = await supabase
-    .from('organizations')
-    .select('*')
-    .eq('slug', orgSlug)
-    .single()
-
-  if (!org) redirect('/app/orgs')
-
-  const { data: membership } = await supabase
-    .from('organization_memberships')
-    .select('*')
-    .eq('org_id', org.id)
-    .eq('user_id', userId)
-    .single()
-
-  if (!membership) redirect('/app/orgs')
-
-  return { org: org as Organization, membership: membership as OrganizationMembership }
-}
+// ── XPA-8 W2 ─────────────────────────────────────────────────────────────
+//
+// `getUserMemberships` and `requireOrgMembership` lived here and were used
+// ONLY by the retired `/app/[orgSlug]` product. They are gone with it.
+//
+// `requireOrgMembership` is worth a note rather than a silent deletion: it
+// read `organization_memberships` with no filter on `status`. After XPA-7
+// added the PENDING/ACTIVE/REMOVED lifecycle that made it wrong — RLS lets a
+// learner read their own membership row, so a REMOVED ex-employee would still
+// have satisfied it and kept their organization access. Nothing else called
+// it, so no caller inherited the bug, and the XPA-7 helpers (`is_org_member`,
+// `has_org_role`) filter on ACTIVE in SQL. Deleting it removes the only
+// membership check on the platform that ignored the lifecycle.
 
 /**
  * Require the administration-portal owner (CX-AUTH-1).

@@ -293,7 +293,10 @@ describe('XPA-7 role model', () => {
 
   it('an org admin never becomes a platform admin', () => {
     expect(ORG_ACTIONS, 'an action grants platform_role').not.toMatch(/platform_role/)
-    const seam = read('lib/auth/session.ts')
+    // Stripped, like every other source in this file. The check is about what
+    // the admin path CALLS; prose that names a helper calls nothing. (XPA-8 W2
+    // added a comment here explaining why `requireOrgMembership` was deleted.)
+    const seam = stripTs(read('lib/auth/session.ts'))
     expect(seam, 'platform admin now consults org membership').not.toMatch(/has_org_role|is_org_member/)
   })
 
