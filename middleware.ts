@@ -1,7 +1,7 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 import { PLATFORM_MODE } from '@/lib/pilot'
-import { isPrivateMode, isAllowedPrivateUser } from '@/lib/access-control'
+import { isPrivateMode, isAdmitted } from '@/lib/access-control'
 import { isAdminHost, resolveHost, isAdminHostPublicPath } from '@/lib/hosts'
 import { isOwnerEmail } from '@/lib/auth/owner-email'
 import { publicUrl } from '@/lib/brand'
@@ -48,7 +48,58 @@ const PRIVATE_MODE_EXEMPT = [
   '/admin',           // admin has its own scx_admin cookie gate
   '/api',             // API routes
   '/auth',            // Supabase auth callbacks (e.g. /auth/callback)
+
+  // ── XPA-8 W1: the public marketing site stays public ──────────────────
+  //
+  // `operating-mode.md` ratifies "Public marketing pages | Publicly
+  // available", but this list did not exempt any of them, so enabling private
+  // mode would have put the entire vitrine — home, catalogue, course detail,
+  // contact, legal — behind a login. Invite-only describes who may USE the
+  // platform, not who may READ about it, and a B2B prospect cannot request
+  // access to a site they cannot see.
+  //
+  // Migration 039's public projections already make the catalogue safe to serve
+  // anonymously: `/courses/…` reads `public_course_modules` /
+  // `public_course_lessons`, which structurally cannot return lesson bodies.
+  // Protected learning content lives under `/learn/…`, which is NOT exempt.
+  '/courses',
+  '/parcours',
+  '/secteurs',
+  '/about',
+  '/contact',
+  '/terms',
+  '/privacy',
 ]
+
+/** Exact-match exemptions. `/` would prefix-match everything. */
+const PRIVATE_MODE_EXEMPT_EXACT = ['/']
+
+/**
+ * Read the caller's own profile and decide admission.
+ *
+ * `profiles_select_own` permits a learner to read their own row, so the
+ * session-scoped client is sufficient and no service-role key touches the edge.
+ * A read failure resolves to NOT admitted — an admission check that cannot
+ * reach its evidence must refuse, not wave through.
+ *
+ * Runs only on non-exempt paths in private mode, so the public catalogue and
+ * the auth flow cost nothing.
+ */
+async function isAdmittedUser(
+  supabase: ReturnType<typeof createServerClient>,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from('profiles')
+      .select('account_status, platform_role')
+      .eq('id', userId)
+      .maybeSingle()
+    return isAdmitted(data)
+  } catch {
+    return false
+  }
+}
 
 /**
  * Security headers applied to every response.
@@ -238,16 +289,22 @@ export async function middleware(request: NextRequest) {
   // paths in PRIVATE_MODE_EXEMPT bypass this check; everything else requires
   // an authenticated, allowlisted session.
   if (isPrivateMode) {
-    const isExempt = PRIVATE_MODE_EXEMPT.some(
-      p => pathname === p || pathname.startsWith(p + '/')
-    )
+    const isExempt =
+      PRIVATE_MODE_EXEMPT_EXACT.includes(pathname) ||
+      PRIVATE_MODE_EXEMPT.some(p => pathname === p || pathname.startsWith(p + '/'))
+
     if (!isExempt) {
       if (!user) {
         const loginUrl = new URL('/login', request.url)
         loginUrl.searchParams.set('next', pathname + request.nextUrl.search)
         return applySecurityHeaders(NextResponse.redirect(loginUrl))
       }
-      if (!isAllowedPrivateUser(user.email ?? '')) {
+      // XPA-8 W1: admission is a property of the ACCOUNT, not of a list in this
+      // repository. `profiles.account_status` already carried this meaning and
+      // is already pinned against self-modification, so an administrator
+      // suspends an account and the platform refuses it on the next request —
+      // no redeploy, no source change, no email hardcoded anywhere.
+      if (!(await isAdmittedUser(supabase, user.id))) {
         return applySecurityHeaders(
           NextResponse.redirect(new URL('/access-restricted', request.url))
         )
@@ -270,9 +327,9 @@ export async function middleware(request: NextRequest) {
   // ── Learner auth pages ─────────────────────────────────────────────────
   if (LEARNER_AUTH_PAGES.some(p => pathname === p)) {
     if (user) {
-      // /login is exempt from the site-wide gate, so handle non-allowlisted
-      // authenticated users explicitly here to avoid them reaching /dashboard.
-      if (isPrivateMode && !isAllowedPrivateUser(user.email ?? '')) {
+      // /login is exempt from the site-wide gate, so a non-admitted account is
+      // caught here rather than being bounced onward to /dashboard.
+      if (isPrivateMode && !(await isAdmittedUser(supabase, user.id))) {
         return applySecurityHeaders(
           NextResponse.redirect(new URL('/access-restricted', request.url))
         )
