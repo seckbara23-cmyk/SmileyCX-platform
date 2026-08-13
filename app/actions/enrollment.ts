@@ -19,8 +19,93 @@ import { sendEnrollmentEmail } from '@/lib/email'
 import { createLogger } from '@/lib/logger'
 import { FREE_ACCESS_MODE } from '@/lib/pilot'
 import { PUBLIC_SITE_URL } from '@/lib/brand'
+import { resolveCourseAccessById } from '@/lib/auth/course-access'
+import { logAuditEvent } from '@/lib/audit/log'
 
 const log = createLogger('actions/enrollment')
+
+/**
+ * UAT-ACCESS-01 — initialise the ACADEMIC record for an already-authorized learner.
+ *
+ * ── WHY THIS IS NOT `enrollForFree` ───────────────────────────────────────
+ *
+ * `enrollForFree` answers "may this person help themselves to a course?" and
+ * the ratified answer is no — it is gated on SELF_ENROLLMENT_OPEN and
+ * FREE_ACCESS_MODE, both closed. This answers a different question: "this
+ * learner is ALREADY commercially authorized; do they have somewhere to
+ * accumulate progress?"
+ *
+ * The distinction is the whole of UAT-ACCESS-01:
+ *
+ *   ENTITLEMENT  may this learner access this course?   Commercial. Authority.
+ *   ENROLLMENT   what did this learner actually do?     Academic. Never authority.
+ *
+ * So the authority check here is `resolveCourseAccessById` — the same seam
+ * `(learn)/[courseSlug]/layout.tsx` enforces and the same one mirrored by
+ * `has_course_access()` in SQL. PLATFORM_MODE, FREE_ACCESS_MODE and
+ * SELF_ENROLLMENT_OPEN are deliberately not consulted: none of them is an
+ * access authority, and this must behave identically in pilot and invite-only.
+ *
+ * Creating the row grants nothing. `has_course_access()` does not read
+ * `enrollments` (Q-L, migration 037), so a caller who somehow reached this
+ * function without an entitlement is refused above and, even if a row existed,
+ * it would open no content.
+ */
+export async function ensureAcademicEnrollment(
+  courseId: string,
+): Promise<{ ok: boolean; created?: boolean; error?: string }> {
+  const parsed = EnrollSchema.safeParse({ courseId })
+  if (!parsed.success) return { ok: false, error: 'invalid_course_id' }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { ok: false, error: 'not_authenticated' }
+
+  // THE authority check. Entitlement, and nothing else.
+  const access = await resolveCourseAccessById(parsed.data.courseId)
+  if (!access.allowed) {
+    return { ok: false, error: access.reason ?? 'not_entitled' }
+  }
+
+  const admin = createAdminClient()
+
+  const { data: existing } = await admin
+    .from('enrollments')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('course_id', parsed.data.courseId)
+    .maybeSingle()
+
+  if (existing) return { ok: true, created: false }
+
+  // Idempotent by the same partial-unique rule `ensureEnrollment` relies on:
+  // a concurrent second call cannot produce a duplicate.
+  const { error } = await admin.from('enrollments').upsert(
+    { user_id: user.id, course_id: parsed.data.courseId, payment_id: null, status: 'active' },
+    { onConflict: 'user_id,course_id', ignoreDuplicates: true },
+  )
+
+  if (error) {
+    // Non-fatal by design: the entitlement is what grants entry. A missing
+    // academic row costs progress tracking, not access.
+    log.error({ err: error.message, userId: user.id, courseId: parsed.data.courseId },
+      'Failed to initialise academic enrollment')
+    return { ok: false, error: 'enrollment_failed' }
+  }
+
+  await logAuditEvent({
+    eventType:     'enrollment.initialized',
+    actorType:     'self',
+    actorId:       user.id,
+    actorEmail:    user.email ?? null,
+    subjectUserId: user.id,
+    method:        'lesson_player',
+    outcome:       'success',
+    metadata: { courseId: parsed.data.courseId, basis: 'entitlement', authorizing: false },
+  })
+
+  return { ok: true, created: true }
+}
 
 /**
  * XPA-6A — free self-enrollment is CLOSED unless explicitly re-opened.

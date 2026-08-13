@@ -38,6 +38,12 @@ export type AuditEventType =
   | 'entitlement.revoked'
   | 'entitlement.cancelled'
   | 'entitlement.expired'
+  // UAT-ACCESS-01 — the ACADEMIC record being initialised for a learner the
+  // entitlement seam has already authorized. Deliberately named apart from the
+  // entitlement events above: this one changes NOTHING about who can read a
+  // course, and an investigator reading the log should be able to tell that at
+  // a glance rather than by checking what `enrollments` means this month.
+  | 'enrollment.initialized'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

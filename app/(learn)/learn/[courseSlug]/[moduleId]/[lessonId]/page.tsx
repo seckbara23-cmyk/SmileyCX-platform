@@ -4,8 +4,10 @@ import Link from 'next/link'
 import { List, Loader2, Captions } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
-import { enrollForFree } from '@/app/actions/enrollment'
-import { FREE_ACCESS_MODE, PILOT_MODE } from '@/lib/pilot'
+import { ensureAcademicEnrollment } from '@/app/actions/enrollment'
+// UAT-ACCESS-01: FREE_ACCESS_MODE is deliberately no longer imported here.
+// It was an access authority in this file and must never be one again.
+import { PILOT_MODE } from '@/lib/pilot'
 import { moduleQuizHref } from '@/lib/learn/routes'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
@@ -150,18 +152,31 @@ export default function LessonPlayerPage() {
     // fetches run; courseIdRef is also needed by updateProgress (DB path).
     loadProgressFromCache(course.id)
 
-    const { data: enrollment } = await supabase
-      .from('enrollments').select('id, status')
-      .eq('user_id', uid).eq('course_id', course.id).eq('status', 'active').single()
+    // ── UAT-ACCESS-01: the ENTITLEMENT decides, not the enrollment ──────────
+    //
+    // This used to read `enrollments` and redirect when none existed, falling
+    // back to `enrollForFree` under FREE_ACCESS_MODE. Two things were wrong:
+    // an enrollment is academic state and never an authority (Q-L), and the
+    // fallback made a mode flag decide access. A learner holding a valid
+    // entitlement was bounced out of a player the layout had already admitted
+    // them to — two gates disagreeing, with the wrong one winning.
+    //
+    // `my_course_access` is the learner-safe projection of the same seam the
+    // layout enforces server-side and `has_course_access()` enforces in SQL.
+    // It is the browser-readable half, and it is what the dashboard already uses.
+    const { data: access } = await supabase
+      .from('my_course_access')
+      .select('has_access')
+      .eq('course_id', course.id)
+      .maybeSingle()
 
-    if (!enrollment) {
-      if (FREE_ACCESS_MODE) {
-        const { error } = await enrollForFree(course.id)
-        if (error) { router.push(`/courses/${courseSlug}`); return }
-      } else {
-        router.push(`/courses/${courseSlug}`); return
-      }
-    }
+    if (!access?.has_access) { router.push(`/courses/${courseSlug}`); return }
+
+    // Authorized. NOW give them somewhere to accumulate progress. This runs
+    // after the decision, never as part of it, and its failure cannot deny
+    // entry — `lesson_progress` is keyed on (user_id, lesson_id) and does not
+    // reference an enrollment.
+    void ensureAcademicEnrollment(course.id)
 
     const { data: mods } = await supabase
       .from('modules')
@@ -184,12 +199,20 @@ export default function LessonPlayerPage() {
   }, [supabase, updateProgress])
 
   useEffect(() => {
-    if (PILOT_MODE) {
-      loadCourseAnon().finally(() => setLoading(false))
-      return
-    }
+    // UAT-ACCESS-01 — operating-mode independence.
+    //
+    // PILOT_MODE used to short-circuit here, so an authenticated learner never
+    // reached `loadCourse` and their access was never evaluated against the
+    // entitlement seam at all. A signed-in learner now always takes the
+    // authorized path, in every mode; the anonymous branch survives only for
+    // pilot browsing, and the layout redirects unauthenticated callers to
+    // /login before this component renders anyway.
     supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user) { router.push('/login'); return }
+      if (!user) {
+        if (PILOT_MODE) { loadCourseAnon().finally(() => setLoading(false)); return }
+        router.push('/login')
+        return
+      }
       setUserId(user.id)
       Promise.all([loadCourse(user.id), loadUserProgress(user.id)]).finally(() => setLoading(false))
     })

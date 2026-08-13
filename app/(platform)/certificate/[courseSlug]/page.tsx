@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
+import { resolveCourseAccess } from '@/lib/auth/course-access'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = { title: 'Certificat de réussite' }
@@ -22,16 +23,21 @@ export default async function CertificatePage({ params }: Props) {
 
   if (!course) redirect('/dashboard')
 
-  // Verify the user is enrolled
-  const { data: enrollment } = await supabase
-    .from('enrollments')
-    .select('id')
-    .eq('user_id', user.id)
-    .eq('course_id', course.id)
-    .eq('status', 'active')
-    .single()
-
-  if (!enrollment) redirect(`/courses/${courseSlug}`)
+  // ── UAT-ACCESS-01: two separate questions, two separate answers ───────────
+  //
+  // 1. ACCESS AUTHORITY — may this learner have this course at all?
+  //    Decided by the entitlement seam. This page used `enrollments` for it,
+  //    which meant a genuinely entitled, genuinely finished learner could be
+  //    turned away because an academic row was missing.
+  //
+  // 2. COMPLETION ELIGIBILITY — did they actually earn it?
+  //    Decided by lesson_progress and quiz_attempts, below. An entitlement is
+  //    permission to study, never evidence of having studied, so holding one
+  //    must not by itself produce a certificate.
+  //
+  // Collapsing the two is what made the gate wrong in both directions.
+  const access = await resolveCourseAccess(courseSlug)
+  if (!access.allowed) redirect(`/courses/${courseSlug}`)
 
   // Verify actual completion — all lessons must be completed
   const { data: modules } = await supabase

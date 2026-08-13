@@ -357,9 +357,17 @@ describe('XPA-6A course access', () => {
     expect(enrol).toMatch(/NEXT_PUBLIC_ALLOW_FREE_SELF_ENROLLMENT\s*===\s*'true'/)
     const code = stripComments(enrol)
     // The deny check must be the first thing the function does.
-    const guard = code.indexOf('if (!SELF_ENROLLMENT_OPEN)')
-    const insert = code.indexOf('.upsert(')
-    expect(guard).toBeGreaterThan(-1)
+    //
+    // Scoped to enrollForFree's own body. This previously searched the whole
+    // file, which was a proxy that held only while enrollForFree owned the
+    // first `.upsert(` in it. UAT-ACCESS-01 added `ensureAcademicEnrollment`
+    // above it — a different function, with its own entitlement guard — and the
+    // proxy broke while the guarantee did not. Assert the guarantee.
+    const body = code.slice(code.indexOf('export async function enrollForFree'))
+    const guard = body.indexOf('if (!SELF_ENROLLMENT_OPEN)')
+    const insert = body.indexOf('.upsert(')
+    expect(guard, 'enrollForFree lost its SELF_ENROLLMENT_OPEN guard').toBeGreaterThan(-1)
+    expect(insert, 'enrollForFree no longer writes — has it been renamed?').toBeGreaterThan(-1)
     expect(guard).toBeLessThan(insert)
   })
 
