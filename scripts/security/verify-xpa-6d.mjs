@@ -332,17 +332,33 @@ try {
     console.log(`  probe learner deleted:      ${(await adm(`/admin/users/${learnerId}`, 'DELETE')).status}`)
   }
 
-  const exLeft = await rest('exercises?select=id', { key: SVC })
-  const entLeft = await rest('entitlements?select=id', { key: SVC })
+  // Cleanliness means THIS RUN's fixtures are gone — not that the tables are
+  // empty. The original check asserted the latter, which was a valid proxy only
+  // while production held zero real rows. The first genuine entitlement made it
+  // report FAIL on a run where all 22 security checks passed, and a verifier
+  // that is permanently red is a verifier nobody reads. So each fixture is now
+  // looked up by the id this run created.
+  const gone = async (path, id) =>
+    id ? (await rest(`${path}?id=eq.${id}&select=id`, { key: SVC })).total === 0 : true
+
+  const leftovers = []
+  if (!(await gone('exercises', exerciseId)))        leftovers.push(`exercise ${exerciseId}`)
+  if (!(await gone('entitlements', entitlementId)))  leftovers.push(`entitlement ${entitlementId}`)
+  if (!(await gone('enrollments', enrollmentId)))    leftovers.push(`enrollment ${enrollmentId}`)
+  for (const id of itemIds)     if (!(await gone('exercise_items', id)))      leftovers.push(`item ${id}`)
+  for (const id of categoryIds) if (!(await gone('exercise_categories', id))) leftovers.push(`category ${id}`)
+
   const users = await (await adm('/admin/users?per_page=200', 'GET')).json()
   const strays = (users.users ?? []).filter(u => /xpa6d-verify/.test(u.email ?? ''))
-  const enrolLeft = await rest('enrollments?select=id', { key: SVC })
-  console.log(`  enrollments remaining:      ${enrolLeft.total}`)
-  console.log(`  exercises remaining:        ${exLeft.total}`)
-  console.log(`  entitlements remaining:     ${entLeft.total}`)
-  console.log(`  leftover probe accounts:    ${strays.length}`)
 
-  const dirty = exLeft.total !== 0 || entLeft.total !== 0 || strays.length !== 0 || enrolLeft.total !== 0
+  const exLeft = await rest('exercises?select=id', { key: SVC })
+  const entLeft = await rest('entitlements?select=id', { key: SVC })
+  const enrolLeft = await rest('enrollments?select=id', { key: SVC })
+  console.log(`  this run's fixtures left:   ${leftovers.length}${leftovers.length ? ' — ' + leftovers.join(', ') : ''}`)
+  console.log(`  leftover probe accounts:    ${strays.length}`)
+  console.log(`  (real rows, informational)  entitlements=${entLeft.total} enrollments=${enrolLeft.total} exercises=${exLeft.total}`)
+
+  const dirty = leftovers.length > 0 || strays.length !== 0
   const failed = results.filter(r => !r.pass)
   console.log('')
   if (failed.length === 0 && !dirty) {
