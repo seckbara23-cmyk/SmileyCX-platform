@@ -159,7 +159,16 @@ describe('XPA-6B ratified model', () => {
   it('only lets an admin assert sources a human can legitimately assert', () => {
     // A person must not be able to record an INDIVIDUAL_PURCHASE that no payment
     // system produced, or a CORPORATE_LICENSE with no contract behind it.
-    expect([...ADMIN_SELECTABLE_SOURCES].sort()).toEqual(['MANUAL_ADMIN', 'PROMOTIONAL_GRANT'])
+    //
+    // XPA-6C added BUSINESS_EVALUATION: an administrator issuing a time-limited
+    // trial to a prospect IS the mechanism, so the assertion is honest. This
+    // list is still exact — the test exists to stop sources being added
+    // casually, and it still fails for the three that remain machine-issued.
+    expect([...ADMIN_SELECTABLE_SOURCES].sort())
+      .toEqual(['BUSINESS_EVALUATION', 'MANUAL_ADMIN', 'PROMOTIONAL_GRANT'])
+    for (const forbidden of ['CORPORATE_LICENSE', 'INDIVIDUAL_PURCHASE', 'MIGRATION']) {
+      expect(ADMIN_SELECTABLE_SOURCES, forbidden).not.toContain(forbidden)
+    }
     const action = stripTs(read('app/actions/entitlements.ts'))
     expect(action).toMatch(/ADMIN_SELECTABLE_SOURCES.*includes\(input\.source\)/s)
   })

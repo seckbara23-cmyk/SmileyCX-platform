@@ -35,6 +35,11 @@ export default function GrantEntitlementForm({
   const [source, setSource] = useState<EntitlementSource>('MANUAL_ADMIN')
   const [expiryMode, setExpiryMode] = useState<'' | 'never' | 'date'>('')
   const [expiresAt, setExpiresAt] = useState('')
+  // XPA-6C: `grantEntitlement` has always accepted `startsAt` and
+  // `entitlement_accessible()` has always denied before it; the form simply
+  // never offered the field. An evaluation window that opens on an agreed date
+  // is the ordinary commercial case.
+  const [startsAt, setStartsAt] = useState('')
   const [reason, setReason] = useState('')
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
 
@@ -59,11 +64,13 @@ export default function GrantEntitlementForm({
         source,
         expiresAt: expiryMode === 'date' || mustExpire ? (expiresAt || null) : null,
         expiryDecisionMade: decided,
+        startsAt: startsAt || null,
         reason,
       })
       setResult({ ok: r.ok, message: r.message ?? '' })
       if (r.ok) {
-        setUserId(''); setCourseId(''); setExpiryMode(''); setExpiresAt(''); setReason('')
+        setUserId(''); setCourseId(''); setExpiryMode(''); setExpiresAt('')
+        setStartsAt(''); setReason('')
       }
     })
   }
@@ -119,9 +126,23 @@ export default function GrantEntitlementForm({
         </span>
       </label>
 
+      {/* XPA-6C: optional start boundary. Access is denied until it passes. */}
+      <label className="flex flex-col gap-1 text-xs font-semibold text-dark mb-3">
+        Début de l&apos;accès <span className="font-normal text-cx-gray">(optionnel)</span>
+        <input
+          type="date" className={field}
+          value={startsAt} onChange={e => setStartsAt(e.target.value)}
+        />
+        <span className="font-normal text-cx-gray">
+          Laissez vide pour un accès immédiat. Avant cette date, l&apos;accès est refusé.
+        </span>
+      </label>
+
       <fieldset className="mb-3">
         <legend className="text-xs font-semibold text-dark mb-1.5">
-          Échéance{mustChoose && <span className="text-error"> * choix explicite requis</span>}
+          Échéance
+          {mustExpire && <span className="text-error"> * obligatoire pour cette source</span>}
+          {mustChoose && <span className="text-error"> * choix explicite requis</span>}
         </legend>
 
         {mustExpire ? (

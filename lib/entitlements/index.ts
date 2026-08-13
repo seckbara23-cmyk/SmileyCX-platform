@@ -37,6 +37,19 @@ export type EntitlementSource = (typeof ENTITLEMENT_SOURCES)[number]
 export const ADMIN_SELECTABLE_SOURCES: readonly EntitlementSource[] = [
   'MANUAL_ADMIN',
   'PROMOTIONAL_GRANT',
+  // XPA-6C. The comment above says these sources wait for "systems that do not
+  // exist yet — XPA-9 payments, XPA-7 corporate licences, XPA-6C evaluations".
+  // XPA-6C is that system: an administrator issuing a time-limited trial to a
+  // prospective corporate customer IS the mechanism, and there is nothing else
+  // for the assertion to be dishonest about. Its expiry is mandatory in three
+  // places — this module's EXPIRY_RULES, `validateExpiry`, and the schema CHECK
+  // `entitlements_expiry_required` — so a perpetual "evaluation" cannot exist.
+  //
+  // CORPORATE_LICENSE stays out: that asserts a signed contract, and XPA-7 owns
+  // it. INDIVIDUAL_PURCHASE and MIGRATION stay out for the original reason — a
+  // human must not record a payment no gateway produced, or a history no
+  // migration performed.
+  'BUSINESS_EVALUATION',
 ]
 
 // ── Lifecycle (Q-M, ratified) ───────────────────────────────────────────────
