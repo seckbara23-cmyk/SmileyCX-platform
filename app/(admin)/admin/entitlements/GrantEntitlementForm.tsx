@@ -25,9 +25,12 @@ interface Option { id: string; label: string }
 export default function GrantEntitlementForm({
   learners,
   courses,
+  organizations = [],
 }: {
   learners: Option[]
   courses: Option[]
+  /** XPA-7: attribution targets for a corporate licence. */
+  organizations?: Option[]
 }) {
   const [pending, startTransition] = useTransition()
   const [userId, setUserId] = useState('')
@@ -40,10 +43,14 @@ export default function GrantEntitlementForm({
   // never offered the field. An evaluation window that opens on an agreed date
   // is the ordinary commercial case.
   const [startsAt, setStartsAt] = useState('')
+  // XPA-7 attribution. Offered only for CORPORATE_LICENSE — attaching an
+  // organization to a personal grant would misreport who it belongs to.
+  const [organizationId, setOrganizationId] = useState('')
   const [reason, setReason] = useState('')
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
 
   const rule = EXPIRY_RULES[source]
+  const isCorporate = source === 'CORPORATE_LICENSE'
   const mustChoose = rule === 'explicit_choice'
   const mustExpire = rule === 'required'
 
@@ -65,12 +72,13 @@ export default function GrantEntitlementForm({
         expiresAt: expiryMode === 'date' || mustExpire ? (expiresAt || null) : null,
         expiryDecisionMade: decided,
         startsAt: startsAt || null,
+        organizationId: isCorporate ? (organizationId || null) : null,
         reason,
       })
       setResult({ ok: r.ok, message: r.message ?? '' })
       if (r.ok) {
         setUserId(''); setCourseId(''); setExpiryMode(''); setExpiresAt('')
-        setStartsAt(''); setReason('')
+        setStartsAt(''); setReason(''); setOrganizationId('')
       }
     })
   }
@@ -121,10 +129,29 @@ export default function GrantEntitlementForm({
           ))}
         </select>
         <span className="text-[11px] font-normal text-cx-gray">
-          Les achats, licences entreprise et évaluations sont émis par leurs systèmes respectifs
-          et ne sont pas saisissables ici.
+          {/* XPA-6C made évaluation selectable, XPA-7 the licence entreprise.
+              Only machine-issued sources remain unavailable here. */}
+          Les achats individuels et les reprises historiques sont émis par leurs
+          systèmes respectifs et ne sont pas saisissables ici.
         </span>
       </label>
+
+      {isCorporate && (
+        <label className="flex flex-col gap-1 text-xs font-semibold text-dark mb-3">
+          Organisation <span className="text-error">*</span>
+          <select
+            required className={field}
+            value={organizationId} onChange={e => setOrganizationId(e.target.value)}
+          >
+            <option value="">— choisir —</option>
+            {organizations.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+          </select>
+          <span className="font-normal text-cx-gray">
+            Attribution commerciale uniquement. L&apos;organisation n&apos;ouvre pas la
+            formation : cet accès le fait.
+          </span>
+        </label>
+      )}
 
       {/* XPA-6C: optional start boundary. Access is denied until it passes. */}
       <label className="flex flex-col gap-1 text-xs font-semibold text-dark mb-3">

@@ -67,6 +67,14 @@ export async function grantEntitlement(input: {
   expiryDecisionMade: boolean
   startsAt?: string | null
   reason?:   string
+  /**
+   * XPA-7 corporate attribution. Which organization this grant was issued for.
+   *
+   * ATTRIBUTION, NOT AUTHORITY. `has_course_access()` never reads it, so a
+   * wrong or absent value cannot open or close a course — it can only misreport
+   * who a grant belonged to. Null for individual grants.
+   */
+  organizationId?: string | null
 }): Promise<EntitlementActionResult> {
   const admin = await requirePlatformAdmin()
   const { ip, userAgent } = await actorContext()
@@ -140,6 +148,7 @@ export async function grantEntitlement(input: {
       expires_at:     input.expiresAt || null,
       granted_by:     admin.id,
       granted_reason: input.reason?.slice(0, 500) || null,
+      organization_id: input.organizationId || null,
     })
     .select('id')
     .single()
@@ -167,6 +176,7 @@ export async function grantEntitlement(input: {
       entitlementId: created.id,
       courseId:      input.courseId,
       source,
+      organizationId: input.organizationId ?? null,
       expiresAt:     input.expiresAt ?? null,
       startsAt:      input.startsAt ?? null,
     },

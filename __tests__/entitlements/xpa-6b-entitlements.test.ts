@@ -164,9 +164,10 @@ describe('XPA-6B ratified model', () => {
     // trial to a prospect IS the mechanism, so the assertion is honest. This
     // list is still exact — the test exists to stop sources being added
     // casually, and it still fails for the three that remain machine-issued.
+    // XPA-7 (D7-3) added CORPORATE_LICENSE, granted by a PLATFORM admin only.
     expect([...ADMIN_SELECTABLE_SOURCES].sort())
-      .toEqual(['BUSINESS_EVALUATION', 'MANUAL_ADMIN', 'PROMOTIONAL_GRANT'])
-    for (const forbidden of ['CORPORATE_LICENSE', 'INDIVIDUAL_PURCHASE', 'MIGRATION']) {
+      .toEqual(['BUSINESS_EVALUATION', 'CORPORATE_LICENSE', 'MANUAL_ADMIN', 'PROMOTIONAL_GRANT'])
+    for (const forbidden of ['INDIVIDUAL_PURCHASE', 'MIGRATION']) {
       expect(ADMIN_SELECTABLE_SOURCES, forbidden).not.toContain(forbidden)
     }
     const action = stripTs(read('app/actions/entitlements.ts'))

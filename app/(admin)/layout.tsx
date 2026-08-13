@@ -5,8 +5,7 @@ import { getOwnerSession } from '@/lib/auth/owner'
 import {
   LayoutDashboard, BookOpen, Users, CreditCard, Award,
   FileQuestion, LogOut, ExternalLink, Layers, TrendingUp, GraduationCap, MessageSquare, Dumbbell, Library, Mic,
-  KeyRound,
-} from 'lucide-react'
+  KeyRound, Building2 } from 'lucide-react'
 
 const ADMIN_NAV = [
   { href: '/admin',                label: 'Tableau de bord', icon: LayoutDashboard },
@@ -22,6 +21,10 @@ const ADMIN_NAV = [
   // below is the academic record of taking it. Adjacent in the nav because the
   // distinction is easy to lose, and separate because they are (Q-L).
   { href: '/admin/entitlements',   label: 'Accès formations', icon: KeyRound },
+  // XPA-7: an organization is structure, not permission. Placed after "Accès"
+  // so the reading order matches the authority order — access is granted per
+  // learner per course, and the company is context for that grant.
+  { href: '/admin/organizations',  label: 'Organisations',   icon: Building2 },
   { href: '/admin/enrollments',    label: 'Inscriptions',    icon: Award },
   { href: '/admin/certificates',   label: 'Certificats',     icon: GraduationCap },
   { href: '/admin/feedback',       label: 'Retours pilote',  icon: MessageSquare },

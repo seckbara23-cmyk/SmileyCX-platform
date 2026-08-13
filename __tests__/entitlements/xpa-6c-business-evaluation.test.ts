@@ -60,8 +60,12 @@ describe('XPA-6C the source', () => {
     expect(ADMIN_SELECTABLE_SOURCES).toContain('BUSINESS_EVALUATION')
   })
 
-  it('CORPORATE_LICENSE stays out — it is XPA-7 and asserts a signed contract', () => {
-    expect(ADMIN_SELECTABLE_SOURCES).not.toContain('CORPORATE_LICENSE')
+  it('CORPORATE_LICENSE joined it in XPA-7 — platform-admin only (D7-3)', () => {
+    // It was withheld during XPA-6C because no organization model existed to
+    // attribute a contract to. XPA-7 built one; the source is now assertable,
+    // still only by a platform admin, and still with a mandatory expiry.
+    expect(ADMIN_SELECTABLE_SOURCES).toContain('CORPORATE_LICENSE')
+    expect(EXPIRY_RULES.CORPORATE_LICENSE).toBe('required')
   })
 
   it('machine-issued sources stay out', () => {
@@ -222,7 +226,7 @@ describe('XPA-6C learner containment', () => {
       expect(ACTION, fn).toContain(fn)
     }
     // The grant path and the shared transition helper both gate on it.
-    expect(ACTION).toMatch(/export async function grantEntitlement[\s\S]{0,400}requirePlatformAdmin\(\)/)
+    expect(ACTION).toMatch(/export async function grantEntitlement[\s\S]{0,900}requirePlatformAdmin\(\)/)
     expect(ACTION).toMatch(/async function transition\([\s\S]{0,400}requirePlatformAdmin\(\)/)
   })
 

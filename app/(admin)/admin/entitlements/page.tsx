@@ -55,10 +55,11 @@ export default async function EntitlementsAdminPage() {
   await requirePlatformAdmin()
   const db = createAdminClient()
 
-  const [{ data: rows }, { data: profiles }, { data: courses }] = await Promise.all([
+  const [{ data: rows }, { data: profiles }, { data: courses }, { data: orgs }] = await Promise.all([
     db.from('entitlements').select('*').order('created_at', { ascending: false }).limit(200),
     db.from('profiles').select('id, email, full_name, first_name, last_name').order('created_at', { ascending: false }),
     db.from('courses').select('id, title, slug').eq('is_published', true).order('title'),
+    db.from('organizations').select('id, name').order('name'),
   ])
 
   const byUser = new Map((profiles ?? []).map(p => [p.id, p]))
@@ -171,6 +172,7 @@ export default async function EntitlementsAdminPage() {
             label: ([p.first_name, p.last_name].filter(Boolean).join(' ') || p.full_name || p.email) as string,
           }))}
           courses={(courses ?? []).map(c => ({ id: c.id, label: c.title as string }))}
+          organizations={(orgs ?? []).map(o => ({ id: o.id as string, label: o.name as string }))}
         />
       </div>
     </div>

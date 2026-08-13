@@ -45,11 +45,20 @@ export const ADMIN_SELECTABLE_SOURCES: readonly EntitlementSource[] = [
   // places — this module's EXPIRY_RULES, `validateExpiry`, and the schema CHECK
   // `entitlements_expiry_required` — so a perpetual "evaluation" cannot exist.
   //
-  // CORPORATE_LICENSE stays out: that asserts a signed contract, and XPA-7 owns
-  // it. INDIVIDUAL_PURCHASE and MIGRATION stay out for the original reason — a
+  // INDIVIDUAL_PURCHASE and MIGRATION stay out for the original reason — a
   // human must not record a payment no gateway produced, or a history no
   // migration performed.
   'BUSINESS_EVALUATION',
+  // XPA-7. The corporate licence is now assertable, and by a PLATFORM admin
+  // only (D7-3). An organization administrator manages a roster; they do not
+  // mint commercial rights, and `grantEntitlement` stays behind
+  // `requirePlatformAdmin()` rather than gaining an org-scoped bypass.
+  //
+  // Like BUSINESS_EVALUATION its expiry is mandatory in three layers, so a
+  // perpetual "licence" cannot exist either. What distinguishes the two is
+  // provenance, not mechanics: an evaluation is a trial, a licence is a signed
+  // agreement, and `organization_id` records which company it belongs to.
+  'CORPORATE_LICENSE',
 ]
 
 // ── Lifecycle (Q-M, ratified) ───────────────────────────────────────────────
