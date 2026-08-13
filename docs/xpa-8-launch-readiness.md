@@ -37,7 +37,7 @@ None of the three blockers is large. All are precise.
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
 | Course content | 🔴 **Blocker** — B-2 partly addressed (C2-F2 filled), but **0 of 102 lessons have a body**; no assessments anywhere |
 | Media protection | 🔴 **New blocker (F-2)** — course video buckets are public; `has_course_access()` does not govern the file |
-| Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired; see `xpa-8-w2-legacy-org-surface.md` |
+| Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired, deployed, **34/34 in production** |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
 | Email / invitations | 🟠 **High** — sender defaults to the old domain |
 | B2B / organizations | 🟡 **Medium** — sound, but MVP-thin |
@@ -176,6 +176,13 @@ redirect). W2 also deleted `requireOrgMembership`, which read
 `organization_memberships` with **no `status` filter** — after XPA-7 added the
 PENDING/ACTIVE/REMOVED lifecycle, a REMOVED ex-employee would still have passed
 it. `verify-xpa-7` remains 32/32.
+
+**Verified in production** against commit `6ee4974`: `verify-xpa-8-w2.mjs`
+**34/34, 0 failures** — every legacy route redirects to `/dashboard` with no
+rendered page and no legacy markers; an ACTIVE `org_admin` of one organization
+gets a response indistinguishable from an invented slug when asking for another
+organization's URL; open-redirect and traversal probes terminate on-site; no
+redirect loop.
 
 ---
 

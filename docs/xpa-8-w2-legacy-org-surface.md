@@ -1,8 +1,10 @@
 # XPA-8 W2 — Legacy `/app/[orgSlug]` Surface (B-3): CLOSED
 
-**Status:** ✅ B-3 **CLOSED** — the legacy organization product is retired
+**Status:** ✅ B-3 **CLOSED** — retired, deployed, and verified in production
+**Commit:** `6ee4974` · **Deployed:** production `READY`, 2026-08-13T20:23Z
 **Baseline:** `6a3603a` (XPA-8 W1 closed)
 **Schema change:** **none** — no migration added, none edited
+**Production verification:** `verify-xpa-8-w2.mjs` — **34/34, 0 failures**
 
 **Disposition:** retire, not guard.
 
@@ -158,6 +160,73 @@ the assertion, and removing it passes. A comment calls nothing.
 
 ---
 
+## 7a. Production verification — `verify-xpa-8-w2.mjs`, 34/34
+
+Run against `https://www.xpclient-academy.com` with commit `6ee4974` live.
+
+**The cookies are not hand-rolled.** `/app` sits behind `AUTH_REQUIRED`, so an
+anonymous request only proves the middleware is awake — every interesting branch
+is behind a login. The script builds a `createServerClient` from the **same
+`@supabase/ssr` the application uses**, hands it a cookie jar, and lets the
+library write the session exactly as a browser would. Guessing the cookie format
+would have tested the guess.
+
+**Fixtures:** two organizations and one throwaway learner who is a genuine
+**ACTIVE `org_admin` of org A** — so the foreign-organization test is asked by
+somebody who really does have organization rights, not by a nobody. Removed by
+id in a `finally` block; strays afterwards: organizations 0, profile 0.
+
+| Group | Result |
+|---|---|
+| Anonymous callers never reach the handler | 4/4 — all `307 → /login` |
+| Legacy product gone for a real learner | 9/9 — every route `307 → /dashboard` |
+| No legacy screen renders | 2/2 — 0 pages with markers, 0 pages returning 200 |
+| Slug is not an existence oracle | 5/5 |
+| Hostile slugs fail safely | 4/4 |
+| No redirect loop | 2/2 |
+| Replacement surface works | 2/2 |
+| Organization data not exposed | 2/2 |
+
+The five checks that matter most:
+
+```
+member of A -> A                         307 /dashboard
+member of A -> B (foreign org)           307 /dashboard
+member of A -> invented slug             307 /dashboard
+real and invented slugs INDISTINGUISHABLE      307//dashboard vs 307//dashboard
+org A and org B are INDISTINGUISHABLE          307//dashboard vs 307//dashboard
+```
+
+An ACTIVE `org_admin` of org A asking for org B's legacy URL lands exactly where
+a member of nothing lands. The response carries no signal about whether the slug
+names a real customer.
+
+**Open-redirect probes, traced to their end** rather than one hop:
+
+```
+/app//evil.com     -> 308 /app/evil.com      (Next.js path normalisation)
+/app/evil.com      -> 307 /login?next=%2Fapp%2Fevil.com
+/login?next=…      -> 200
+```
+
+Terminates on-site. `/app/https:/evil.com` → `/dashboard`;
+`/app/../admin/organizations` normalises to `/admin/organizations` and is
+refused by the admin gate (`307 → /login`) because the learner is not an owner.
+
+**Stated limitation.** The platform-admin branch (`isOwnerEmail` →
+`/admin/organizations`) was **not** exercised end-to-end. `ADMIN_OWNER_EMAILS`
+is a server-side Vercel variable and no owner password was used, so signing in
+as an administrator was not possible without either modifying production
+configuration or handling a real credential — neither of which is acceptable for
+a verification run. What *is* proven in production: a non-owner is refused at
+`/admin/organizations` (`307 → /login`), the branch is covered by unit
+assertions, and the surface itself returns 1.7 kB / 2.15 kB routes in the build.
+
+**Post-deploy verifier state:** `verify-xpa-6c` 30/30 · `verify-xpa-6d` 22/22 ·
+`verify-xpa-7` **32/32** · `verify-xpa-6a` 52/57 (F-1 below, unrelated to W2).
+
+---
+
 ## 8. Two findings outside W2 scope, surfaced by the verifier run
 
 `verify-xpa-6a` came back **52/57** where W1 recorded 57/57. W2 touched no SQL, so
@@ -246,10 +315,13 @@ is a private bucket plus short-lived signed URLs minted server-side behind
 
 ## 9. Verdict
 
-**B-3 is closed.** The legacy surface is gone, its only inbound link is
-repointed, the lifecycle-ignoring membership guard is deleted, organization
-isolation is proven intact at 32/32, and 15 regressions fail against the pre-W2
-commit.
+**B-3 is closed** — not on the strength of the diff, but because the retirement
+was deployed and then measured. The legacy surface is gone, its only inbound
+link is repointed, the lifecycle-ignoring membership guard is deleted,
+organization isolation is proven intact at 32/32, 15 regressions fail against
+the pre-W2 commit, and **34/34 production checks pass against `6ee4974` live**,
+including an ACTIVE `org_admin` of one organization being unable to learn
+anything at all from another organization's legacy URL.
 
 **XPA-8 remains NO-GO.** B-2 was the last of the three original blockers still
 open; it is now *partly* addressed — C2-F2 has 20 lessons where it had 0 — but it
