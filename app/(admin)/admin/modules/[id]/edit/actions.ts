@@ -43,14 +43,39 @@ export async function deleteModule(formData: FormData) {
 
 // ── Lessons ───────────────────────────────────────────────────────────────────
 
+/**
+ * XPA-8 W3 (F-2): one submitted value, two possible columns.
+ *
+ * The editor posts whatever identifies the asset. An absolute URL means
+ * somebody else hosts it and belongs in `*_url`; anything else is an object
+ * path in the PRIVATE course-content bucket and belongs in `*_object_path`.
+ *
+ * Splitting here — rather than trusting the client to say which it is — means
+ * a browser cannot talk the server into recording a public URL as a protected
+ * path, or the reverse. The database also refuses a URL in a path column, so
+ * a mistake here fails loudly instead of silently un-protecting a lesson.
+ */
+function splitAsset(raw: string | null): { url: string | null; path: string | null } {
+  const v = raw?.trim() || null
+  if (!v) return { url: null, path: null }
+  return /^[a-z]+:\/\//i.test(v) ? { url: v, path: null } : { url: null, path: v }
+}
+
 function parseLesson(formData: FormData) {
+  const video    = splitAsset(formData.get('video_asset') as string | null)
+  const pdf      = splitAsset(formData.get('pdf_asset') as string | null)
+  const subtitle = splitAsset(formData.get('subtitle_asset') as string | null)
+
   return {
     title:            (formData.get('title') as string).trim(),
     slug:             (formData.get('slug') as string).trim(),
     content:          (formData.get('content') as string | null)?.trim() || null,
-    video_url:        (formData.get('video_url') as string | null)?.trim() || null,
-    pdf_url:          (formData.get('pdf_url') as string | null)?.trim() || null,
-    subtitle_url:     (formData.get('subtitle_url') as string | null)?.trim() || null,
+    video_url:            video.url,
+    video_object_path:    video.path,
+    pdf_url:              pdf.url,
+    pdf_object_path:      pdf.path,
+    subtitle_url:         subtitle.url,
+    subtitle_object_path: subtitle.path,
     duration_minutes: parseInt(formData.get('duration_minutes') as string, 10) || null,
     order_index:      parseInt(formData.get('order_index') as string, 10) || 0,
     is_preview:       formData.get('is_preview') === 'true',

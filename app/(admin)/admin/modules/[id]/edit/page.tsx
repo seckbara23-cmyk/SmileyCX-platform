@@ -32,7 +32,7 @@ export default async function AdminEditModulePage({
 
   const { data: lessons } = await supabase
     .from('lessons')
-    .select('id, title, slug, content, video_url, pdf_url, subtitle_url, duration_minutes, order_index, is_preview')
+    .select('id, title, slug, content, video_url, pdf_url, subtitle_url, video_object_path, pdf_object_path, subtitle_object_path, duration_minutes, order_index, is_preview')
     .eq('module_id', params.id)
     .order('order_index')
 

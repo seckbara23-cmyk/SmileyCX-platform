@@ -240,11 +240,18 @@ describe('XPA-8 W2 removes the membership check that ignored the lifecycle', () 
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('XPA-8 W2 stayed in its lane', () => {
-  it('no migration was added or edited', () => {
-    const migrations = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(migrations.length).toBe(40)
-    for (const f of ['040_organizations_xpa7.sql', '037_entitlements.sql']) {
-      expect(read(`supabase/migrations/${f}`), `${f} mentions W2`).not.toContain('W2')
+  it('W2 added no migration of its own', () => {
+    // This asserted `length === 40` — the count on the day it was written.
+    // XPA-8 W3 legitimately adds 041 and 042, so a fixed count would fail
+    // forever for a reason that has nothing to do with W2. The invariant is
+    // "no migration belongs to W2", and that is what is checked: every
+    // migration up to 040 predates W2, and nothing anywhere claims to be one.
+    const migrations = readdirSync(join(ROOT, 'supabase/migrations'))
+      .filter(f => f.endsWith('.sql')).sort()
+    expect(migrations.length).toBeGreaterThanOrEqual(40)
+    for (const f of migrations) {
+      expect(read(`supabase/migrations/${f}`), `${f} claims to be W2 work`)
+        .not.toMatch(/XPA-8 W2|W2:/)
     }
   })
 

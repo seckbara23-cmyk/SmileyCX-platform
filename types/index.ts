@@ -74,11 +74,29 @@ export interface Lesson {
   title: string
   title_fr: string | null
   content: string | null
-  video_url: string | null
   duration_minutes: number | null
   order_index: number
   is_preview: boolean
   created_at: string
+
+  // ── Media (XPA-8 W3 / F-2) ────────────────────────────────────────────────
+  //
+  // Two columns per asset, meaning two different things:
+  //
+  //   *_url          an absolute URL to something we do NOT host — a YouTube
+  //                  embed, a partner CDN. Handed to the player untouched.
+  //   *_object_path  an object in the PRIVATE `course-content` bucket. There is
+  //                  no durable URL for it: delivery is minted per request by
+  //                  /api/media/lesson/... behind an entitlement check.
+  //
+  // A path wins over a URL. Both are null until migration 042 backfills them,
+  // which is what lets the application ship before the objects have moved.
+  video_url: string | null
+  video_object_path?: string | null
+  pdf_url?: string | null
+  pdf_object_path?: string | null
+  subtitle_url?: string | null
+  subtitle_object_path?: string | null
 }
 
 // ── Quiz ──────────────────────────────────────────────────────────────────────

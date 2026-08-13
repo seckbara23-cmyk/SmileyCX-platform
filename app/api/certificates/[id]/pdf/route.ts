@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { CertificatePDFDocument } from '@/lib/pdf/CertificatePDF'
 import { certificateVerifyUrl } from '@/lib/brand'
+import { certificateMediaHref } from '@/lib/media/storage'
 
 // Force Node.js runtime — @react-pdf/renderer does not run on Edge
 export const runtime = 'nodejs'
@@ -23,16 +24,19 @@ export async function GET(req: NextRequest, { params }: RouteContext) {
   // Verify ownership and fetch cert data
   const { data: cert } = await supabase
     .from('certificates')
-    .select('id, user_id, certificate_number, issued_at, pdf_url, courses(title)')
+    .select('id, user_id, certificate_number, issued_at, pdf_object_path, courses(title)')
     .eq('id', id)
     .single()
 
   if (!cert) return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (cert.user_id !== user.id) return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
 
-  // If PDF already generated, return existing URL
-  if (cert.pdf_url) {
-    return NextResponse.json({ pdf_url: cert.pdf_url })
+  // XPA-8 W3 (F-2): this returns the APPLICATION's delivery URL, never a
+  // Storage URL. It used to return `pdf_url` — a permanent public link into a
+  // public bucket, which meant anyone holding it could download a named
+  // learner's certificate. The route below re-checks ownership on every fetch.
+  if (cert.pdf_object_path) {
+    return NextResponse.json({ pdf_url: certificateMediaHref(id) })
   }
 
   // Fetch learner profile
@@ -72,16 +76,13 @@ export async function GET(req: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: 'PDF upload failed' }, { status: 500 })
   }
 
-  // Get public URL
-  const { data: { publicUrl } } = admin.storage
-    .from('certificates')
-    .getPublicUrl(storagePath)
-
-  // Persist pdf_url on the certificate record
+  // Persist the canonical OBJECT PATH, not a URL. The path is durable identity;
+  // a delivery URL is a capability that expires in two minutes and is minted
+  // per request by /api/media/certificate/[id] after re-checking ownership.
   await admin
     .from('certificates')
-    .update({ pdf_url: publicUrl })
+    .update({ pdf_object_path: storagePath })
     .eq('id', id)
 
-  return NextResponse.json({ pdf_url: publicUrl })
+  return NextResponse.json({ pdf_url: certificateMediaHref(id) })
 }

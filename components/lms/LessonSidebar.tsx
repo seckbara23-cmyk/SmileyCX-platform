@@ -8,6 +8,12 @@ export interface SidebarLessonRow {
   id: string; slug: string; title: string; order_index: number
   content: string | null; video_url: string | null
   subtitle_url: string | null; duration_minutes: number | null
+  // XPA-8 W3 (F-2): canonical paths into the PRIVATE course-content bucket.
+  // When present these win over the *_url columns, and the asset is delivered
+  // through /api/media/... behind an entitlement check rather than by a public
+  // Storage URL. Null until migration 042 backfills them.
+  video_object_path?: string | null
+  subtitle_object_path?: string | null
 }
 export interface SidebarModuleRow {
   id: string; slug: string; title: string; order_index: number

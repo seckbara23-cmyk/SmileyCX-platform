@@ -36,7 +36,7 @@ None of the three blockers is large. All are precise.
 | Security / access model | 🟢 **Strong** — 141 production checks, 0 failures |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
 | Course content | 🔴 **Blocker** — B-2 partly addressed (C2-F2 filled), but **0 of 102 lessons have a body**; no assessments anywhere |
-| Media protection | 🔴 **New blocker (F-2)** — course video buckets are public; `has_course_access()` does not govern the file |
+| Media protection | 🔴 **F-2 — remediation IMPLEMENTED, not yet applied.** Migrations 041/042 written; production unchanged pending the operator sequence in `xpa-8-w3-protected-media.md` §8 |
 | Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired, deployed, **34/34 in production** |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
 | Email / invitations | 🟠 **High** — sender defaults to the old domain |
@@ -109,6 +109,17 @@ review — certificates carry learner names.
 
 Standard fix: private bucket + short-lived signed URLs minted server-side behind
 `has_course_access()`.
+
+**W3 status.** Exactly that, implemented and proved on a throwaway bucket, but
+**not applied to production**: migrations 041/042 are written and unapplied, no
+bucket has been flipped, no object moved. Two further findings came out of the
+audit — anon could **enumerate** all 149 videos with the public anon key (so
+"the URL is secret" was never true), and 018's `cert_service_insert` /
+`cert_service_update` policies had no `TO` clause, letting any signed-in learner
+**write** into another learner's certificate folder (proved: 0 → 1 objects, then
+cleaned). Closure requires the ordered operator steps in
+`xpa-8-w3-protected-media.md` §8; the application must not deploy before 041,
+or every lesson player breaks with `42703`.
 
 ### F-1 — C2-F2's new content is entirely flagged public preview (found during W2)
 
@@ -328,7 +339,7 @@ break-glass path (service-role SQL editor) with who holds it.
 | **W1** | **B-1** — replace the source-code allowlist with a data-driven check (entitlement- or profile-based), then prove the `private` flip admits all three real accounts | BLOCKER |
 | ~~**W2**~~ | ~~**B-3** — guard or retire `/app/[orgSlug]`~~ · ✅ **DONE** — retired | BLOCKER |
 | **W3** | **B-2** — C2-F2 filled but every lesson body is empty; add a published-course completeness check to CI | BLOCKER |
-| **W3b** | **F-2** — private media bucket + signed URLs behind `has_course_access()`; review the public `certificates` bucket | BLOCKER |
+| **W3b** | **F-2** — private media bucket + signed URLs behind `has_course_access()`; review the public `certificates` bucket · **implemented, awaiting the operator sequence** | BLOCKER |
 | **W3c** | **F-1** — rule on C2-F2's 20/20 preview flags; re-base `verify-xpa-6a` onto the invariant instead of the snapshot | BLOCKER |
 | **W4** | **H-3** confirm `EMAIL_FROM` / `RESEND_API_KEY` in Vercel and send a real invitation; **H-4** make `PLATFORM_MODE` fail closed | HIGH |
 | **W5** | **H-1** decide the assessment model and the harvest-and-retry policy together; fix the orphan quiz | HIGH |

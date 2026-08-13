@@ -18,6 +18,10 @@ interface Lesson {
   video_url: string | null
   pdf_url: string | null
   subtitle_url: string | null
+  // XPA-8 W3 (F-2): paths into the private bucket; these win over the URLs.
+  video_object_path: string | null
+  pdf_object_path: string | null
+  subtitle_object_path: string | null
   duration_minutes: number | null
   order_index: number
   is_preview: boolean
@@ -35,7 +39,7 @@ type UploadState = { status: 'idle' } | { status: 'uploading'; progress: number 
 function useFileUpload(folder: 'video' | 'pdf' | 'cover' | 'subtitle') {
   const [state, setState] = useState<UploadState>({ status: 'idle' })
 
-  async function upload(file: File): Promise<string | null> {
+  async function upload(file: File): Promise<{ value: string; isProtected: boolean } | null> {
     setState({ status: 'uploading', progress: 0 })
 
     try {
@@ -50,7 +54,10 @@ function useFileUpload(folder: 'video' | 'pdf' | 'cover' | 'subtitle') {
         setState({ status: 'error', message: error ?? 'Erreur serveur' })
         return null
       }
-      const { signedUrl, publicUrl } = await res.json()
+      // XPA-8 W3 (F-2): a protected upload has NO delivery URL to persist.
+      // The server returns the object PATH inside the private bucket instead,
+      // and that is what the lesson stores.
+      const { signedUrl, publicUrl, path, isProtected } = await res.json()
 
       // 2. Upload directly to Supabase Storage (no size limit via Next.js)
       await new Promise<void>((resolve, reject) => {
@@ -64,8 +71,9 @@ function useFileUpload(folder: 'video' | 'pdf' | 'cover' | 'subtitle') {
         xhr.send(file)
       })
 
-      setState({ status: 'done', url: publicUrl })
-      return publicUrl
+      const stored = isProtected ? path : publicUrl
+      setState({ status: 'done', url: stored })
+      return { value: stored, isProtected: Boolean(isProtected) }
     } catch (err) {
       setState({ status: 'error', message: err instanceof Error ? err.message : 'Erreur inconnue' })
       return null
@@ -97,11 +105,15 @@ function FileUploadWidget({
   async function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    const url = await upload(file)
-    if (url) onUploaded(url)
+    const result = await upload(file)
+    if (result) onUploaded(result.value)
   }
 
   const filename = currentUrl ? currentUrl.split('/').pop() : null
+  // A protected asset is stored as a path, which is not a link. Only an
+  // absolute URL is offered as one — a path has no meaning in an href, and
+  // inventing a public URL for it is precisely the bug being fixed.
+  const previewHref = /^https?:\/\//i.test(currentUrl) ? currentUrl : null
 
   return (
     <div className="flex flex-col gap-2">
@@ -111,8 +123,12 @@ function FileUploadWidget({
         <div className="flex items-center gap-2 px-3 py-2 bg-green-50 border border-green-200 rounded-lg">
           <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
           <span className="text-xs text-green-700 truncate flex-1">{filename}</span>
-          <a href={currentUrl} target="_blank" rel="noopener noreferrer"
-            className="text-xs text-green-700 underline shrink-0">Voir</a>
+          {previewHref ? (
+            <a href={previewHref} target="_blank" rel="noopener noreferrer"
+              className="text-xs text-green-700 underline shrink-0">Voir</a>
+          ) : (
+            <span className="text-xs text-green-700/60 shrink-0" title="Fichier protégé — visible dans le lecteur">protégé</span>
+          )}
         </div>
       )}
 
@@ -179,9 +195,13 @@ function LessonForm({
   const [duration, setDuration] = useState(String(lesson?.duration_minutes ?? ''))
   const [orderIndex, setOrderIndex] = useState(String(lesson?.order_index ?? nextOrder))
   const [isPreview, setIsPreview] = useState(lesson?.is_preview ?? false)
-  const [videoUrl, setVideoUrl] = useState(lesson?.video_url ?? '')
-  const [pdfUrl, setPdfUrl] = useState(lesson?.pdf_url ?? '')
-  const [subtitleUrl, setSubtitleUrl] = useState(lesson?.subtitle_url ?? '')
+  // XPA-8 W3 (F-2): protected media is identified by its PATH in the private
+  // bucket. An existing lesson may still hold a legacy public URL until the
+  // 042 backfill runs, so each field shows whichever it actually has and the
+  // form posts both — the server decides which column each value belongs in.
+  const [videoAsset, setVideoAsset] = useState(lesson?.video_object_path ?? lesson?.video_url ?? '')
+  const [pdfAsset, setPdfAsset] = useState(lesson?.pdf_object_path ?? lesson?.pdf_url ?? '')
+  const [subtitleAsset, setSubtitleAsset] = useState(lesson?.subtitle_object_path ?? lesson?.subtitle_url ?? '')
 
   function autoSlug(t: string) {
     return t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
@@ -202,9 +222,9 @@ function LessonForm({
     formData.set('title', title)
     formData.set('slug', slug)
     formData.set('content', content)
-    formData.set('video_url', videoUrl)
-    formData.set('pdf_url', pdfUrl)
-    formData.set('subtitle_url', subtitleUrl)
+    formData.set('video_asset', videoAsset)
+    formData.set('pdf_asset', pdfAsset)
+    formData.set('subtitle_asset', subtitleAsset)
     formData.set('duration_minutes', duration)
     formData.set('order_index', orderIndex)
     formData.set('is_preview', String(isPreview))
@@ -302,22 +322,22 @@ function LessonForm({
           folder="video"
           label="Vidéo"
           accept="video/mp4,video/quicktime,video/webm"
-          currentUrl={videoUrl}
-          onUploaded={setVideoUrl}
+          currentUrl={videoAsset}
+          onUploaded={setVideoAsset}
         />
         <FileUploadWidget
           folder="pdf"
           label="PDF"
           accept="application/pdf"
-          currentUrl={pdfUrl}
-          onUploaded={setPdfUrl}
+          currentUrl={pdfAsset}
+          onUploaded={setPdfAsset}
         />
         <FileUploadWidget
           folder="subtitle"
           label="Sous-titres (.vtt)"
           accept=".vtt,text/vtt,text/plain"
-          currentUrl={subtitleUrl}
-          onUploaded={setSubtitleUrl}
+          currentUrl={subtitleAsset}
+          onUploaded={setSubtitleAsset}
         />
         <p className="text-xs text-gray-400 self-end pb-1">
           Format WebVTT uniquement. Les sous-titres s&apos;affichent sur la vidéo avec bouton CC activable.

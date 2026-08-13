@@ -9,6 +9,7 @@ import { ensureAcademicEnrollment } from '@/app/actions/enrollment'
 // It was an access authority in this file and must never be one again.
 import { PILOT_MODE } from '@/lib/pilot'
 import { moduleQuizHref } from '@/lib/learn/routes'
+import { lessonAssetSrc } from '@/lib/media/paths'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
@@ -134,7 +135,7 @@ export default function LessonPlayerPage() {
 
     const { data: mods } = await supabase
       .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, duration_minutes, order_index)')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, duration_minutes, order_index)')
       .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
@@ -180,7 +181,7 @@ export default function LessonPlayerPage() {
 
     const { data: mods } = await supabase
       .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, duration_minutes, order_index)')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, duration_minutes, order_index)')
       .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
@@ -484,6 +485,21 @@ export default function LessonPlayerPage() {
     )
   }
 
+  // ── XPA-8 W3 (F-2): where the media actually comes from ───────────────────
+  //
+  // A lesson we host resolves to `/api/media/lesson/<id>/video`, which
+  // re-checks the entitlement and 302s to a URL valid for five minutes. A
+  // lesson pointing at somebody else's platform keeps its own URL. Precedence
+  // is decided by `lessonAssetSrc`, never here, so the player and the delivery
+  // route cannot disagree about which asset a lesson has.
+  //
+  // Until migration 042 backfills the paths this returns the existing
+  // video_url unchanged — which is what makes this code safe to deploy before
+  // the objects have moved.
+  const isProtectedVideo = Boolean(lesson.video_object_path)
+  const videoSrc    = lessonAssetSrc(lesson.id, 'video',    lesson.video_object_path,    lesson.video_url)
+  const subtitleSrc = lessonAssetSrc(lesson.id, 'subtitle', lesson.subtitle_object_path, lesson.subtitle_url)
+
   return (
     <div className="relative flex h-[calc(100vh-48px)] bg-[#0f1117]">
 
@@ -533,14 +549,21 @@ export default function LessonPlayerPage() {
 
           {/* Video */}
           <div className="lesson-video-wrapper max-w-4xl mx-auto mt-4">
-            {lesson.video_url ? (
-              /\.(mp4|webm|mov|ogg)(\?|$)/i.test(lesson.video_url) || lesson.video_url.startsWith('/') ? (
+            {videoSrc ? (
+              /* XPA-8 W3 (F-2): a protected asset resolves to an application
+                 route, not a Storage URL. `/api/media/...` has no file
+                 extension, so it is matched explicitly here — the extension
+                 test below still decides between <video> and an <iframe> for
+                 EXTERNAL urls (a YouTube embed is not a media file). */
+              isProtectedVideo
+              || /\.(mp4|webm|mov|ogg)(\?|$)/i.test(videoSrc)
+              || videoSrc.startsWith('/') ? (
                 <>
                   {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
                   <video
                     ref={videoRef}
-                    key={lesson.video_url}
-                    src={lesson.video_url}
+                    key={videoSrc}
+                    src={videoSrc}
                     controls
                     controlsList="nodownload"
                     className="absolute inset-0 w-full h-full bg-black"
@@ -549,11 +572,11 @@ export default function LessonPlayerPage() {
                     onTimeUpdate={handleVideoTimeUpdate}
                     onEnded={handleVideoEnded}
                   >
-                    {lesson.subtitle_url && (
-                      <track kind="subtitles" src={lesson.subtitle_url} label="Français" srcLang="fr" default />
+                    {subtitleSrc && (
+                      <track kind="subtitles" src={subtitleSrc} label="Français" srcLang="fr" default />
                     )}
                   </video>
-                  {lesson.subtitle_url && (
+                  {subtitleSrc && (
                     <button
                       onClick={toggleCC}
                       title={ccEnabled ? 'Désactiver les sous-titres' : 'Activer les sous-titres'}
@@ -567,7 +590,7 @@ export default function LessonPlayerPage() {
                 </>
               ) : (
                 <iframe
-                  src={lesson.video_url}
+                  src={videoSrc}
                   className="absolute inset-0 w-full h-full"
                   allowFullScreen
                   allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
