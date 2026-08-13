@@ -52,6 +52,8 @@ const H = { apikey: SVC, Authorization: `Bearer ${SVC}`, 'Content-Type': 'applic
 const argv = process.argv.slice(2)
 const DO_COPY = argv.includes('--copy')
 const DO_DELETE = argv.includes('--delete-originals')
+const PLAN_DELETE = argv.includes('--plan-deletion')   // read-only; deletes nothing
+const CONFIRMED = argv.includes('--yes')
 
 const list = async (bucket, prefix) => {
   const out = []
@@ -97,8 +99,9 @@ const main = async () => {
   console.log(`  target  ${TARGET} (private) → ${existing.size} already present`)
   console.log(`  to copy ${todo.length}\n`)
 
-  if (!DO_COPY && !DO_DELETE) {
-    console.log('Dry run. Pass --copy to copy, then --delete-originals once verified.')
+  if (!DO_COPY && !DO_DELETE && !PLAN_DELETE) {
+    console.log('Dry run. Pass --copy to copy, --plan-deletion to review deletion,')
+    console.log('then --delete-originals --yes once verified.')
     for (const o of todo.slice(0, 5)) console.log(`    would copy  ${o}`)
     if (todo.length > 5) console.log(`    … and ${todo.length - 5} more`)
     return
@@ -136,54 +139,161 @@ const main = async () => {
     console.log(`  Historical public URLs STILL WORK until --delete-originals.`)
   }
 
-  if (DO_DELETE) {
-    // Refuse to delete anything that is not safely in the private bucket AND
-    // recorded in the database. Deleting an object no row points at is how a
-    // lesson becomes permanently broken.
+  if (DO_DELETE || PLAN_DELETE) {
+    // ══ THE RATIFIED DELETION CLASSIFICATION ═══════════════════════════════
+    //
+    // Every public original falls into exactly one class, and each class has
+    // its own precondition. Nothing is deleted unless EVERY object clears its
+    // own class — this is all-or-nothing, because a partial deletion leaves a
+    // state nobody planned and nobody can describe.
+    //
+    //   REFERENCED  a lesson row points at this object
+    //               eligible ⟺ private copy exists AND the DB path is populated
+    //               otherwise → HARD STOP (deleting it breaks a live lesson)
+    //
+    //   ORPHAN      nothing in the database points at it
+    //               eligible ⟺ private copy exists AND it is independently
+    //                          classified as unreferenced
+    //               private copy missing → HARD STOP
+    //
+    // The private copies are NEVER deleted, orphans included. An orphan is
+    // superseded content, not proven-worthless content, and this step is about
+    // ending public exposure — not about reclaiming storage.
+    //
+    // "Independently classified" is meant literally: the orphan set is derived
+    // by scanning every column that could name an object, not by inverting the
+    // referenced list. If a column were forgotten, an object would be
+    // MISCLASSIFIED AS AN ORPHAN and deleted while something still used it.
+    // So the scan is explicit and listed here, and a value that cannot be
+    // classified at all is a hard stop rather than an assumed orphan.
+
     const inTarget = new Set()
     for (const p of MOVE_PREFIXES) for (const o of await list(TARGET, p)) inTarget.add(o)
 
-    const rowsRes = await fetch(
-      `${SB}/rest/v1/lessons?select=video_object_path,pdf_object_path,subtitle_object_path`,
-      { headers: { ...H, Prefer: 'count=exact' } })
-    const rows = await rowsRes.json()
-    const recorded = new Set()
-    for (const r of rows) for (const v of [r.video_object_path, r.pdf_object_path, r.subtitle_object_path]) {
-      if (v) recorded.add(v)
+    const URL_RE = /^https?:\/\/[^/]+\/storage\/v1\/object\/public\/course-media\/(.+)$/
+    const referenced = new Map()   // objectPath -> [why, …]
+    const noteRef = (path, why) => {
+      if (!path) return
+      if (!referenced.has(path)) referenced.set(path, [])
+      referenced.get(path).push(why)
     }
 
-    const unsafe = source.filter(o => !inTarget.has(o))
-    if (unsafe.length) {
-      console.error(`✗ ${unsafe.length} object(s) are not in ${TARGET} yet. Run --copy first. Nothing deleted.`)
+    // Every column that could name one of these objects. Path columns first
+    // (the authoritative post-042 reference), then the legacy URL columns,
+    // then course-level media.
+    const SCAN = [
+      ['lessons', 'video_object_path', 'path'], ['lessons', 'pdf_object_path', 'path'],
+      ['lessons', 'subtitle_object_path', 'path'],
+      ['lessons', 'video_url', 'url'], ['lessons', 'pdf_url', 'url'], ['lessons', 'subtitle_url', 'url'],
+      ['courses', 'cover_url', 'url'], ['courses', 'intro_video_url', 'url'],
+    ]
+    const unscannable = []
+    for (const [table, column, kind] of SCAN) {
+      const r = await fetch(`${SB}/rest/v1/${table}?select=id,${column}&${column}=not.is.null&limit=2000`,
+        { headers: H })
+      if (r.status >= 400) {
+        // A column we cannot read is a column we cannot clear. Do not guess.
+        unscannable.push(`${table}.${column} → ${r.status}`)
+        continue
+      }
+      for (const row of await r.json()) {
+        const v = row[column]
+        if (!v) continue
+        if (kind === 'path') noteRef(v, `${table}.${column}`)
+        else {
+          const m = URL_RE.exec(v)
+          if (m) noteRef(m[1], `${table}.${column}`)
+        }
+      }
+    }
+
+    if (unscannable.length) {
+      console.error(`✗ HARD STOP — ${unscannable.length} column(s) could not be scanned, so nothing can be`)
+      console.error(`  classified as an orphan with confidence. Nothing deleted.`)
+      for (const u of unscannable) console.error(`    ${u}`)
       process.exitCode = 1
       return
     }
-    const unrecorded = source.filter(o => !recorded.has(o))
-    if (unrecorded.length) {
-      console.error(`✗ ${unrecorded.length} object(s) are not referenced by any lesson path column.`)
-      console.error(`  Apply migration 042 first, or these lessons will break. Nothing deleted.`)
-      console.error(`  First: ${unrecorded.slice(0, 3).join(', ')}`)
+
+    // Post-042, a referenced object must be referenced by a PATH column, not
+    // only by a legacy URL. A URL-only reference means 042 has not run for it.
+    const pathBacked = new Set(
+      [...referenced.entries()].filter(([, why]) => why.some(w => w.endsWith('_object_path'))).map(([p]) => p))
+
+    const classes = { referenced: [], orphan: [] }
+    for (const obj of source) {
+      (referenced.has(obj) ? classes.referenced : classes.orphan).push(obj)
+    }
+
+    const stops = []
+    for (const obj of classes.referenced) {
+      if (!inTarget.has(obj)) stops.push(`REFERENCED ${obj} — no private copy`)
+      else if (!pathBacked.has(obj)) {
+        stops.push(`REFERENCED ${obj} — referenced only by a legacy URL (${referenced.get(obj).join(', ')}); migration 042 has not recorded a path for it`)
+      }
+    }
+    for (const obj of classes.orphan) {
+      if (!inTarget.has(obj)) stops.push(`ORPHAN ${obj} — no private copy`)
+    }
+
+    console.log('\n── Deletion classification ─────────────────────────────────────')
+    console.log(`  public originals under review : ${source.length}`)
+    console.log(`  REFERENCED                    : ${classes.referenced.length}`)
+    console.log(`    ↳ with a populated DB path  : ${classes.referenced.filter(o => pathBacked.has(o)).length}`)
+    console.log(`    ↳ with a private copy       : ${classes.referenced.filter(o => inTarget.has(o)).length}`)
+    console.log(`  ORPHAN (nothing references)   : ${classes.orphan.length}`)
+    console.log(`    ↳ with a private copy       : ${classes.orphan.filter(o => inTarget.has(o)).length}`)
+    console.log(`  columns scanned               : ${SCAN.length}`)
+    console.log(`  private copies retained       : ${inTarget.size} (orphans included — never deleted)`)
+
+    if (stops.length) {
+      console.error(`\n✗ HARD STOP — ${stops.length} object(s) failed their class precondition. NOTHING DELETED.`)
+      for (const s of stops.slice(0, 15)) console.error(`    ${s}`)
+      if (stops.length > 15) console.error(`    … and ${stops.length - 15} more`)
       process.exitCode = 1
       return
     }
+    console.log(`\n  ✓ every object clears its class precondition`)
 
-    console.log(`  all ${source.length} object(s) verified in ${TARGET} and referenced by a lesson row`)
+    if (PLAN_DELETE || !CONFIRMED) {
+      console.log('\n── PLAN ONLY — nothing was deleted ─────────────────────────────')
+      console.log(`  would delete ${source.length} public original(s) from ${SOURCE}:`)
+      console.log(`    ${classes.referenced.length} referenced + ${classes.orphan.length} orphan`)
+      console.log(`  would retain ${inTarget.size} private copies in ${TARGET}`)
+      console.log(`  would leave the cover/ prefix untouched`)
+      if (!PLAN_DELETE && !CONFIRMED) {
+        console.log('\n  --delete-originals also requires --yes. Refusing.')
+        process.exitCode = 1
+      }
+      return
+    }
+
+    const toDelete = [...classes.referenced, ...classes.orphan]
     let removed = 0
-    for (let i = 0; i < source.length; i += 100) {
-      const batch = source.slice(i, i + 100)
+    for (let i = 0; i < toDelete.length; i += 100) {
+      const batch = toDelete.slice(i, i + 100)
       const r = await fetch(`${SB}/storage/v1/object/${SOURCE}`, {
         method: 'DELETE', headers: H, body: JSON.stringify({ prefixes: batch }),
       })
       if (r.status === 200) removed += batch.length
       else console.log(`    ✗ batch ${i} → ${r.status} ${(await r.text()).slice(0, 80)}`)
     }
+
     const leftover = []
     for (const p of MOVE_PREFIXES) leftover.push(...await list(SOURCE, p))
+    const stillPrivate = new Set()
+    for (const p of MOVE_PREFIXES) for (const o of await list(TARGET, p)) stillPrivate.add(o)
+
     console.log(`\n  removed ${removed}; ${SOURCE} protected objects remaining: ${leftover.length}`)
-    console.log(leftover.length === 0
+    console.log(`  private copies still present: ${stillPrivate.size} (must be ${inTarget.size})`)
+    const coversLeft = await list(SOURCE, 'cover')
+    console.log(`  cover/ untouched: ${coversLeft.length}`)
+
+    const ok = leftover.length === 0 && stillPrivate.size === inTarget.size
+    console.log(ok
       ? '\n✓ Historical public URLs are now dead. Re-run the verifier to prove it.'
-      : '\n✗ Some objects survived — re-run.')
-    if (leftover.length) process.exitCode = 1
+      : '\n✗ Post-deletion state is not what was planned — investigate before proceeding.')
+    if (!ok) process.exitCode = 1
   }
 }
 

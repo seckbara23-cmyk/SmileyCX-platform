@@ -413,10 +413,71 @@ describe('XPA-8 W3 historical URLs', () => {
     expect(s).toContain('--delete-originals')
   })
 
-  it('deletion refuses unless every object is in the private bucket AND recorded', () => {
+  it('deletion classifies every object and hard-stops on any failure', () => {
     const s = stripTs(readOr('scripts/security/migrate-media-objects.mjs'))
-    expect(s).toMatch(/are not in \$\{TARGET\} yet/)
-    expect(s).toMatch(/not referenced by any lesson path column/)
+    // Two classes, each with its own precondition.
+    expect(s).toMatch(/classes\s*=\s*\{ referenced: \[\], orphan: \[\] \}/)
+    expect(s).toMatch(/REFERENCED \$\{obj\} — no private copy/)
+    expect(s).toMatch(/ORPHAN \$\{obj\} — no private copy/)
+    expect(s).toMatch(/referenced only by a legacy URL/)
+    expect(s).toMatch(/HARD STOP/)
+    expect(s).toMatch(/NOTHING DELETED/)
+  })
+
+  it('a referenced object needs a POPULATED DB PATH, not just a legacy URL', () => {
+    const s = stripTs(readOr('scripts/security/migrate-media-objects.mjs'))
+    expect(s).toMatch(/pathBacked/)
+    expect(s).toMatch(/endsWith\('_object_path'\)/)
+  })
+
+  it('orphan status is derived by scanning columns, not by inverting a list', () => {
+    // If the orphan set were "everything not in the referenced list", a
+    // forgotten column would silently reclassify a live object as deletable.
+    const s = stripTs(readOr('scripts/security/migrate-media-objects.mjs'))
+    for (const col of ['video_object_path', 'pdf_object_path', 'subtitle_object_path',
+                       'video_url', 'pdf_url', 'subtitle_url', 'cover_url', 'intro_video_url']) {
+      expect(s, `${col} is not scanned before classifying orphans`).toContain(col)
+    }
+    // A column that cannot be read must stop the run, not be assumed empty.
+    expect(s).toMatch(/could not be scanned/)
+    expect(s).toMatch(/unscannable/)
+  })
+
+  it('private copies are never deleted — orphans included', () => {
+    const s = stripTs(readOr('scripts/security/migrate-media-objects.mjs'))
+    // Only the SOURCE bucket is ever a delete target.
+    // Every DELETE in this script must be aimed at SOURCE. Look back from each
+    // one rather than matching across lines — a multi-line regex here is how
+    // the assertion itself breaks.
+    const marker = "method: 'DELETE'"
+    let at = s.indexOf(marker)
+    let deletes = 0
+    while (at !== -1) {
+      const preceding = s.slice(Math.max(0, at - 160), at)
+      expect(preceding, `a DELETE is not aimed at ${'${SOURCE}'}:\n${preceding.slice(-90)}`)
+        .toContain('object/${SOURCE}')
+      deletes++
+      at = s.indexOf(marker, at + 1)
+    }
+    expect(deletes).toBeGreaterThan(0)
+    expect(s).toMatch(/never deleted/)
+  })
+
+  it('deletion is all-or-nothing and needs an explicit --yes', () => {
+    const s = stripTs(readOr('scripts/security/migrate-media-objects.mjs'))
+    expect(s).toMatch(/CONFIRMED = argv\.includes\('--yes'\)/)
+    expect(s).toMatch(/also requires --yes\. Refusing/)
+    // The hard-stop returns before any delete loop is reached.
+    const stopAt = s.indexOf('NOTHING DELETED')
+    const delAt = s.indexOf("method: 'DELETE', headers: H, body: JSON.stringify({ prefixes: batch })")
+    expect(stopAt).toBeGreaterThan(-1)
+    expect(delAt).toBeGreaterThan(stopAt)
+  })
+
+  it('a read-only plan mode exists so the classification can be reviewed first', () => {
+    const s = stripTs(readOr('scripts/security/migrate-media-objects.mjs'))
+    expect(s).toMatch(/PLAN_DELETE = argv\.includes\('--plan-deletion'\)/)
+    expect(s).toMatch(/PLAN ONLY — nothing was deleted/)
   })
 
   it('it refuses to copy into a bucket that is public', () => {
