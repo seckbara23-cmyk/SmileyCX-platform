@@ -19,9 +19,13 @@ and an untested legacy product is reachable by any authenticated user.
 
 None of the three blockers is large. All are precise.
 
-> **Update — after W1, W2, W3 and F-1.** B-1, B-3, **F-2** and **F-1** are all
-> **closed**. The verdict stays **NO-GO** on **B-2** alone: no lesson on the
-> platform has a `content` body (0 of 102) and there are no assessments (H-1).
+> **Update — after W1, W2, W3, F-1 and the B-2A audit.** B-1, B-3, **F-2** and
+> **F-1** are all **closed**. The verdict stays **NO-GO** on **B-2** alone —
+> but B-2 is no longer "no lesson has a content body". That metric was wrong:
+> `lessons.content` is optional and unused by every course, working ones
+> included. The real blocker is **12 placeholder lessons with no instructional
+> modality**, which make **three courses un-completable** and their promised
+> certificates unreachable. See the B-2 section and the full audit.
 >
 > **Every production verifier is now green — 207 checks, 0 failures:**
 > `verify-xpa-6a` **60/60** (re-based onto the invariant), `verify-xpa-6c`
@@ -36,7 +40,7 @@ None of the three blockers is large. All are precise.
 |---|---|
 | Security / access model | 🟢 **Strong** — **207 production checks, 0 failures** across six verifiers |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
-| Course content | 🔴 **Blocker** — B-2 partly addressed (C2-F2 filled), but **0 of 102 lessons have a body**; no assessments anywhere |
+| Course content | 🔴 **Blocker (B-2)** — 12 placeholder lessons; 3 of 6 courses un-completable; no functioning assessments. `content` is *not* the metric |
 | Media protection | ✅ **F-2 closed (W3)** — private bucket + per-request signed delivery; 152 public originals deleted, 93/93 assets deliver, **29/29** in production |
 | Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired, deployed, **34/34 in production** |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
@@ -200,26 +204,62 @@ Also fixed: the verifier printed `PASS — 0 checks, 0 failures` after throwing
 early. A run that asserted nothing now reports **INCONCLUSIVE** and exits
 non-zero.
 
-### B-2 — A published course has no content · 🟠 **partly addressed**
+### B-2 — Course completeness · 🔴 **OPEN, now decomposed** (B-2A audit complete)
 
-C2-F2 now has 20 lessons where it had 0. **Not closed:** no lesson anywhere on
-the platform has a `content` body (**0 of 102**, measured service-role), and
-H-1's total absence of assessments is unchanged.
+> Audited in full: **[xpa-8-b2-course-completeness-audit.md](xpa-8-b2-course-completeness-audit.md)**.
+> Audit only — no migration, no lesson edit, no assessment created, no
+> publication changed.
 
-| Course | Modules | Lessons | Issues |
-|---|---|---|---|
-| C1-F1 | 3 | 17 | no quiz, no final exam |
-| C1-F2 | 4 | 18 | no quiz, no final exam |
-| C1-F3 | 4 | 17 | no quiz, no final exam |
-| C2-F1 | 4 | 17 | no quiz, no final exam |
-| **C2-F2** *Mesurer l'expérience client* | **4** | **0** | **NO LESSONS · 4 empty modules · no first-entry route** |
-| C2-F4 | 4 | 13 | no quiz, no final exam |
+**The old metric was wrong.** B-2 was tracked as "no lesson has a `content`
+body — 0 of 102". That is true and it is **not a defect**: `lessons.content` is
+optional supplemental text, conditionally rendered, never validated, and absent
+from completion logic. Zero of 102 lessons use it *including the three courses
+that work end to end*. Applied literally, `content != null` condemns all six
+courses. It is not the standard.
 
-C2-F2 is **published and sellable** while containing nothing. A learner granted
-access lands on the UAT-ROUTE-01 fallback (`/courses/…`) — the fail-safe works,
-but it is protecting the learner from a content defect, not a routing one.
+**The real defect is narrower and worse.** 12 lessons have **no instructional
+modality at all** — no video, no body, no resource, no voice, no quiz. Because
+completion is driven by video playback (the manual "Marquer comme complétée"
+button is `if (pilotMode) return null`, and production is in pilot), **those
+lessons can never be completed**, so three courses are permanently
+un-completable and their promised certificates unreachable.
 
-Either unpublish it or fill it. Do not route around it.
+| Course | Modules | Lessons | With video | No modality | Completable | Certificate |
+|---|---|---|---|---|---|---|
+| C1-F1 | 3 | 17 | 17 | 0 | **17/17** | ✅ reachable |
+| C1-F2 | 4 | 18 | 18 | 0 | **18/18** | ✅ reachable |
+| C1-F3 | 4 | 17 | 16 | **1** | 16/17 | ❌ |
+| C2-F1 | 4 | 17 | 17 | 0 | **17/17** | ✅ reachable |
+| **C2-F2** | 4 | 20 | **10** | **10** | **10/20** | ❌ |
+| C2-F4 | 4 | 13 | 12 | **1** | 12/13 | ❌ |
+
+**C2-F2 is half-authored, split cleanly by module:** modules 1–2 are complete
+(10 videos, all delivering through the F-2 route); modules 3–4 are **entirely
+placeholder**. It is published and free while advertising 20 lessons of which 10
+cannot be completed.
+
+No empty modules, no missing media, no duplicate media, no orphan content, no
+metadata gaps, no broken first-lesson route — all ruled out by measurement.
+
+**Sub-findings**
+
+| ID | Finding | Severity |
+|---|---|---|
+| **B-2.1** | 12 placeholder lessons (C2-F2 ×10, C1-F3 ×1, C2-F4 ×1) | 🔴 BLOCKER |
+| **B-2.2** | 3 courses un-completable → certificates unreachable | 🔴 BLOCKER |
+| **B-2.3** | No functioning assessments — the 1 quiz has `course_id` and `module_id` NULL, so it gates nothing; 0 attempts ever | 🟠 HIGH (product decision) |
+| **B-2.4** | 4 of 5 voice personas authored but unpublished (missing `agent_id`); parent lessons still completable | 🟡 MEDIUM |
+| **B-2.5** | Duplicate lesson slug `cas-pratique-construire-un-tableau-de-bord` in two C2-F2 modules | 🟡 MEDIUM |
+| **B-2.6** | Completion depends on a mechanism disabled in the current mode — video is the only path | 🟠 HIGH |
+
+**Recommendation:** unpublish **C2-F2** unless its 10 remaining videos are
+imminent — one reversible boolean that removes a broken promise now. Repair
+C1-F3 and C2-F4 instead of withdrawing them: each is a single lesson from
+complete, and C2-F4 is a paid course. C1-F1, C1-F2 and C2-F1 need nothing.
+
+Certificates deserve a separate ruling: every public course page promises
+"Certificat inclus", and a certificate currently attests only that a learner
+played every video to the end.
 
 ### B-3 — The legacy `/app/[orgSlug]` product is reachable · ✅ **CLOSED (W2)**
 
