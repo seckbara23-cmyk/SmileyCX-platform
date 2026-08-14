@@ -11,6 +11,25 @@ export const metadata: Metadata = {
 }
 
 /**
+ * ── XPA-8 B-2B: PUBLICATION MUST ACTUALLY TAKE EFFECT ──────────────────────
+ *
+ * This page had no revalidation, so Next prerendered it at build time and
+ * served that HTML until the next deployment. Measured during B-2B: after
+ * C2-F2 was unpublished, `/courses/mesurer-l-experience-client` correctly
+ * began returning 404 — while `/courses` kept shipping the course in its
+ * serialized payload as `"available": true`. The catalogue was advertising a
+ * course that 404s on click, and would have gone on doing so until somebody
+ * happened to redeploy.
+ *
+ * Unpublishing is the platform's only withdrawal mechanism. A withdrawal that
+ * depends on remembering to redeploy is not a mechanism. Sixty seconds bounds
+ * the staleness while keeping the page cacheable; the course DETAIL route is
+ * already dynamic and refuses immediately, so the exposure during that window
+ * is a stale card, never stale content.
+ */
+export const revalidate = 60
+
+/**
  * Public course catalogue (XPA-3).
  *
  * Browsing is now driven by the CATALOGUE structure seeded in XPA-2, replacing
