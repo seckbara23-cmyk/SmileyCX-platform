@@ -295,12 +295,98 @@ route, and no course where `content` absence is the actual problem.
 
 ---
 
+## 10a. B-2C — source-material hunt for the two placeholders
+
+**Result: no authoritative source material exists for either lesson. Nothing was
+changed in production.**
+
+### The two lessons, exactly
+
+| | C1-F3 | C2-F4 |
+|---|---|---|
+| course | Communiquer avec les clients sur les canaux digitaux | Gérer les réclamations… |
+| module | 3. Organiser son travail sur les canaux digitaux | 4. Cas pratique : une réclamation complexe de bout en bout |
+| lesson | **Prioriser et organiser ses réponses** | **Cas pratique : une réclamation complexe de bout en bout** |
+| id | `d59a1304-7d81-4bc3-aa97-ed0e2deffc22` | `0cb17453-71a5-4ed4-99e0-90d3f5baefe7` |
+| slug | `prioriser-et-organiser-ses-reponses` | `cas-pratique-une-reclamation-complexe-de-bout-en-bout` |
+| order | 4 of 4 in its module | **1 of 1 — the module's only lesson** |
+| duration | 2 min | 4 min |
+| created | 2026-07-18T16:22:46 | 2026-07-27T16:10:57 |
+| `content`, `video_url`, `video_object_path`, `pdf_url`, `pdf_object_path`, `subtitle_url`, `subtitle_object_path` | **all NULL** | **all NULL** |
+
+C2-F4's placeholder is the sole lesson of module 4, so that module has no
+content whatsoever — and C2-F4 is a **paid** course at 15 000 XOF.
+
+### Where the material would have been, and why it is not there
+
+**C1-F3 — two candidate orphans, both disproved.** Two unreferenced videos were
+uploaded 8 minutes after the placeholder was created, on the same day. They are
+**not** its content:
+
+```
+16:30:22  ORPHAN  15,397,626 bytes  sha256 8e653535bba2d3ef2932
+16:32:20  M1L2    15,397,626 bytes  sha256 8e653535bba2d3ef2932   ← BYTE-IDENTICAL
+16:31:03  ORPHAN  12,514,187 bytes  sha256 8ab1624b127e50bf62b9
+16:32:57  M1L3    12,514,187 bytes  sha256 8ab1624b127e50bf62b9   ← BYTE-IDENTICAL
+```
+
+They are superseded first uploads of **M1L2 and M1L3** — the author uploaded,
+re-uploaded ~2 minutes later, and the lessons kept the second copy. Attaching
+either to M3L4 would have put another lesson's video behind a third lesson's
+title. Timestamp proximity looked like evidence; the checksums are evidence.
+
+The authoring record shows the gap plainly: M3L4 was created at 16:22:46 during
+the structure pass, and module 3's videos arrived that evening at 21:50, 21:51
+and 21:53 — for L1, L2 and L3. **L4 never received one.**
+
+**C2-F4 — no candidate at all.** Twelve videos were uploaded in one continuous
+session, 15:48 → 16:07. The placeholder was created at **16:10:57, three and a
+half minutes after the last upload**, and nothing followed it.
+
+### Everything else that was searched
+
+| Source | Result |
+|---|---|
+| `course-content` orphans (59) | all decode to C2-F2, C1-F1, C1-F2, C1-F3, C2-F1 authoring days; **none unaccounted for** |
+| `course-videos` (5, public) | uploaded 2026-04-14, named for the pilot C1-F1 structure — predate both courses by months |
+| unreferenced PDFs | **0** — all 3 PDFs are attached to C1-F2 lessons |
+| subtitle objects | **0 in existence** |
+| `course-media` near either lesson | only cover images (PNG), no lesson media |
+| repository working tree | no reference beyond this audit document |
+| git history (`-S` across all refs) | never appeared in any commit |
+
+*Note for the eventual orphan cleanup (out of scope): 2 of the 59 orphans are
+now positively identified as duplicates of M1L2 and M1L3.*
+
+### What is missing, precisely
+
+Neither lesson can be repaired without content that does not exist anywhere:
+
+1. **C1-F3 / M3L4 — "Prioriser et organiser ses réponses"**
+   One instructional modality. Its three module siblings are ~2-minute videos of
+   15–18 MB, so a video of that shape is the consistent choice.
+
+2. **C2-F4 / M4L1 — "Cas pratique : une réclamation complexe de bout en bout"**
+   One instructional modality. It is the course's capstone case study, budgeted
+   at 4 minutes; siblings run 13–16 MB.
+
+A written `content` body or a downloadable resource would satisfy the §9
+standard equally — the standard asks for *an intentional modality*, not a video
+specifically. What none of the options can be is invented: writing the lesson
+from general knowledge, generating a video, or copying a sibling's asset would
+each produce a course that looks complete and teaches the wrong thing.
+
+**B-2.1 cannot be closed by engineering.** It is blocked on two pieces of
+authored content.
+
+---
+
 ## 11. Recommended repair waves
 
 | Wave | Content | Gate |
 |---|---|---|
 | **B-2B** | **Decide C2-F2's disposition** (§12) — this is one decision and it removes the largest blocker | BLOCKER |
-| **B-2C** | Author or remove the 2 remaining placeholder lessons in C1-F3 and C2-F4 | BLOCKER |
+| **B-2C** | Author or remove the 2 remaining placeholder lessons in C1-F3 and C2-F4 · **audited (§10a): no source material exists — blocked on content authoring** | BLOCKER |
 | **B-2D** | Fix the duplicate C2-F2 slug; re-verify completion end-to-end on one course with a real learner | BLOCKER |
 | **B-2E** | Rule on the certificate/assessment question (§5): soften the "Certificat inclus" claim, or author module quizzes and a final exam and re-point the orphan quiz | HIGH |
 | **B-2F** | Make completion mode-independent — a lesson should be completable by its own modality, not only by video | HIGH |

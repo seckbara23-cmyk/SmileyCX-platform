@@ -292,7 +292,7 @@ an honest "temporarily unavailable" state for those who hold it.
 
 | ID | Finding | Severity |
 |---|---|---|
-| **B-2.1** | 12 placeholder lessons (C2-F2 ×10, C1-F3 ×1, C2-F4 ×1) | 🔴 BLOCKER |
+| **B-2.1** | **2** placeholder lessons remain (C1-F3 ×1, C2-F4 ×1) — C2-F2's 10 withdrawn with the course. B-2C audit: **no source material exists anywhere**; blocked on content authoring, not engineering | 🔴 BLOCKER |
 | **B-2.2** | 3 courses un-completable → certificates unreachable | 🔴 BLOCKER |
 | **B-2.3** | No functioning assessments — the 1 quiz has `course_id` and `module_id` NULL, so it gates nothing; 0 attempts ever | 🟠 HIGH (product decision) |
 | **B-2.4** | 4 of 5 voice personas authored but unpublished (missing `agent_id`); parent lessons still completable | 🟡 MEDIUM |
