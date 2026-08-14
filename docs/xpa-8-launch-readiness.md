@@ -40,7 +40,7 @@ None of the three blockers is large. All are precise.
 |---|---|
 | Security / access model | 🟢 **Strong** — **207 production checks, 0 failures** across six verifiers |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
-| Course content | 🔴 **Blocker (B-2)** — 12 placeholder lessons; 3 of 6 courses un-completable; no functioning assessments. `content` is *not* the metric |
+| Course content | 🔴 **Blocker (B-2)** — B-2B closed (C2-F2 withdrawn). Remaining: 2 placeholder lessons in C1-F3/C2-F4, no functioning assessments |
 | Media protection | ✅ **F-2 closed (W3)** — private bucket + per-request signed delivery; 152 public originals deleted, 93/93 assets deliver, **29/29** in production |
 | Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired, deployed, **34/34 in production** |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
@@ -241,6 +241,53 @@ cannot be completed.
 No empty modules, no missing media, no duplicate media, no orphan content, no
 metadata gaps, no broken first-lesson route — all ruled out by measurement.
 
+**B-2B — publication safety · ✅ CLOSED**
+
+C2-F2 is **withdrawn** (`is_published = false`), one scoped row change with
+before/after snapshots. Verified in production, **26/26**: the course row is
+invisible to anon, `public_course_lessons`/`_modules` return 0, the detail page
+404s, the catalogue no longer ships it, `/`, `/parcours`, `/secteurs` and the
+sitemap are clean, and it can no longer be granted as a new entitlement (5 of 6
+courses grantable). Nothing was destroyed — 4 modules, 20 lessons, 10 media
+assets, Marième's ACTIVE `MANUAL_ADMIN` entitlement and her enrollment all
+preserved, and the row remains editable in admin as *Brouillon*.
+
+**The unpublish alone was not sufficient.** `/courses` had no revalidation, so
+Next prerendered it at build time and kept serving that HTML: the detail route
+began returning 404 while the listing still shipped the course as
+`available: true`, advertising something that 404s on click. A withdrawal that
+depends on remembering to redeploy is not a withdrawal. Fixed with
+`export const revalidate = 60`; measured after deploy, the listing refreshes
+within the window (`age 36s`, slug and title both absent).
+
+*The first version of the B-2B verifier reported the catalogue clean. It was
+wrong — it searched for `"slug":"mesurer-…"` while the RSC payload escapes its
+quotes. It now matches the bare slug.*
+
+**Publication did not revoke access**, per the ratified contract in 035 and 037
+— *publication controls DISCOVERY, never ACCESS*. `has_course_access()` remains
+true for the entitled learner and the media route still serves her (302), while
+refusing an outsider (403) and anonymous (401).
+
+### UX-1 — withdrawn-course dead end (recorded, not fixed)
+
+Deferred deliberately out of B-2B. Three facts that are individually correct and
+collectively incoherent:
+
+- the entitled learner **retains access authority** — `has_course_access()` is
+  true and protected media still streams;
+- the **course row is hidden** — `courses_public_select` (001) still carries an
+  `is_published` arm, while `modules_visible`/`lessons_visible` (036) were
+  rewritten onto the entitlement seam and carry none. She sees **0 course rows
+  but 4 modules and 20 lessons**;
+- the learn page queries `courses` first, so it **ends at "Leçon introuvable"**
+  rather than explaining.
+
+She cannot accidentally enter, and she also cannot be told why. Affects one real
+learner (Marième, 0 progress). The fix is a product decision — either bring the
+`courses` policy onto the same seam as its content, or give a withdrawn course
+an honest "temporarily unavailable" state for those who hold it.
+
 **Sub-findings**
 
 | ID | Finding | Severity |
@@ -250,12 +297,12 @@ metadata gaps, no broken first-lesson route — all ruled out by measurement.
 | **B-2.3** | No functioning assessments — the 1 quiz has `course_id` and `module_id` NULL, so it gates nothing; 0 attempts ever | 🟠 HIGH (product decision) |
 | **B-2.4** | 4 of 5 voice personas authored but unpublished (missing `agent_id`); parent lessons still completable | 🟡 MEDIUM |
 | **B-2.5** | Duplicate lesson slug `cas-pratique-construire-un-tableau-de-bord` in two C2-F2 modules | 🟡 MEDIUM |
+| **UX-1** | Withdrawn course: access retained, course row hidden, learn page dead-ends on "Leçon introuvable" | 🟡 MEDIUM |
 | **B-2.6** | Completion depends on a mechanism disabled in the current mode — video is the only path | 🟠 HIGH |
 
-**Recommendation:** unpublish **C2-F2** unless its 10 remaining videos are
-imminent — one reversible boolean that removes a broken promise now. Repair
-C1-F3 and C2-F4 instead of withdrawing them: each is a single lesson from
-complete, and C2-F4 is a paid course. C1-F1, C1-F2 and C2-F1 need nothing.
+**C2-F2 is now withdrawn (B-2B, above).** Still open: repair C1-F3 and C2-F4
+rather than withdrawing them — each is a single lesson from complete, and C2-F4
+is a paid course. C1-F1, C1-F2 and C2-F1 need nothing.
 
 Certificates deserve a separate ruling: every public course page promises
 "Certificat inclus", and a certificate currently attests only that a learner
