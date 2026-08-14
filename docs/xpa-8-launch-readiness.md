@@ -19,13 +19,12 @@ and an untested legacy product is reachable by any authenticated user.
 
 None of the three blockers is large. All are precise.
 
-> **Update — 2026-08-13, after W1 and W2.** B-1 and B-3 are **closed**. The
-> verdict stays **NO-GO**, and the reason has shifted: B-2 is only partly
-> addressed, and two new findings (**F-1**, **F-2**) came out of W2's production
-> verifier run. **F-2 — course videos are served from public buckets with no
-> entitlement check — is now the most serious open item on the platform.**
-> `verify-xpa-6a` currently reports 52/57 for a single root cause explained
-> under F-1; the other three verifiers remain green (30/30, 22/22, 32/32).
+> **Update — after W1, W2 and W3.** B-1, B-3 and **F-2** are **closed**. The
+> verdict stays **NO-GO** on **B-2** (no lesson on the platform has a `content`
+> body — 0 of 102) and **F-1** (C2-F2's 20/20 preview flags, which also keep
+> `verify-xpa-6a` at 52/57). Everything else is green: `verify-xpa-6c` 30/30,
+> `verify-xpa-6d` 22/22, `verify-xpa-7` 32/32, `verify-xpa-8-w2` 34/34,
+> `verify-xpa-8-storage` 29/29.
 
 ---
 
@@ -36,7 +35,7 @@ None of the three blockers is large. All are precise.
 | Security / access model | 🟢 **Strong** — 141 production checks, 0 failures |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
 | Course content | 🔴 **Blocker** — B-2 partly addressed (C2-F2 filled), but **0 of 102 lessons have a body**; no assessments anywhere |
-| Media protection | 🔴 **F-2 — remediation IMPLEMENTED, not yet applied.** Migrations 041/042 written; production unchanged pending the operator sequence in `xpa-8-w3-protected-media.md` §8 |
+| Media protection | ✅ **F-2 closed (W3)** — private bucket + per-request signed delivery; 152 public originals deleted, 93/93 assets deliver, **29/29** in production |
 | Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired, deployed, **34/34 in production** |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
 | Email / invitations | 🟠 **High** — sender defaults to the old domain |
@@ -90,7 +89,7 @@ onboarding model, and it is being asked to serve as one.
 **This must be resolved before the mode can be flipped, and the mode must be
 flipped before launch.** The two are locked together.
 
-### F-2 — Course video media has no entitlement check ⚠️ **NEW BLOCKER** (found during W2)
+### F-2 — Course video media has no entitlement check · ✅ **CLOSED (W3)**
 
 All three storage buckets are `public=true` (`course-videos`, `course-media`,
 `certificates`). A video URL belonging to a lesson that RLS **correctly hides**
@@ -110,16 +109,29 @@ review — certificates carry learner names.
 Standard fix: private bucket + short-lived signed URLs minted server-side behind
 `has_course_access()`.
 
-**W3 status.** Exactly that, implemented and proved on a throwaway bucket, but
-**not applied to production**: migrations 041/042 are written and unapplied, no
-bucket has been flipped, no object moved. Two further findings came out of the
-audit — anon could **enumerate** all 149 videos with the public anon key (so
-"the URL is secret" was never true), and 018's `cert_service_insert` /
-`cert_service_update` policies had no `TO` clause, letting any signed-in learner
-**write** into another learner's certificate folder (proved: 0 → 1 objects, then
-cleaned). Closure requires the ordered operator steps in
-`xpa-8-w3-protected-media.md` §8; the application must not deploy before 041,
-or every lesson player breaks with `42703`.
+**CLOSED by W3** — see [xpa-8-w3-protected-media.md](xpa-8-w3-protected-media.md).
+
+Two further findings came out of the audit: anon could **enumerate** all 149
+videos with the public anon key (so "the URL is secret" was never true), and
+018's `cert_service_insert` / `cert_service_update` policies had no `TO` clause,
+letting any signed-in learner **write** into another learner's certificate
+folder (proved 0 → 1 objects, then cleaned).
+
+**Closure evidence.** The URL that served 4,074,127 bytes anonymously now
+returns **400**; **0 of 93** historical lesson URLs still serve; anon
+enumeration of `course-media/video` returns **0** objects where it returned 149.
+An entitled learner gets **302 → signed URL → 200 · video/mp4 · 14,931,762**
+with Range **206**, and **93 of 93 assets deliver platform-wide**. Anonymous
+401, unentitled 403, enrollment-only 403, expired 403, revoked 403 — expiry and
+revocation flipped in both directions and took effect on the next request.
+Certificates: anon 400, other learner 400, owner 200. `course-media` retains
+only its 24 marketing covers; 152 private copies retained including the 59
+orphans. `verify-xpa-8-storage` **29/29**.
+
+W3 also found and fixed a defect in itself: **Next 14 caches GET fetches**, so
+supabase-js reads were being memoised — which would have let a revoked
+entitlement keep working and would have weakened `lib/rate-limit.ts`. Both
+Supabase clients now pass `cache: 'no-store'`.
 
 ### F-1 — C2-F2's new content is entirely flagged public preview (found during W2)
 
@@ -339,7 +351,7 @@ break-glass path (service-role SQL editor) with who holds it.
 | **W1** | **B-1** — replace the source-code allowlist with a data-driven check (entitlement- or profile-based), then prove the `private` flip admits all three real accounts | BLOCKER |
 | ~~**W2**~~ | ~~**B-3** — guard or retire `/app/[orgSlug]`~~ · ✅ **DONE** — retired | BLOCKER |
 | **W3** | **B-2** — C2-F2 filled but every lesson body is empty; add a published-course completeness check to CI | BLOCKER |
-| **W3b** | **F-2** — private media bucket + signed URLs behind `has_course_access()`; review the public `certificates` bucket · **implemented, awaiting the operator sequence** | BLOCKER |
+| ~~**W3b**~~ | ~~**F-2** — private media bucket + signed URLs~~ · ✅ **DONE** — closed and verified in production | BLOCKER |
 | **W3c** | **F-1** — rule on C2-F2's 20/20 preview flags; re-base `verify-xpa-6a` onto the invariant instead of the snapshot | BLOCKER |
 | **W4** | **H-3** confirm `EMAIL_FROM` / `RESEND_API_KEY` in Vercel and send a real invitation; **H-4** make `PLATFORM_MODE` fail closed | HIGH |
 | **W5** | **H-1** decide the assessment model and the harvest-and-retry policy together; fix the orphan quiz | HIGH |
@@ -347,10 +359,10 @@ break-glass path (service-role SQL editor) with who holds it.
 | **W7** | **M-1/M-2** relocate the PPTX and the two PDFs; **M-4/M-5** brand tag and pilot copy | MEDIUM |
 | **W8** | **M-6** ledger reconciliation; runbook; launch UAT execution | MEDIUM |
 
-**Progress:** B-1 closed (W1), B-3 closed (W2). The remaining NO-GO set is
-**B-2, F-1 and F-2** — F-1 and F-2 were both found during W2's verifier run and
-did not exist in the original blocker list. F-2 is the most serious item now
-open on the platform: paid video content is served with no entitlement check.
+**Progress:** B-1 closed (W1), B-3 closed (W2), **F-2 closed (W3)**. The
+remaining NO-GO set is **B-2 and F-1**. Paid media is now protected: private
+bucket, per-request authorization against the entitlement seam, and every
+historical public URL dead.
 
 **W1–W3 are the NO-GO set.** With those closed and W4 confirmed, this becomes a
 **CONDITIONAL GO** — conditional on accepting H-1 (no assessments) and H-2

@@ -1,9 +1,11 @@
-# XPA-8 W3 — Protected Storage Delivery (F-2)
+# XPA-8 W3 — Protected Storage Delivery (F-2): CLOSED
 
-**Status:** 🟠 **IMPLEMENTED, NOT YET CLOSED** — closure requires operator steps
+**Status:** ✅ **F-2 CLOSED** — remediated, deployed, and proved in production
 **Baseline:** `e9661ab` (XPA-8 W2 closed)
-**Schema change:** migrations **041** and **042** — written, **NOT applied**
-**Production state:** unchanged. No bucket flipped, no object moved or deleted.
+**Commits:** `a14fb8b` implementation · `705d2e4` cache fix · `a1e4355` deletion guard
+**Schema:** migrations **041** and **042** — both **applied**
+**Production:** 152 protected objects copied to a private bucket and the public
+originals **deleted**. `course-media` now holds only the 24 marketing covers.
 
 **Invariants established:**
 
@@ -341,6 +343,100 @@ have run none of them.
 
 ---
 
+## 8a. CLOSURE EVIDENCE — measured after deletion
+
+Executed in order: 041 → deploy → copy 152 → 042 → deploy cache fix → verify →
+delete originals → verify.
+
+### The closure criterion
+
+> a protected object URL which was anonymously downloadable before remediation
+> is no longer anonymously downloadable, while a properly entitled learner can
+> still consume the content through the supported application path
+
+**Both halves, measured:**
+
+| | Before | After |
+|---|---|---|
+| `…/object/public/course-media/video/1776881644416-w63qesi2jjj.mp4` | **200 · 4,074,127 bytes** | **400** (also 400 on a full GET, not only HEAD) |
+| All 93 historical URLs stored on lessons | all served | **0 of 93 still alive** |
+| An orphan's public URL | 200 | **400** |
+| anon `LIST course-media/video` | **149 objects** | **0 objects** |
+| Entitled learner, supported path | n/a | **302 → signed URL → 200 · video/mp4 · 14,931,762** |
+| Range through the route | n/a | **206 `bytes 0-4095/14931762`** |
+
+### Deletion, as classified
+
+```
+public originals under review : 152
+REFERENCED                    : 93   ↳ DB path 93 · private copy 93
+ORPHAN                        : 59   ↳ private copy 59
+columns scanned               : 8
+removed 152; course-media protected objects remaining: 0
+private copies still present  : 152
+cover/ untouched              : 24
+```
+
+The guard was proved to **refuse** before it was trusted: a stray planted in the
+public bucket with no private copy produced `HARD STOP — NOTHING DELETED`,
+refusing all 153 rather than the offender alone.
+
+### Buckets now
+
+| Bucket | public | Contents |
+|---|---|---|
+| `course-media` | true | **`cover/` 24 only** — video/pdf/subtitle all empty |
+| `course-content` | **false** | 149 video + 3 pdf = 152 |
+| `certificates` | **false** | 0 |
+| `course-videos` | true | 5 orphan mp4 — out of scope, see §9 |
+
+### Delivery, platform-wide
+
+**93 of 93 assets deliver** for a learner entitled to all six courses — 90 video
++ 3 pdf, each returning 302 to a signed URL inside `course-content`. A sampled
+full fetch returned `200 · video/mp4 · 14,931,762`.
+
+| Caller | Result |
+|---|---|
+| entitled | **302 → 200**, Range **206** |
+| anonymous | **401** |
+| authenticated, unentitled | **403** |
+| enrollment-only | **403** |
+| expired entitlement | **403**, and **302** again once restored |
+| revoked entitlement | **403**, and **302** again once restored |
+| certificate: anon / other learner / owner | **400 / 400 / 200** |
+
+Expiry and revocation were flipped **in both directions** and took effect on the
+next request each time — the per-request re-authorization holds.
+
+### No regression
+
+- all 93 DB paths resolve; **no dangling reference**
+- 59 orphan private copies retained, referenced by nothing
+- a course cover still loads anonymously (`200 image/png`); catalogue renders 200
+- `verify-xpa-8-storage` **29/29** · `verify-xpa-6c` 30/30 · `verify-xpa-6d`
+  22/22 · `verify-xpa-7` 32/32 · `verify-xpa-8-w2` 34/34
+- `verify-xpa-6a` **52/57 — unchanged**, F-1, untouched throughout
+
+### The defect W3 found in itself
+
+Between 042 and closure the route returned 404 for one lesson and 401 for every
+other. **Next 14 caches GET fetches**, supabase-js reads are GETs, and
+`dynamic = 'force-dynamic'` does not disable it — that governs rendering, the
+Data Cache is a separate layer. A row fetched while `video_object_path` was
+still NULL was still being served afterwards.
+
+Not only a media bug: the same clients back `lib/rate-limit.ts` and
+`resolveCourseAccessById`, so a cached answer would have let a **revoked**
+entitlement keep working. Both now pass `cache: 'no-store'` (`705d2e4`). Public
+discovery is unaffected — `lib/queries/catalogue.ts` has its own anon client.
+
+The routes also swallowed the query error, turning any failure into a 404
+indistinguishable from a missing asset. They now return **503**, proved by 17
+unit tests that make the client fail.
+
+---
+
 ## 9. Out of scope, found anyway
 
 - **`course-videos`** — public, 5 mp4 at root (`module-1-experience-client.mp4`
@@ -363,11 +459,20 @@ have run none of them.
 
 ## 10. Residual risks
 
-1. **CDN cache** after step 6 — re-verify a few minutes later.
-2. **Serverless invocations**: each Range request now hits a function. Fine at
-   this scale; worth watching if the catalogue grows.
-3. **Safari and 302 for `<video>`** — redirects for media sources are widely
-   supported but were not exercised in a real browser here. Step 5 should
-   include one manual playback check on Safari/iOS.
-4. **`course-videos`** stays publicly readable until someone decides (§9).
-5. F-2 is **not closed** until step 7 passes.
+1. **Safari and 302 for `<video>`** — the redirect delivery was verified with
+   HTTP clients including Range requests, and 93/93 assets deliver, but it was
+   **not exercised in a real browser**. One manual playback check on Safari/iOS
+   is the remaining unknown, and it is a rendering question rather than a
+   security one.
+2. **Serverless invocations**: each Range request now re-enters the route. Fine
+   at this scale — it is what makes revocation immediate — but worth watching if
+   the catalogue grows.
+3. **`course-videos`** — 5 orphan mp4 in a public bucket, referenced by no code
+   and no column, still anonymously downloadable by path. Out of W3 scope and
+   untouched; needs a disposition (§9).
+4. **The 59 orphan private copies** are retained and cost ~0.7 GB. They are
+   protected now, but nothing references them; a later decision should either
+   attach or remove them.
+5. **CDN cache** — measured immediately after deletion and all 93 historical
+   URLs already returned 400, so the edge did not serve stale copies. Worth one
+   more spot-check later if any report of a working old link appears.
