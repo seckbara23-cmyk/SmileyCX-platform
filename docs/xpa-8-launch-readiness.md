@@ -19,11 +19,13 @@ and an untested legacy product is reachable by any authenticated user.
 
 None of the three blockers is large. All are precise.
 
-> **Update — after W1, W2 and W3.** B-1, B-3 and **F-2** are **closed**. The
-> verdict stays **NO-GO** on **B-2** (no lesson on the platform has a `content`
-> body — 0 of 102) and **F-1** (C2-F2's 20/20 preview flags, which also keep
-> `verify-xpa-6a` at 52/57). Everything else is green: `verify-xpa-6c` 30/30,
-> `verify-xpa-6d` 22/22, `verify-xpa-7` 32/32, `verify-xpa-8-w2` 34/34,
+> **Update — after W1, W2, W3 and F-1.** B-1, B-3, **F-2** and **F-1** are all
+> **closed**. The verdict stays **NO-GO** on **B-2** alone: no lesson on the
+> platform has a `content` body (0 of 102) and there are no assessments (H-1).
+>
+> **Every production verifier is now green — 207 checks, 0 failures:**
+> `verify-xpa-6a` **60/60** (re-based onto the invariant), `verify-xpa-6c`
+> 30/30, `verify-xpa-6d` 22/22, `verify-xpa-7` 32/32, `verify-xpa-8-w2` 34/34,
 > `verify-xpa-8-storage` 29/29.
 
 ---
@@ -32,7 +34,7 @@ None of the three blockers is large. All are precise.
 
 | Dimension | State |
 |---|---|
-| Security / access model | 🟢 **Strong** — 141 production checks, 0 failures |
+| Security / access model | 🟢 **Strong** — **207 production checks, 0 failures** across six verifiers |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
 | Course content | 🔴 **Blocker** — B-2 partly addressed (C2-F2 filled), but **0 of 102 lessons have a body**; no assessments anywhere |
 | Media protection | ✅ **F-2 closed (W3)** — private bucket + per-request signed delivery; 152 public originals deleted, 93/93 assets deliver, **29/29** in production |
@@ -133,7 +135,7 @@ supabase-js reads were being memoised — which would have let a revoked
 entitlement keep working and would have weakened `lib/rate-limit.ts`. Both
 Supabase clients now pass `cache: 'no-store'`.
 
-### F-1 — C2-F2's new content is entirely flagged public preview (found during W2)
+### F-1 — C2-F2's content entirely flagged public preview · ✅ **CLOSED**
 
 C2-F2 has been filled with 20 lessons, and **all 20** carry `is_preview = true`
 — the only course on the platform with any preview lessons. Migration `001:143`
@@ -145,13 +147,58 @@ exercises and exercise_items still return 0 rows, so XPA-6D holds.
 The column defaults to `false`, so this was deliberate — but 20 of 20 is the
 blanket-preview pattern migration 035 was written to eliminate.
 
-**Consequence for CI:** `verify-xpa-6a` is now **52/57**. All five failures share
-this one root cause — the verifier hardcodes the post-035 snapshot (*preview
-count is 0*; *anon reads of `modules`/`lessons` are `DENIED_EMPTY`*) as though it
-were an invariant, which 035's own comment contradicts. **Not edited during W2**;
-recommended fix is to assert the invariant instead — *anon-visible lessons equal
-exactly the `is_preview` set, carry no body, and never include a non-preview
-row.*
+**CLOSED.** Root cause established by audit: **not** a default, import, script
+or migration. The flags were authored in the admin editor — all 20 lessons
+created in one 21-minute session, video upload timestamps matching `created_at`,
+19/20 slugs matching the editor's `autoSlug(title)`. The checkbox is correctly
+labelled *"visible sans inscription"*, defaults unchecked, and the form unmounts
+between lessons, so there is no state carry-over: **each flag was an individual
+deliberate tick.** Deliberate, but the *purpose* could not be proven from the
+data, so the disposition was a product ruling rather than an engineering
+deduction.
+
+**Cleared, because they bought nothing and risked something:**
+
+- **no UX depended on them.** The catalogue lists every lesson of every course
+  from `public_course_lessons` regardless of preview, and the "GRATUIT" badge is
+  `is_preview || FREE_ACCESS_MODE` — in pilot mode all six courses rendered
+  identically (measured: **0 lock icons anywhere**). The flags were invisible,
+  which is likely why nobody noticed; they would have activated on the `private`
+  flip, making C2-F2 the only course advertising 20 free lessons it does not
+  deliver.
+- **they delivered no sample.** No lesson has a body, the media route refuses an
+  unentitled caller (403), and the learn page bounces anonymous to `/login`.
+- **they armed a real exposure.** `lessons.content` **is** anon-readable on a
+  preview row — null today only because B-2 has not been done. The moment lesson
+  bodies are written, 20 lessons' full text would have become public with no
+  further change.
+
+**Migration 043** clears them, scoped to C2-F2 only, self-verifying, and
+deliberately **not** an unconditional reset — that would erase future deliberate
+previews, the mistake 035 warned about. The preview *feature* is untouched.
+
+**Production evidence after 043:** C2-F2 preview 0 of 20; 0 preview lessons
+platform-wide; anon and unentitled learners see **0 lesson rows, 0 module rows,
+no content, no `video_url`, no `*_object_path`**; the public projections still
+serve 23 modules and 102 lesson titles with no protected columns; the C2-F2
+public page still lists all 20 titles; and an entitled learner still streams
+**10/10** C2-F2 assets with Range `206`. 043 changed nothing but the flag —
+102 lessons, 90 video paths, 3 pdf paths, 90 legacy URLs, 23 modules, 6 courses
+all unchanged, 0 bodies written or removed.
+
+**The verifier was re-based, not made green.** `verify-xpa-6a` had encoded the
+state on the day 035 ran (*preview count is 0*, *anon reads are `DENIED_EMPTY`*)
+as though it were the rule. It now asserts the invariant: anon-visible lessons
+== exactly the `is_preview` set, exposing no body and no object path, never a
+non-preview row; modules visible only when they hold a preview lesson; and no
+course flagged wholesale. **Run against the un-remediated database it still
+FAILED, 3 of 60**, on substantive checks — 10 rows leaking `video_object_path`
+to anon, the same to an unentitled learner, and one course flagged wholesale.
+It reports **60/60** only now that the data is actually correct.
+
+Also fixed: the verifier printed `PASS — 0 checks, 0 failures` after throwing
+early. A run that asserted nothing now reports **INCONCLUSIVE** and exits
+non-zero.
 
 ### B-2 — A published course has no content · 🟠 **partly addressed**
 
@@ -352,17 +399,30 @@ break-glass path (service-role SQL editor) with who holds it.
 | ~~**W2**~~ | ~~**B-3** — guard or retire `/app/[orgSlug]`~~ · ✅ **DONE** — retired | BLOCKER |
 | **W3** | **B-2** — C2-F2 filled but every lesson body is empty; add a published-course completeness check to CI | BLOCKER |
 | ~~**W3b**~~ | ~~**F-2** — private media bucket + signed URLs~~ · ✅ **DONE** — closed and verified in production | BLOCKER |
-| **W3c** | **F-1** — rule on C2-F2's 20/20 preview flags; re-base `verify-xpa-6a` onto the invariant instead of the snapshot | BLOCKER |
+| ~~**W3c**~~ | ~~**F-1** — rule on C2-F2's preview flags; re-base `verify-xpa-6a`~~ · ✅ **DONE** — cleared and verified, 6a now 60/60 | BLOCKER |
 | **W4** | **H-3** confirm `EMAIL_FROM` / `RESEND_API_KEY` in Vercel and send a real invitation; **H-4** make `PLATFORM_MODE` fail closed | HIGH |
 | **W5** | **H-1** decide the assessment model and the harvest-and-retry policy together; fix the orphan quiz | HIGH |
 | **W6** | **H-2** wire the four remaining voice personas, or scope launch to Ibrahima explicitly | HIGH |
 | **W7** | **M-1/M-2** relocate the PPTX and the two PDFs; **M-4/M-5** brand tag and pilot copy | MEDIUM |
 | **W8** | **M-6** ledger reconciliation; runbook; launch UAT execution | MEDIUM |
 
-**Progress:** B-1 closed (W1), B-3 closed (W2), **F-2 closed (W3)**. The
-remaining NO-GO set is **B-2 and F-1**. Paid media is now protected: private
-bucket, per-request authorization against the entitlement seam, and every
-historical public URL dead.
+**Progress:** B-1 closed (W1), B-3 closed (W2), **F-2 closed (W3)**, **F-1
+closed**. The remaining NO-GO set is **B-2 alone** — no lesson body anywhere
+(0 of 102) and no assessments (H-1).
+
+Paid media is protected (private bucket, per-request authorization, every
+historical public URL dead) and no learner content is anonymously readable.
+
+**New security-hardening item, deliberately NOT bundled into F-1** — the base
+`lessons` table exposes more to `anon` than the ratified public projection does:
+`content`, `title_fr`, `video_url` and the three `*_object_path` columns are all
+reachable on a preview row, while `public_course_lessons` exposes only id,
+module_id, course_id, slug, title, duration_minutes, is_preview, order_index.
+With no preview designated this is currently unreachable, but it re-arms the
+instant anyone legitimately designates one. Restricting those columns for `anon`
+touches the public catalogue's read path and needs its own change and its own
+verification. **The re-based `verify-xpa-6a` now detects it** and will fail
+loudly if a preview row ever exposes a body or an object path.
 
 **W1–W3 are the NO-GO set.** With those closed and W4 confirmed, this becomes a
 **CONDITIONAL GO** — conditional on accepting H-1 (no assessments) and H-2
