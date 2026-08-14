@@ -186,7 +186,63 @@ let entitlementId = null
 
 try {
   console.log('\n── 1. Anonymous reads of protected content ─────────────────────')
+  //
+  // -- WHY THIS IS NO LONGER "ANON MUST SEE ZERO ROWS" ----------------------
+  //
+  // It used to be. That expectation was written the day migration 035 zeroed a
+  // blanket is_preview flag, and it encoded THE COUNT ON THAT DAY as though it
+  // were the rule. It is not: 035's own comment says designating a preview
+  // lesson "remains a normal editorial action", and 001's policy carries an
+  // `OR is_preview = true` arm precisely so it can.
+  //
+  // When 20 lessons were later flagged, this check went red for a legitimate
+  // editorial change and stayed red. A permanently-red check is not a signal;
+  // it is noise that hides the next real finding.
+  //
+  // The assertion is now the INVARIANT, which is strictly stronger than "the
+  // count is zero" and survives whatever an administrator legitimately does:
+  //
+  //   anon-visible lessons  ==  exactly the is_preview set
+  //   a visible preview row exposes NO body and NO object path
+  //   a non-preview row is NEVER visible
+  //   modules are visible only when they hold a preview lesson
+  //
+  // With no previews designated it collapses to the old check, so nothing is
+  // lost today; the difference is that it still means something tomorrow.
+  const previewIds = new Set(
+    ((await rest('lessons?select=id&is_preview=eq.true&limit=1000', { key: SVC })).json ?? []).map(r => r.id))
+  const previewModuleIds = new Set(
+    ((await rest('lessons?select=module_id&is_preview=eq.true&limit=1000', { key: SVC })).json ?? [])
+      .map(r => r.module_id))
+
   for (const t of CONTENT) {
+    if (t === 'lessons') {
+      const seen = await rest('lessons?select=id,is_preview,content,video_object_path,pdf_object_path&limit=1000')
+      const rows = seen.json ?? []
+      const nonPreview = rows.filter(l => !l.is_preview)
+      const leakedBody = rows.filter(l => l.content)
+      const leakedPath = rows.filter(l => l.video_object_path || l.pdf_object_path)
+      const invisible = [...previewIds].filter(id => !rows.some(l => l.id === id))
+      record('anon lessons == exactly the preview set',
+        `${rows.length} visible / ${previewIds.size} preview` +
+        (nonPreview.length ? ` -- ${nonPreview.length} NON-PREVIEW LEAKED` : '') +
+        (invisible.length ? ` -- ${invisible.length} preview row(s) invisible` : ''),
+        nonPreview.length === 0 && invisible.length === 0)
+      record('anon lessons expose no body',
+        `${leakedBody.length} row(s) carrying content`, leakedBody.length === 0)
+      record('anon lessons expose no object path',
+        `${leakedPath.length} row(s) carrying an object path`, leakedPath.length === 0)
+      continue
+    }
+    if (t === 'modules') {
+      const mods = (await rest('modules?select=id&limit=1000')).json ?? []
+      const unexpected = mods.filter(m => !previewModuleIds.has(m.id))
+      record('anon modules == only those holding a preview lesson',
+        `${mods.length} visible / ${previewModuleIds.size} expected` +
+        (unexpected.length ? ` -- ${unexpected.length} UNEXPECTED` : ''),
+        unexpected.length === 0)
+      continue
+    }
     const r = await rest(`${t}?select=id&limit=5`)
     const verdict = classify(r)
     record(`anon ${t}`, `${verdict} (${r.status}${r.code ? ' ' + r.code : ''}, ${r.total} rows) ${r.message}`,
@@ -252,7 +308,31 @@ try {
   const learnerJwt = await signIn(LEARNER, PW)
   record('learner signed in', learnerJwt ? 'session issued' : 'NO SESSION', Boolean(learnerJwt))
 
+  // Same invariant as the anonymous arm: an unentitled learner may see exactly
+  // what the public may, and nothing more.
   for (const t of CONTENT) {
+    if (t === 'lessons') {
+      const seen = await rest('lessons?select=id,is_preview,content,video_object_path&limit=1000',
+        { jwt: learnerJwt })
+      const lrows = seen.json ?? []
+      const nonPreview = lrows.filter(l => !l.is_preview)
+      const leaked = lrows.filter(l => l.content || l.video_object_path)
+      record('learner lessons == exactly the preview set',
+        `${lrows.length} visible / ${previewIds.size} preview` +
+        (nonPreview.length ? ` -- ${nonPreview.length} NON-PREVIEW LEAKED` : ''),
+        nonPreview.length === 0)
+      record('learner lessons expose no body or object path',
+        `${leaked.length} row(s)`, leaked.length === 0)
+      continue
+    }
+    if (t === 'modules') {
+      const mods = (await rest('modules?select=id&limit=1000', { jwt: learnerJwt })).json ?? []
+      const unexpected = mods.filter(m => !previewModuleIds.has(m.id))
+      record('learner modules == only those holding a preview lesson',
+        `${mods.length} visible / ${previewModuleIds.size} expected`,
+        unexpected.length === 0)
+      continue
+    }
     const r = await rest(`${t}?select=id&limit=5`, { jwt: learnerJwt })
     const verdict = classify(r)
     record(`learner ${t}`, `${verdict} (${r.status}${r.code ? ' ' + r.code : ''}, ${r.total} rows)`,
@@ -428,9 +508,36 @@ try {
     record(`anon ${t} stays private`, `${r.status} ${r.code ?? ''}`, r.status >= 400 && r.status < 500)
   }
 
-  const prev = await rest('lessons?select=id&is_preview=eq.true', { key: SVC })
+  // A census, not a verdict. "How many lessons are preview" is an editorial
+  // fact, and section 1 already asserts that preview means what it should.
+  // What IS a defect is a whole course flagged wholesale -- the pattern 035 was
+  // written to eliminate -- so that is what this asserts.
+  const prev = await rest('lessons?select=id,module_id&is_preview=eq.true&limit=1000', { key: SVC })
   const all = await rest('lessons?select=id&limit=1', { key: SVC })
-  record('preview lessons', `${prev.total} of ${all.total}`, prev.total === 0 && all.total > 0)
+  console.log(`    preview census: ${prev.total} of ${all.total} lesson(s)`)
+
+  if (prev.total === 0) {
+    record('no lesson is designated preview', `0 of ${all.total}`, all.total > 0)
+  } else {
+    const modRows = (await rest('modules?select=id,course_id&limit=1000', { key: SVC })).json ?? []
+    const courseOf = Object.fromEntries(modRows.map(m => [m.id, m.course_id]))
+    const totals = {}
+    for (const l of ((await rest('lessons?select=module_id&limit=1000', { key: SVC })).json ?? [])) {
+      const c = courseOf[l.module_id]
+      if (c) totals[c] = (totals[c] ?? 0) + 1
+    }
+    const perCourse = {}
+    for (const l of (prev.json ?? [])) {
+      const c = courseOf[l.module_id]
+      if (c) perCourse[c] = (perCourse[c] ?? 0) + 1
+    }
+    const blanket = Object.entries(perCourse).filter(([cid, n]) => totals[cid] === n)
+    record('no course is flagged preview WHOLESALE',
+      blanket.length
+        ? `${blanket.length} course(s) with EVERY lesson preview -- the 035 pattern`
+        : `${Object.keys(perCourse).length} course(s) with a deliberate subset`,
+      blanket.length === 0)
+  }
 } finally {
   console.log('\n── Cleanup ─────────────────────────────────────────────────────')
   if (entitlementId) {
@@ -454,7 +561,12 @@ try {
 
   const failed = results.filter(r => !r.pass)
   console.log('')
-  if (failed.length === 0 && leftovers.length === 0) {
+  if (results.length === 0) {
+    // A verifier that recorded nothing has proved nothing. Reporting PASS here
+    // is worse than reporting a failure, because it looks like evidence.
+    console.log('✗ XPA-6A INCONCLUSIVE — 0 checks recorded; the run did not complete.')
+    process.exitCode = 1
+  } else if (failed.length === 0 && leftovers.length === 0) {
     console.log(`✓ XPA-6A PASS — ${results.length} checks, 0 failures.`)
   } else {
     console.log(`✗ XPA-6A FAIL — ${failed.length} of ${results.length} checks failed:`)
