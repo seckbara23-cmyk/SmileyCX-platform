@@ -40,7 +40,7 @@ None of the three blockers is large. All are precise.
 |---|---|
 | Security / access model | 🟢 **Strong** — **207 production checks, 0 failures** across six verifiers |
 | Operating mode | ✅ **B-1 closed (W1)** — flip is safe once deployed; not yet flipped |
-| Course content | 🔴 **Blocker (B-2)** — B-2B closed (C2-F2 withdrawn). Remaining: 2 placeholder lessons in C1-F3/C2-F4, no functioning assessments |
+| Course content | 🟠 **B-2 partly closed** — B-2B and **B-2.1 closed**; every published course is instructionally complete. Remaining: no functioning assessments (B-2.3), completion tied to a mode-disabled mechanism (B-2.6) |
 | Media protection | ✅ **F-2 closed (W3)** — private bucket + per-request signed delivery; 152 public originals deleted, 93/93 assets deliver, **29/29** in production |
 | Legacy surfaces | ✅ **B-3 closed (W2)** — `/app/[orgSlug]` retired, deployed, **34/34 in production** |
 | Voice practice | 🟠 **High** — 1 of 5 personas production-wired |
@@ -292,7 +292,7 @@ an honest "temporarily unavailable" state for those who hold it.
 
 | ID | Finding | Severity |
 |---|---|---|
-| **B-2.1** | **2** placeholder lessons remain (C1-F3 ×1, C2-F4 ×1) — C2-F2's 10 withdrawn with the course. B-2C audit: **no source material exists anywhere**; blocked on content authoring, not engineering | 🔴 BLOCKER |
+| ~~**B-2.1**~~ | ✅ **CLOSED** — both retained lessons authored and wired to private media; **zero placeholders across the five published courses** (17/17, 18/18, 17/17, 17/17, 13/13). `verify-xpa-8-b21` 41/41 | 🔴 BLOCKER |
 | **B-2.2** | 3 courses un-completable → certificates unreachable | 🔴 BLOCKER |
 | **B-2.3** | No functioning assessments — the 1 quiz has `course_id` and `module_id` NULL, so it gates nothing; 0 attempts ever | 🟠 HIGH (product decision) |
 | **B-2.4** | 4 of 5 voice personas authored but unpublished (missing `agent_id`); parent lessons still completable | 🟡 MEDIUM |
