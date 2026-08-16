@@ -44,6 +44,12 @@ export type AuditEventType =
   // course, and an investigator reading the log should be able to tell that at
   // a glance rather than by checking what `enrollments` means this month.
   | 'enrollment.initialized'
+  // XPA-8 B-2.6 — a lesson completion that was REFUSED. Successes are not
+  // audited: `lesson_progress` already records them and a finished course would
+  // write ~17 rows of noise. A refusal is the one worth keeping — it is either
+  // a learner whose access lapsed mid-course, or an account asserting progress
+  // in a course it does not hold. This event changes nothing about access.
+  | 'progress.completion_denied'
   // XPA-7 — organization structure and roster. NONE of these change who can
   // read a course: `has_course_access()` reads entitlements alone. They are
   // named apart from the entitlement events so an investigator can tell a

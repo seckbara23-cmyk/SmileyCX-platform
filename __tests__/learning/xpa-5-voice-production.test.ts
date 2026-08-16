@@ -77,13 +77,20 @@ describe('XPA-5 — existing engines reused, nothing duplicated', () => {
 // ── The productization gap this phase closes ────────────────────────────────
 
 describe('XPA-5 — voice completion feeds the EXISTING progress engine', () => {
+  // XPA-8 B-2.6 unified the two completion writers. The voice path still marks
+  // the lesson complete; the write itself now happens in the shared authority
+  // `lib/learn/completion.ts`, which both voice and video go through, so these
+  // assertions follow it there rather than being deleted.
+  const COMPLETION = stripTsComments(read('lib/learn/completion.ts'))
+
   it('a completed session writes lesson_progress', () => {
     expect(PRACTICE).toMatch(/markVoiceLessonComplete/)
-    expect(PRACTICE).toMatch(/from\('lesson_progress'\)/)
+    expect(PRACTICE).toMatch(/recordLessonCompletion\(/)
+    expect(COMPLETION).toMatch(/from\('lesson_progress'\)/)
   })
 
   it('uses the existing uniqueness constraint, so replays are idempotent', () => {
-    expect(PRACTICE).toMatch(/onConflict: 'user_id,lesson_id'/)
+    expect(COMPLETION).toMatch(/onConflict: 'user_id,lesson_id'/)
     expect(read('supabase/schema.sql')).toMatch(/UNIQUE\(user_id, lesson_id\)/)
   })
 

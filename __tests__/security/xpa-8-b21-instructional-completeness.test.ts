@@ -155,11 +155,22 @@ describe('XPA-8 B-2.1 preserves the F-2 architecture', () => {
     expect(s, 'the verifier edits completion logic').not.toMatch(/pilotMode|markComplete/)
   })
 
-  it('B-2.6 was not altered to make this pass', () => {
+  it('B-2.1 did not alter completion — and B-2.6 later did, deliberately', () => {
     const player = read('app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx')
-    // The pilot-mode gate on the manual button is still exactly as B-2A found it.
-    expect(read('components/lms/LessonNavigation.tsx')).toMatch(/if \(pilotMode\) return null/)
+
+    // This test used to pin `if (pilotMode) return null` as proof that B-2.1
+    // had left the completion gate alone. B-2.6 removed that gate on purpose,
+    // so the assertion is inverted rather than deleted: the coupling must stay
+    // gone. Note stripJs — the B-2.6 commit QUOTES the old line in a comment
+    // explaining what replaced it, and a raw-source match happily passes on the
+    // comment. Asserting the absence of code requires stripping the prose.
+    const nav = stripJs(read('components/lms/LessonNavigation.tsx'))
+    expect(nav, 'the PLATFORM_MODE gate on completion is back').not.toMatch(/pilotMode/)
+    expect(nav).toMatch(/canComplete/)
+
+    // What B-2.1 actually owned — the video-led completion path — is untouched.
     expect(player).toContain('handleVideoEnded')
+    expect(player).toContain('handleVideoTimeUpdate')
   })
 })
 

@@ -21,7 +21,29 @@ interface Props {
   currentModPassed:     boolean
   nextIsBlocked:        boolean
   moduleId:             string | null
-  pilotMode:            boolean
+  /**
+   * XPA-8 B-2.6 — this replaced `pilotMode`, and the change of name is the
+   * whole fix.
+   *
+   * The completion control used to disappear whenever `PLATFORM_MODE=pilot`.
+   * That encoded an assumption from the original pilot — that learners were
+   * anonymous, so "save my progress" was meaningless — which UAT-ACCESS-01
+   * retired when it made a signed-in learner take the authorized path in every
+   * mode. The gate outlived its reason, and an operating-mode flag was left
+   * deciding whether a learner could record academic progress.
+   *
+   * An operating mode is not an academic authority. Identity is: a learner with
+   * a session has somewhere to persist completion and a server action that will
+   * authorize it, and an anonymous pilot visitor has neither. So this is `true`
+   * exactly when the viewer is signed in — the same value in pilot and in
+   * private mode — and `PLATFORM_MODE` is consulted nowhere in this component.
+   *
+   * It is not named `isAuthenticated` because that is not what the caller is
+   * asserting. It is asserting that a supported completion mechanism exists for
+   * this viewer; who ultimately gets to complete the lesson is decided by the
+   * entitlement seam server-side, and this prop is not that decision.
+   */
+  canComplete:          boolean
   hasFinalExam:         boolean
   finalExamPassed:      boolean
   onMarkComplete:       () => void
@@ -31,14 +53,18 @@ export default function LessonNavigation({
   courseSlug, prevLesson, nextLesson, completed, justCompleted,
   isLastLesson, isLastLessonInModule,
   currentModHasQuiz, currentModPassed, nextIsBlocked,
-  moduleId, pilotMode, hasFinalExam, finalExamPassed, onMarkComplete,
+  moduleId, canComplete, hasFinalExam, finalExamPassed, onMarkComplete,
 }: Props) {
 
   function renderPrimaryCTA() {
     // Don't show a separate CTA while auto-advance banner is visible
     if (justCompleted) return null
 
-    if (pilotMode) return null
+    // Structurally identical to the `if (pilotMode) return null` it replaces —
+    // deliberately, so the only viewer whose experience changes is the one
+    // B-2.6 is about: an AUTHENTICATED learner in pilot mode, who was shown no
+    // completion control at all. Anonymous pilot browsing is untouched.
+    if (!canComplete) return null
 
     if (!completed) {
       return (
@@ -180,7 +206,11 @@ export default function LessonNavigation({
           )}
         </div>
 
-        {!pilotMode && (
+        {/* The caption is a factual claim about persistence, so it follows the
+            same signal: a signed-in learner's progress IS saved server-side, in
+            pilot and in private mode alike. An anonymous visitor's is not, and
+            was never promised it. */}
+        {canComplete && (
           <p className="text-[11px] text-white/20">
             Votre progression est sauvegardée automatiquement.
           </p>
@@ -207,7 +237,7 @@ export default function LessonNavigation({
         )}
 
         {/* Center: mark complete or completed status */}
-        {!pilotMode && !completed && (
+        {canComplete && !completed && (
           <button
             onClick={onMarkComplete}
             className="flex-1 max-w-[200px] flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-success/20 border border-success/30 text-success text-xs font-semibold hover:bg-success/30 transition-colors"
@@ -215,13 +245,13 @@ export default function LessonNavigation({
             <CheckCircle className="w-3.5 h-3.5" /> Terminer
           </button>
         )}
-        {!pilotMode && completed && !isLastLesson && (
+        {canComplete && completed && !isLastLesson && (
           <div className="flex-1 max-w-[200px] flex items-center justify-center gap-1.5 text-success/60 text-xs font-medium">
             <CheckCircle className="w-3.5 h-3.5" />
             <span>Complétée</span>
           </div>
         )}
-        {pilotMode && <div className="flex-1" />}
+        {!canComplete && <div className="flex-1" />}
 
         {/* Right: next destination */}
         {renderMobileRight()}

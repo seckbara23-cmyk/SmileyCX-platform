@@ -23,6 +23,7 @@ import { rateLimitDb } from '@/lib/rate-limit'
 import { createLogger } from '@/lib/logger'
 import { AI_COACH_ENABLED } from '@/lib/ai/flags'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
+import { recordLessonCompletion } from '@/lib/learn/completion'
 import {
   runCompetencyEngine,
   type CompetencyConfig,
@@ -569,6 +570,26 @@ export async function completeAiSession(
  *
  * Anonymous pilot sessions have no user_id and are skipped: `lesson_progress`
  * requires a profile, and pilot progress lives in localStorage.
+ *
+ * ── XPA-8 B-2.6: the write moved, the guarantees did not ──────────────────
+ *
+ * The audit's compliment to this function was also its indictment of the video
+ * path: "that protection exists for voice and not for video". Fixing video by
+ * building a SECOND server-authoritative writer would have left two writers
+ * free to drift, so both now go through `recordLessonCompletion`, and voice
+ * gains the one thing it was missing — an entitlement check. It never had one:
+ * a learner with no entitlement who reached a scenario could complete its
+ * lesson, exactly as they could through the player.
+ *
+ * `expectedCourseId` is `null` here on purpose. The player passes the course it
+ * believes it is showing so the server can catch a disagreement; this path has
+ * no independent claim to check — the lesson came from the scenario, which came
+ * from the session, all server-side.
+ *
+ * The caller is safe to resolve from cookies inside `recordLessonCompletion`
+ * because `authorizeSession` has already refused unless `user.id ===
+ * session.user_id`; the session owner and the authenticated caller are the same
+ * account by the time this runs.
  */
 async function markVoiceLessonComplete(sessionId: string, scenarioId: string): Promise<void> {
   const admin = createAdminClient()
@@ -591,24 +612,16 @@ async function markVoiceLessonComplete(sessionId: string, scenarioId: string): P
   const lessonId = scenario?.lesson_id as string | null
   if (!lessonId) return
 
-  const { error } = await admin
-    .from('lesson_progress')
-    .upsert(
-      {
-        user_id:      userId,
-        lesson_id:    lessonId,
-        is_completed: true,
-        completed_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id,lesson_id' }
-    )
+  const result = await recordLessonCompletion(lessonId, null)
 
-  if (error) {
-    log.error({ sessionId, lessonId, error: error.message }, 'lesson_progress upsert failed')
+  if (!result.ok) {
+    // Non-fatal, exactly as the upsert failure was: the conversation is already
+    // recorded on `ai_sessions`, and a refused completion must not lose it.
+    log.warn({ sessionId, lessonId, reason: result.reason }, 'voice lesson completion refused')
     return
   }
 
-  log.info({ sessionId, lessonId, userId }, 'voice exercise completed lesson')
+  log.info({ sessionId, lessonId, userId, already: result.already }, 'voice exercise completed lesson')
 }
 
 // ── Deterministic Competency Engine hook (Phase 2A — no LLM) ──────────────────

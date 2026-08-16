@@ -112,6 +112,21 @@ export const EnrollSchema = z.object({
   courseId: UuidSchema,
 })
 
+// ── Lesson completion (XPA-8 B-2.6) ───────────────────────────────────────────
+
+/**
+ * `courseId` is REQUIRED and is not a convenience.
+ *
+ * The server resolves the owning course from the lesson itself and treats that
+ * as authoritative; this field is the caller's claim about which course it
+ * thinks it is in. The action refuses when the two disagree, so a client cannot
+ * reach a lesson of course B while presenting itself as being in course A.
+ */
+export const LessonCompleteSchema = z.object({
+  lessonId: UuidSchema,
+  courseId: UuidSchema,
+})
+
 // ── File upload ───────────────────────────────────────────────────────────────
 
 export const UploadUrlSchema = z.object({
@@ -153,6 +168,7 @@ export type ForgotPasswordInput  = z.infer<typeof ForgotPasswordSchema>
 export type ResetPasswordInput   = z.infer<typeof ResetPasswordSchema>
 export type AdminLoginInput      = z.infer<typeof AdminLoginSchema>
 export type EnrollInput          = z.infer<typeof EnrollSchema>
+export type LessonCompleteInput  = z.infer<typeof LessonCompleteSchema>
 export type UploadUrlInput       = z.infer<typeof UploadUrlSchema>
 export type CourseCreateInput    = z.infer<typeof CourseCreateSchema>
 export type CourseUpdateInput    = z.infer<typeof CourseUpdateSchema>
