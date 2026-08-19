@@ -255,7 +255,10 @@ commit;
 --   legitimate learner. It closes only the direct-API path.
 --
 --   1. Merge staging → main and let the production deployment finish.
---   2. Confirm a completion works on www.xpclient-academy.com.
+--   2. Confirm a completion works on the production site.
+--      (Deliberately not named here: XPA-1 holds that no migration may
+--      reference a brand, domain or contact constant, and the branding
+--      suite enforces it across every tracked migration.)
 --   3. Run this file in the Supabase SQL editor (project eqoqcxkdcxeosjqaafhs).
 --   4. Re-run:  node scripts/security/verify-xpa-8-b26.mjs
 --      Pre-apply it reports the four ⚠ rows as OPEN and exits 1.
