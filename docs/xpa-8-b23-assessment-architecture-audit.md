@@ -175,7 +175,11 @@ closed for `lesson_progress`, and it has the same two-part fix:
 
 1. entitlement check in the action (course resolved server-side from the quiz —
    `course_of_quiz()` already exists, 036);
-2. **migration 046**: split `attempts_own` by command exactly as 044 did —
+2. ~~**migration 046**: split `attempts_own` by command exactly as 044 did~~ —
+   **SUPERSEDED, see the CORRECTION at the foot of this document. 046 was drafted,
+   security-reviewed and WITHDRAWN before application: migration 011 already
+   provides a stronger boundary, and 046 would have weakened it. Never apply it.**
+   The original reasoning is left below for the record —
    SELECT/DELETE identity-only (transcript retained), INSERT/UPDATE require
    `has_course_access(course_of_quiz(quiz_id))`. Same helpers, same pattern, same
    apply-after-code ordering.
@@ -219,8 +223,9 @@ attempts, admin forms, scoring action, certificate gate skeleton, `course_of_qui
 
 **Required:**
 
-- **Migration 046** — `attempts_own` split (§7). Required before certificates read
-  attempts; the 044 template applies nearly verbatim.
+- ~~**Migration 046**~~ — **WITHDRAWN. Not required, and must never be applied**;
+  migration 011 already denies learner INSERT/UPDATE/DELETE on `quiz_attempts`.
+  See the CORRECTION at the foot of this document.
 - **`courses.requires_final_exam boolean not null default false`** — the D-mechanism
   flag (§4). One column; the gate reads it instead of `PILOT_MODE`.
 - **No new tables.** Exam-vs-formative can be expressed by scope (course-scoped quiz
@@ -231,11 +236,11 @@ attempts, admin forms, scoring action, certificate gate skeleton, `course_of_qui
 
 | Wave | Content | Gate |
 |---|---|---|
-| **B-2.3A — assessment contract** | Rulings ratified (certificate semantics, reveal, attempts, warm-up quiz status); `requires_final_exam` column + certificate gate rewired off `PILOT_MODE`; entitlement check in `submitQuizAnswers`; reveal rule; migration 046 written (not applied); tests + `verify-xpa-8-b23.mjs` A–F matrix for attempts | your GO on the rulings |
+| **B-2.3A — assessment contract** | Rulings ratified (certificate semantics, reveal, attempts, warm-up quiz status); `requires_final_exam` column (migration **047**) + certificate gate rewired off `PILOT_MODE`; entitlement check in `submitQuizAnswers`; reveal rule; tests + `verify-xpa-8-b23.mjs`. **No 046 — withdrawn** | your GO on the rulings |
 | **B-2.3B — content preparation** | per-course source material or blueprints from course owner; exam drafts; **STOP GATE: owner approval per exam** | human input |
 | **B-2.3C — wiring** | author approved exams via existing admin surface; flip `requires_final_exam` per approved course; randomization on | B-2.3A closed |
 | **B-2.3D — staging UAT** | staging → Preview → PR → CI/Security → Marième UAT (pass path, fail path, retry, no key leak, certificate refusal without exam) | her approval |
-| **B-2.3E — production closure** | merge → deploy → apply 046 (after code, 044 discipline) → verifier green → regressions green | evidence table |
+| **B-2.3E — production closure** | merge → deploy → apply **047** → verifier green → regressions green. The ledger runs **044 → 045 → 047**; the 046 gap is intentional | evidence table |
 
 A and B can run in parallel — the contract does not depend on content. Nothing in A
 changes learner-visible behaviour while every `requires_final_exam` is false, which is

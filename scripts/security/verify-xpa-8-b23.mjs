@@ -17,14 +17,19 @@
  *
  *   application  `submitQuizAnswers` re-checks the entitlement seam, budgets
  *                attempts and withholds the key. Ships with the code.
- *   database     migration 046 gates `quiz_attempts` INSERT/UPDATE on
- *                `has_course_access()`. Applied by an OPERATOR, after the code.
+ *   database     ALREADY CLOSED by migration 011, which denies learner
+ *                INSERT/UPDATE/DELETE on `quiz_attempts` outright. A migration
+ *                046 was drafted to split the policy the way 044 split
+ *                `lesson_progress`, then security-reviewed and WITHDRAWN before
+ *                application: 011 is stricter, and 046 would have let an
+ *                entitled learner fabricate a passing attempt through
+ *                PostgREST. The ledger runs 044 -> 045 -> 047 and the gap is
+ *                intentional. Never apply anything numbered 046.
  *
- * Until 046 is applied a learner still holds a JWT and PostgREST is still
- * reachable, so a bare `POST /rest/v1/quiz_attempts` still lands. This script
- * measures that and FAILS while it stands, rather than reporting a pass it has
- * not earned. Migration 047 (`courses.requires_final_exam`) is detected the
- * same way and its absence is reported, not worked around.
+ * The only migration this phase ships is 047 (`courses.requires_final_exam`).
+ * Its absence is DETECTED and reported rather than worked around, and the
+ * application reads that absence (42703) as `false` — the column's own default
+ * and the pre-B-2.3 contract.
  *
  * ── FIXTURES ──────────────────────────────────────────────────────────────
  *
@@ -54,7 +59,7 @@ let pass = 0
 const fails = []
 const openItems = []
 const rec = (l, d, ok) => { console.log(`  ${ok ? '✓' : '✗'} ${l.padEnd(56)} ${d}`); if (ok) pass++; else fails.push(`${l} — ${d}`) }
-/** A check only migration 046/047 can satisfy. Tracked apart from real failures. */
+/** A check only migration 047 can satisfy. Tracked apart from real failures. */
 const pending = (l, d, ok) => { console.log(`  ${ok ? '✓' : '⚠'} ${l.padEnd(56)} ${d}`); if (ok) pass++; else openItems.push(`${l} — ${d}`) }
 const info = (l, d) => console.log(`    · ${l.padEnd(54)} ${d}`)
 

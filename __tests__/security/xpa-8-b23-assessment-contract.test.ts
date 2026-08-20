@@ -19,8 +19,8 @@
  * A source match proves a line exists, not that it decides anything. The
  * matrices below run the real resolver and the real scoring action against a
  * mocked database, and assert on what came back and what got written. The
- * database half — direct PostgREST after migration 046 — is proved against
- * production by `scripts/security/verify-xpa-8-b23.mjs`.
+ * database half — direct PostgREST, already closed by migration 011 — is proved
+ * against production by `scripts/security/verify-xpa-8-b23.mjs`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { readFileSync, existsSync, readdirSync } from 'fs'
