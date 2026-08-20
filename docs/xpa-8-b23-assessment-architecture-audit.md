@@ -258,3 +258,81 @@ what makes it safe to ship ahead of content.
 
 **B-2.3 STATUS: AUDITED — no implementation. Machinery ready; content absent;
 two security items (reveal, attempts RLS) and six rulings stand between here and GO.**
+
+---
+
+# CORRECTION — issued during B-2.3A implementation (20 August 2026)
+
+**§0 finding 2 and §7 of this audit were WRONG about the database half.**
+
+The audit stated that `quiz_attempts` carried the pre-044 shape — `attempts_own FOR ALL`,
+identity-only — and that an unentitled account could therefore record a passing attempt via
+bare PostgREST. It read migration **001** and reported that policy as live **without
+checking whether a later migration had superseded it.**
+
+Migration **011** superseded it, and nothing has since:
+
+| Policy | Command | Rule |
+|---|---|---|
+| `attempts_select_own` | SELECT | `user_id = auth.uid() OR is_platform_admin()` |
+| `attempts_insert_service` | INSERT | **`WITH CHECK (false)`** |
+| `attempts_admin_all` | ALL | `is_platform_admin()` |
+
+Verified against production with an **entitled** fixture acting on its own row:
+
+| Operation | Result |
+|---|---|
+| INSERT | **403 `42501`** |
+| UPDATE `passed=true` | **204 returned, ZERO rows changed** — `passed` stayed `false` |
+| DELETE own attempt | **204 returned, the row survived** |
+| SELECT own history | **200** — retention intact |
+
+The UPDATE and DELETE results are worth their own note: both returned `204`, and both did
+nothing. Only the row comparison revealed it. That is the standing rule — *never read a
+2xx as evidence of access* — earning its keep again.
+
+## Consequence: migration 046 was withdrawn, not shipped
+
+046 would have replaced `WITH CHECK (false)` with
+`user_id = auth.uid() AND has_course_access(...)`, which **newly permits an entitled learner
+to POST a fabricated `passed: true, score: 100` row directly to PostgREST.** Applying it
+would have been a security regression dressed as a hardening. It was written, tested against
+production, found harmful, and deleted. B-2.3A ships **047 only**.
+
+## What was genuinely open, and is now fixed
+
+The **application** half. `submitQuizAnswers` writes with the service role, which bypasses
+RLS entirely — so the action was the *only* gate on who may record an attempt, and it had
+none. An expired, revoked, enrollment-only or never-entitled caller could have a passing
+attempt recorded on their behalf. That is real, it is what B-2.3A fixed, and the fact that
+RLS would have refused the same write from the browser does not diminish it: the service
+role is precisely the path that ignores RLS.
+
+## Why the audit got it wrong, and the habit that prevents a repeat
+
+For `lesson_progress` the migration-001 policy genuinely *was* live, and B-2.6 confirmed it
+by probing production. For `quiz_attempts` the audit inferred from 001 alone and never
+probed, because there were zero attempts to probe with — no learner had ever submitted one,
+so nothing looked wrong.
+
+**A policy's definition is where it was last written, not where it was first written.** The
+check is one grep (`grep -n 'attempts' supabase/migrations/*.sql`) or one probe. B-2.6's
+discipline — measure production, never trust the document — was applied to completion and
+not to assessment.
+
+## Corrected §7 security table
+
+| Invariant | Actual state | B-2.3A |
+|---|---|---|
+| 038 answer-key column revoke | intact | untouched |
+| Server-side scoring | intact | untouched |
+| Entitlement authority on quizzes/questions SELECT | intact (036) | preserved |
+| **Direct-API attempt INSERT** | **already closed by 011** | **untouched — no 046** |
+| **Direct-API attempt UPDATE / DELETE** | **already closed by 011** | untouched |
+| **Entitlement check in `submitQuizAnswers`** | **ABSENT** | **added** |
+| Answer-key reveal after submission | **open (XPA-6D residual)** | **closed for exams** |
+| Attempt budget | none | 3 for exams |
+
+Everything else in the audit stands: the machinery inventory, the production counts, the
+four-concept separation, the certificate-semantics recommendation, the authoring-source gap
+(0 transcripts across 82 lessons), and the waves.

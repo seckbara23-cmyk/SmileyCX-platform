@@ -6,9 +6,9 @@ import { CheckCircle, ChevronLeft, Loader2, Award, Star } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { submitQuizAnswers } from '@/app/actions/quiz'
-import { PILOT_MODE } from '@/lib/pilot'
 import type { QuizSubmitResult } from '@/app/actions/quiz'
 import DragMatchQuestion, { type DragMatchOptions } from '@/components/quiz/DragMatchQuestion'
+import { orderQuestions, newAttemptSeed } from '@/lib/quiz/presentation'
 
 const OPTION_LABELS = ['A', 'B', 'C', 'D']
 const MIN_PASS      = 80
@@ -61,6 +61,20 @@ export default function FinalExamPage() {
   const [submitError,      setSubmitError]      = useState('')
   const [submissionResult, setSubmissionResult] = useState<QuizSubmitResult | null>(null)
   const [alreadyPassed,    setAlreadyPassed]    = useState(false)
+  // ── XPA-8 B-2.3A: final exams randomize, unconditionally ────────────────
+  //
+  // Ratified as a property of BEING an exam, not a per-quiz preference, so the
+  // `randomize_questions` / `randomize_options` flags are not consulted here -
+  // they remain the formative quizzes' opt-in. Presentation only: migration 032
+  // established that the client shuffles {originalIndex, text} pairs and submits
+  // the ORIGINAL index, so display order and grading stay fully decoupled and
+  // `correct_answer` keeps its exact meaning.
+  //
+  // The seed is held for the attempt's lifetime so a re-render never reshuffles
+  // under the learner's cursor.
+  const [shuffleSeed,       setShuffleSeed]       = useState(() => newAttemptSeed())
+  // Attempt budget, as reported by the server after each submission.
+  const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null)
 
   const loadData = useCallback(async () => {
     const { data: course } = await supabase
@@ -109,20 +123,24 @@ export default function FinalExamPage() {
     if (fq) {
       setQuiz(fq)
 
-      // Check already passed
-      if (!PILOT_MODE) {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (user) {
-          const { data: attempt } = await supabase
-            .from('quiz_attempts')
-            .select('id')
-            .eq('user_id', user.id)
-            .eq('quiz_id', fq.id)
-            .eq('passed', true)
-            .limit(1)
-            .maybeSingle()
-          if (attempt) setAlreadyPassed(true)
-        }
+      // ── XPA-8 B-2.3A: the operating mode has no say in assessment ──────
+      //
+      // This read was wrapped in `if (!PILOT_MODE)`, so in pilot a learner who
+      // had genuinely passed was not recognised as having passed - an academic
+      // fact decided by a deployment flag. Ratified: PLATFORM_MODE has zero
+      // authority over assessment or certificate eligibility. It now runs for
+      // any authenticated learner, in every mode.
+      const { data: { user } } = await supabase.auth.getUser()
+      if (user) {
+        const { data: attempt } = await supabase
+          .from('quiz_attempts')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('quiz_id', fq.id)
+          .eq('passed', true)
+          .limit(1)
+          .maybeSingle()
+        if (attempt) setAlreadyPassed(true)
       }
       try {
         const s = localStorage.getItem(`final-exam-${courseSlug}`)
@@ -164,6 +182,7 @@ export default function FinalExamPage() {
       if (result.error) { setSubmitError(result.error); return }
       setSubmissionResult(result)
       setSubmitted(true)
+      if (typeof result.attemptsRemaining === 'number') setAttemptsRemaining(result.attemptsRemaining)
       try {
         localStorage.setItem(`final-exam-${courseSlug}`, JSON.stringify({ passed: result.passed, score: result.score }))
       } catch {}
@@ -180,6 +199,8 @@ export default function FinalExamPage() {
     setSubmitted(false)
     setSubmissionResult(null)
     setSubmitError('')
+    // XPA-8 B-2.3A: a new attempt gets a new presentation order.
+    setShuffleSeed(newAttemptSeed())
   }
 
   if (loading) {
@@ -208,6 +229,14 @@ export default function FinalExamPage() {
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-2xl mx-auto px-4 py-7">
+
+          {attemptsRemaining !== null && !isPassed && (
+            <p className="mb-4 text-xs text-amber-200/80">
+              {attemptsRemaining > 0
+                ? `Il vous reste ${attemptsRemaining} tentative${attemptsRemaining > 1 ? 's' : ''}.`
+                : 'Vous avez utilisé toutes vos tentatives pour cet examen.'}
+            </p>
+          )}
 
           {alreadyPassed && !submitted && (
             <div className="mb-8 flex flex-wrap items-center gap-4 p-4 rounded-xl bg-amber-500/10 border border-amber-500/30">
@@ -260,7 +289,7 @@ export default function FinalExamPage() {
               )}
 
               <div className="flex flex-col gap-6">
-                {questions.map((q, qi) => {
+                {orderQuestions(questions, true, shuffleSeed).map((q, qi) => {
                   const qType = q.question_type
 
                   // ── Drag & Match ──────────────────────────────────────────────

@@ -2,6 +2,7 @@ import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
 import { resolveCourseAccess } from '@/lib/auth/course-access'
+import { resolveCertificateEligibility } from '@/lib/learn/assessment'
 import type { Metadata } from 'next'
 
 export const metadata: Metadata = { title: 'Certificat de réussite' }
@@ -39,91 +40,40 @@ export default async function CertificatePage({ params }: Props) {
   const access = await resolveCourseAccess(courseSlug)
   if (!access.allowed) redirect(`/courses/${courseSlug}`)
 
-  // Verify actual completion — all lessons must be completed
-  const { data: modules } = await supabase
-    .from('modules')
-    .select('id, lessons(id)')
-    .eq('course_id', course.id)
+  // ── XPA-8 B-2.3A: eligibility is ACADEMIC, and PLATFORM_MODE has no say ──
+  //
+  // This block used to inline three checks - lessons, module quizzes, final
+  // exam - and wrap the last two in `if (!PILOT_MODE)`. Two things were wrong
+  // with that, and B-2.3A fixes both.
+  //
+  // 1. An operating mode was an academic authority. Flipping PLATFORM_MODE
+  //    changed whether a certificate required an assessment, which is exactly
+  //    the coupling B-2.6 removed from completion. The mode is consulted
+  //    NOWHERE in eligibility now.
+  //
+  // 2. The gate demanded module quizzes and a final exam whenever any existed,
+  //    with no way to say "this course does not assess". Ratified contract:
+  //
+  //      required lessons complete
+  //      + if courses.requires_final_exam -> an attached exam, passed
+  //
+  //    Module quizzes gate nothing. The infrastructure survives for optional
+  //    enrichment, but certification does not depend on it - and neither does
+  //    a lesson-scoped formative quiz such as C1-F1's "Echauffement", which
+  //    was silently able to gate progression before B-2.3A.
+  //
+  // A course flagged as requiring an exam that has none FAILS CLOSED. A
+  // misconfiguration must withhold a certificate, never mint one.
+  const eligibility = await resolveCertificateEligibility(user.id, course.id)
 
-  const allLessonIds: string[] = (modules ?? []).flatMap(
-    m => (m.lessons as { id: string }[]).map(l => l.id)
-  )
-
-  const totalLessons = allLessonIds.length
-
-  if (totalLessons === 0) {
-    // Course has no lessons yet — cannot issue certificate
-    redirect('/dashboard')
-  }
-
-  const { count: completedCount } = await supabase
-    .from('lesson_progress')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', user.id)
-    .eq('is_completed', true)
-    .in('lesson_id', allLessonIds)
-
-  if ((completedCount ?? 0) < totalLessons) {
+  if (!eligibility.eligible) {
+    if (eligibility.reason === 'final_exam_not_passed') {
+      redirect(`/learn/${courseSlug}/final-exam`)
+    }
+    // lessons_incomplete, final_exam_missing and lookup_failed all send the
+    // learner back to the course. `final_exam_missing` is an OPERATOR error,
+    // not a learner one, and it is logged as such by the resolver.
     redirect(`/courses/${courseSlug}`)
-  }
-
-  // Verify all module quizzes passed — uses quiz_attempts (server-side records only).
-  // Skipped in PILOT_MODE since quiz attempts are not persisted for anonymous users.
-  if (!PILOT_MODE) {
-    const moduleIds = (modules ?? []).map(m => (m as { id: string }).id).filter(Boolean)
-
-    if (moduleIds.length > 0) {
-      const { data: quizModulesData } = await supabase
-        .from('quizzes')
-        .select('module_id')
-        .in('module_id', moduleIds)
-        .not('module_id', 'is', null)
-
-      const quizModuleIds = Array.from(new Set(
-        (quizModulesData ?? []).map(q => q.module_id as string).filter(Boolean)
-      ))
-
-      if (quizModuleIds.length > 0) {
-        const { data: passedAttempts } = await supabase
-          .from('quiz_attempts')
-          .select('module_id')
-          .eq('user_id', user.id)
-          .eq('passed', true)
-          .in('module_id', quizModuleIds)
-
-        const passedIds = new Set(
-          (passedAttempts ?? []).map(a => a.module_id as string).filter(Boolean)
-        )
-
-        if (!quizModuleIds.every(id => passedIds.has(id))) {
-          redirect(`/courses/${courseSlug}`)
-        }
-      }
-    }
-
-    // Verify final exam was passed (course-level quiz with no module_id)
-    const { data: finalExamQuiz } = await supabase
-      .from('quizzes')
-      .select('id')
-      .eq('course_id', course.id)
-      .is('module_id', null)
-      .limit(1)
-      .maybeSingle()
-
-    if (finalExamQuiz) {
-      const { data: finalAttempt } = await supabase
-        .from('quiz_attempts')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('quiz_id', finalExamQuiz.id)
-        .eq('passed', true)
-        .limit(1)
-        .maybeSingle()
-
-      if (!finalAttempt) {
-        redirect(`/learn/${courseSlug}/final-exam`)
-      }
-    }
   }
 
   // Look up or create certificate (only after verifying completion)

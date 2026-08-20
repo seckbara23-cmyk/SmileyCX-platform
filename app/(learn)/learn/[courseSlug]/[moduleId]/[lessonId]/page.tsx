@@ -229,25 +229,27 @@ export default function LessonPlayerPage() {
     const modIds   = modules.map(m => m.id)
     const courseId = courseIdRef.current
 
-    // Detect which modules have quizzes — both module-scope (module_id set) and
-    // lesson-scope (lesson_id set, module_id null) quizzes must be found.
-    const allLessonIds = modules.flatMap(m => m.lessons.map(l => l.id))
-    Promise.all([
-      supabase.from('quizzes').select('module_id').in('module_id', modIds),
-      allLessonIds.length > 0
-        ? supabase.from('quizzes').select('lesson_id').in('lesson_id', allLessonIds)
-        : Promise.resolve({ data: null }),
-    ]).then(([{ data: modData }, { data: lesData }]) => {
-      const combined = new Set<string>()
-      ;(modData ?? []).forEach(q => { if (q.module_id) combined.add(q.module_id as string) })
-      if (lesData?.length) {
-        const lessonIdSet = new Set(lesData.map(q => q.lesson_id as string))
-        for (const mod of modules) {
-          if (mod.lessons.some(l => lessonIdSet.has(l.id))) combined.add(mod.id)
-        }
-      }
-      setModulesWithQuiz(combined)
-    })
+    // ── XPA-8 B-2.3A: only a MODULE-SCOPED quiz gates a module ─────────────
+    //
+    // This used to add a module to the gated set if any of its LESSONS carried
+    // a quiz. C1-F1 has exactly one quiz — "Echauffement — Reperez le niveau",
+    // a 3-question lesson-scoped warm-up — so that rule quietly made a warm-up
+    // a hard progression gate on the course's first module. It was invisible
+    // only because `nextIsBlocked` is additionally `!PILOT_MODE`, i.e. the gate
+    // would have armed itself the day the platform flipped to private. That is
+    // the same latent mode coupling B-2.6 removed from completion.
+    //
+    // Ratified: the warm-up is FORMATIVE and ungated. It keeps its full
+    // feedback and blocks nothing. Module-quiz infrastructure is preserved —
+    // a genuine module-scoped quiz still gates its module — but a lesson-scoped
+    // quiz never does, and neither gates certification (see
+    // lib/learn/assessment.ts).
+    supabase.from('quizzes').select('module_id').in('module_id', modIds)
+      .then(({ data: modData }) => {
+        const gated = new Set<string>()
+        ;(modData ?? []).forEach(q => { if (q.module_id) gated.add(q.module_id as string) })
+        setModulesWithQuiz(gated)
+      })
 
     // Check for course-level final exam quiz
     if (courseId) {

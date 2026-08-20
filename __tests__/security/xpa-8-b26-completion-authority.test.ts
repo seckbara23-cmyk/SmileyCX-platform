@@ -604,7 +604,13 @@ describe('XPA-8 B-2.6 — the certificate gate is untouched', () => {
   const CERT = read('app/(platform)/certificate/[courseSlug]/page.tsx')
 
   it('still reads the same input: completed lesson_progress rows', () => {
-    expect(CERT).toMatch(/from\('lesson_progress'\)/)
+    // XPA-8 B-2.3A moved the read into the shared eligibility resolver. The
+    // INPUT is unchanged — completed lesson_progress rows — which is the whole
+    // of B-2.6's interest here.
+    expect(CERT).toMatch(/resolveCertificateEligibility/)
+    const assess = read('lib/learn/assessment.ts')
+    expect(assess).toMatch(/from\('lesson_progress'\)/)
+    expect(assess).toMatch(/\.eq\('is_completed', true\)/)
   })
 
   it('B-2.6 changed WHO can create that input, not what the gate does with it', () => {
