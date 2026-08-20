@@ -18,6 +18,7 @@ import ExerciseBlock, { type ExerciseData } from '@/components/lms/ExerciseBlock
 import VoicePracticeBlock from '@/components/ai/VoicePracticeBlock'
 import { AI_VOICE_ENABLED } from '@/lib/ai/flags'
 import { fetchVoiceScenario, type VoiceScenario } from '@/app/actions/ai-practice'
+import { completeLesson } from '@/app/actions/progress'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface LessonRow extends SidebarLessonRow {}
@@ -57,6 +58,9 @@ export default function LessonPlayerPage() {
   const [finalExamPassed,  setFinalExamPassed]  = useState(false)
   const [exercises,        setExercises]        = useState<ExerciseData[]>([])
   const [voiceScenario,    setVoiceScenario]    = useState<VoiceScenario | null>(null)
+  // XPA-8 B-2.6 — set when the server REFUSES a completion the UI had already
+  // shown optimistically. Null in the overwhelmingly common case.
+  const [completionError,  setCompletionError]  = useState<string | null>(null)
 
   // Auto-advance state — only active when completion fires in this session
   const [justCompleted,        setJustCompleted]        = useState(false)
@@ -295,6 +299,7 @@ export default function LessonPlayerPage() {
     setVideoDuration(null)
     setExercises([])
     setVoiceScenario(null)
+    setCompletionError(null)
 
     if (!lesson?.id) return
 
@@ -335,17 +340,58 @@ export default function LessonPlayerPage() {
   }, [lesson?.id, progress]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Completion: save progress and optionally trigger auto-advance ─────────
+  //
+  // XPA-8 B-2.6 — this used to upsert `lesson_progress` straight from the
+  // browser with the learner's own JWT. RLS enforced `user_id = auth.uid()` and
+  // nothing else, so the write was authenticated but not AUTHORIZED: a single
+  // API call let any account complete any lesson, in a course it had never been
+  // entitled to, with an expired or revoked entitlement, or in a course
+  // withdrawn from publication. Four of six production fixtures wrote
+  // successfully with `has_course_access() = false`.
+  //
+  // Completion is now asserted through `completeLesson`, which re-checks the
+  // entitlement seam server-side before writing. The browser proposes; the
+  // server decides.
+  //
+  // The stale comment that used to sit here claimed "In PILOT_MODE userId is
+  // null, so localStorage is the only persistence." That has been false since
+  // UAT-ACCESS-01 — `userId` is set at line ~217 for any signed-in learner, in
+  // every mode, and authenticated pilot learners have been persisting to the
+  // database all along. It was the residue that made the mode coupling look
+  // deliberate.
   async function markComplete(suppressAutoAdvance = false) {
     if (!lesson || completed) return
+    const courseId = courseIdRef.current
+    const snapshot = progressRef.current
+
+    // Optimistic. The sidebar ticks, the remaining-time estimate and the
+    // auto-advance banner all read this state, and a completion that is going
+    // to be accepted should not wait a round trip to feel done.
     setCompleted(true)
     if (!suppressAutoAdvance) setJustCompleted(true)
-    // updateProgress writes to ref + state + localStorage atomically.
-    // In PILOT_MODE userId is null, so localStorage is the only persistence.
-    updateProgress({ ...progressRef.current, [lesson.id]: true })
-    if (!userId) return
-    await supabase.from('lesson_progress').upsert(
-      { user_id: userId, lesson_id: lesson.id, is_completed: true, completed_at: new Date().toISOString() },
-      { onConflict: 'user_id,lesson_id' }
+    setCompletionError(null)
+    updateProgress({ ...snapshot, [lesson.id]: true })
+
+    // Anonymous pilot browsing has no identity to attribute progress to and no
+    // entitlement to check; localStorage above is the whole of its persistence,
+    // exactly as before. This is the one remaining branch and it turns on
+    // IDENTITY, not on PLATFORM_MODE.
+    if (!userId || !courseId) return
+
+    const result = await completeLesson(lesson.id, courseId)
+    if (result.ok) return
+
+    // Refused. Put the UI back where it was rather than showing a tick the
+    // server did not record — a learner whose access lapsed mid-course must not
+    // be told they finished something the transcript will not contain.
+    setCompleted(false)
+    setJustCompleted(false)
+    autoCompletedRef.current = false
+    updateProgress(snapshot)
+    setCompletionError(
+      result.reason === 'access_ended'
+        ? 'Votre accès à cette formation n’est plus actif. Votre progression est conservée — contactez-nous pour le rétablir.'
+        : 'Votre progression n’a pas pu être enregistrée. Rechargez la page ou contactez-nous si cela persiste.'
     )
   }
 
@@ -536,7 +582,10 @@ export default function LessonPlayerPage() {
             <p className="text-xs text-white/45 truncate">{activeIsStandalone ? 'Introduction' : module?.title}</p>
             <p className="text-sm font-semibold text-white truncate">{lesson.title}</p>
           </div>
-          {!PILOT_MODE && completed && (
+          {/* XPA-8 B-2.6 — was `!PILOT_MODE &&`. The badge reports a fact about
+              this learner's record, so it follows identity like every other
+              completion affordance, not the operating mode. */}
+          {userId !== null && completed && (
             <span className="hidden sm:flex items-center gap-1.5 text-xs text-success font-semibold shrink-0">
               <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
               Complétée
@@ -662,6 +711,15 @@ export default function LessonPlayerPage() {
               <VoicePracticeBlock scenario={voiceScenario} pilotMode={PILOT_MODE} />
             )}
 
+            {completionError && (
+              <p
+                role="status"
+                className="mt-6 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-xs text-amber-200/90"
+              >
+                {completionError}
+              </p>
+            )}
+
             <LessonNavigation
               courseSlug={courseSlug}
               prevLesson={navPrevLesson}
@@ -674,7 +732,12 @@ export default function LessonPlayerPage() {
               currentModPassed={currentModPassed}
               nextIsBlocked={nextIsBlocked}
               moduleId={module?.id ?? null}
-              pilotMode={PILOT_MODE}
+              // XPA-8 B-2.6 — was `pilotMode={PILOT_MODE}`. An operating mode is
+              // not an academic authority; identity is. A signed-in learner sees
+              // the same completion control in pilot and in private mode, and
+              // whether they may actually record it is decided server-side by
+              // the entitlement seam, not here.
+              canComplete={userId !== null}
               hasFinalExam={hasFinalExam}
               finalExamPassed={finalExamPassed}
               onMarkComplete={() => markComplete(false)}

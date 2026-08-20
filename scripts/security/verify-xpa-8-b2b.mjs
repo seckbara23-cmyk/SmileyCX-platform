@@ -172,9 +172,35 @@ try {
   }
 
   console.log('\n── 7. Nothing was destroyed ────────────────────────────────────')
-  rec('modules preserved', `${mods.length}`, mods.length === 4)
-  rec('lessons preserved', `${les.length}`, les.length === 20)
-  rec('media references preserved', `${withMedia.length}`, withMedia.length === 10)
+  // The invariant is PRESERVATION, not stasis:
+  //
+  //     current preserved content >= withdrawal baseline
+  //
+  // These three were written as exact equality against the counts C2-F2 had
+  // when the withdrawal contract was established. That reads as "nothing was
+  // destroyed" only for as long as nothing is legitimately ADDED either. On
+  // 17 August 2026 a module, a lesson and ten media references were added to
+  // the withdrawn course, and all three assertions failed while the thing they
+  // exist to detect -- destruction -- had not happened.
+  //
+  // The baselines stay EXPLICIT and stay at their withdrawal-era values. They
+  // are deliberately NOT re-pinned to whatever production holds today: that
+  // would make the check self-fulfilling and blind to a later deletion. A
+  // destructive regression still fails, because 3 >= 4 is false.
+  //
+  // Note the two assertions immediately below already use `>= 1` for
+  // entitlements and enrollments. Minimum-preservation was always this file's
+  // idiom; these three were the outliers.
+  //
+  // Same lesson XPA-1 learned when its "exactly 27 migrations" assertion broke
+  // on every legitimate later migration: pin the invariant, not the snapshot.
+  const BASELINE = { modules: 4, lessons: 20, media: 10 } // C2-F2 at withdrawal
+  rec('modules preserved', `${mods.length} >= ${BASELINE.modules}`,
+    mods.length >= BASELINE.modules)
+  rec('lessons preserved', `${les.length} >= ${BASELINE.lessons}`,
+    les.length >= BASELINE.lessons)
+  rec('media references preserved', `${withMedia.length} >= ${BASELINE.media}`,
+    withMedia.length >= BASELINE.media)
   const realEnts = (await rest(`entitlements?select=id,user_id&course_id=eq.${course.id}`)).rows
     .filter(e => e.user_id !== inId)
   const realEnrs = (await rest(`enrollments?select=id&course_id=eq.${course.id}`)).rows

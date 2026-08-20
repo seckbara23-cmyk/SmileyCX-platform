@@ -251,8 +251,20 @@ describe('XPA-4 — completion idempotency is enforced by the database', () => {
   })
 
   it('lesson completion upserts on that constraint rather than inserting', () => {
+    // XPA-8 B-2.6 moved this write out of the player and into the shared
+    // server-side authority. The guarantee is unchanged — it is asserted where
+    // the write now lives.
+    expect(read('lib/learn/completion.ts')).toMatch(/onConflict: 'user_id,lesson_id'/)
+  })
+
+  it('…and the browser no longer writes lesson_progress at all', () => {
+    // The original assertion passed for a player that upserted directly with
+    // the learner's own JWT. That was idempotent AND unauthorized. Pinning the
+    // absence keeps a future edit from reintroducing the client write while
+    // still satisfying the constraint check above.
     const player = read('app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx')
-    expect(player).toMatch(/onConflict: 'user_id,lesson_id'/)
+    expect(player).not.toMatch(/from\('lesson_progress'\)[\s\S]{0,80}?upsert/)
+    expect(player).toMatch(/completeLesson\(/)
   })
 })
 

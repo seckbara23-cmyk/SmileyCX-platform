@@ -267,7 +267,10 @@ describe('XPA-5A — existing functionality preserved', () => {
 
   it('leaves progress integration untouched', () => {
     expect(PRACTICE).toMatch(/markVoiceLessonComplete/)
-    expect(PRACTICE).toMatch(/onConflict: 'user_id,lesson_id'/)
+    // XPA-8 B-2.6: the idempotent upsert moved to the shared completion
+    // authority that voice and video now share. Same constraint, one writer.
+    expect(stripTsComments(read('lib/learn/completion.ts')))
+      .toMatch(/onConflict: 'user_id,lesson_id'/)
   })
 
   it('makes no unrelated schema or permission change', () => {
