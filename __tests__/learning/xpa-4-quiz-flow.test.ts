@@ -278,18 +278,54 @@ describe('XPA-4 — certificate issuance', () => {
     expect(cert).toMatch(/from\('certificates'\)[\s\S]{0,200}?\.eq\('user_id'/)
   })
 
-  it('requires module quizzes to have been passed', () => {
-    expect(cert).toMatch(/passedAttempts/)
-    expect(cert).toMatch(/\.eq\('passed', true\)/)
+  // ── XPA-8 B-2.3A: eligibility moved, and one rule was RATIFIED AWAY ──────
+  //
+  // These three asserted the inline gate the certificate page used to carry.
+  // B-2.3A moved that logic into `lib/learn/assessment.ts`, so they follow it
+  // there — except the module-quiz rule, which was deliberately retired.
+  //
+  // The old gate demanded a pass on EVERY module quiz that happened to exist,
+  // with no way for a course to say "I do not assess". That is what let a
+  // 3-question lesson-scoped warm-up become a certification dependency. The
+  // ratified contract is: required lessons, plus a final exam ONLY when the
+  // course opts in via `requires_final_exam`. Module quizzes gate nothing.
+  const assess = read('lib/learn/assessment.ts')
+
+  it('requires a passing attempt on the final exam when the course requires one', () => {
+    expect(assess).toMatch(/requires_final_exam/)
+    expect(assess).toMatch(/from\('quiz_attempts'\)[\s\S]{0,200}?\.eq\('passed', true\)/)
+    expect(assess).toMatch(/final_exam_not_passed/)
   })
 
-  it('requires the final exam to be passed when one exists', () => {
-    expect(cert).toMatch(/finalExamQuiz/)
-    expect(cert).toMatch(/finalAttempt/)
+  it('module quizzes no longer gate certification (ratified B-2.3A)', () => {
+    // Scoped to the ELIGIBILITY RESOLVER and comment-stripped. `module_id` is
+    // legitimately read elsewhere in the file — `resolveQuizContext` needs it
+    // to work out a quiz's parent — so a whole-file absence check would be
+    // wrong, and a raw-source one would trip on the prose explaining the
+    // retirement.
+    const src  = stripTsComments(assess)
+    const body = src.slice(src.indexOf('export async function resolveCertificateEligibility'))
+    expect(body).not.toMatch(/passedAttempts/)
+    expect(body, 'the eligibility resolver consults module-scoped attempts')
+      .not.toMatch(/module_id/)
   })
 
-  it('does not infer a final exam for courses that have none', () => {
-    expect(cert).toMatch(/if \(finalExamQuiz\)/)
+  it('a course that requires no exam is certified on lessons alone', () => {
+    expect(assess).toMatch(/if \(!requiresExam\)/)
+  })
+
+  it('requires_final_exam with NO exam attached fails closed', () => {
+    // The dangerous direction: a misconfigured flag must withhold a
+    // certificate, never mint one.
+    expect(assess).toMatch(/final_exam_missing/)
+    expect(assess).toMatch(/if \(!exam\)/)
+    expect(assess).toMatch(/refusing certificate/)
+  })
+
+  it('PLATFORM_MODE has no say in eligibility', () => {
+    // Comment-stripped: the module's header explains at length that the mode is
+    // consulted nowhere, and a raw match would fail on that very sentence.
+    expect(stripTsComments(assess)).not.toMatch(/PILOT_MODE|PLATFORM_MODE/)
   })
 
   it('verification URLs use the canonical public domain', () => {

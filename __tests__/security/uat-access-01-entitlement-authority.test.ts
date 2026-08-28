@@ -144,22 +144,31 @@ describe('UAT-ACCESS-01 certificate gate', () => {
     expect(s).not.toMatch(/\.from\(\s*['"`]enrollments['"`]\s*\)/)
   })
 
+  // XPA-8 B-2.3A moved the completion arithmetic out of the page and into
+  // `resolveCertificateEligibility`. UAT-ACCESS-01's claim is unchanged, and is
+  // now asserted in both halves: the page refuses on the resolver's verdict,
+  // and the resolver demands real evidence.
   it('still requires real COMPLETION evidence — an entitlement is not a certificate', () => {
-    const s = src()
-    expect(s).toContain('lesson_progress')
-    expect(s).toContain('quiz_attempts')
-    // Incomplete learner is turned away.
-    expect(s).toMatch(/completedCount[\s\S]{0,60}<\s*totalLessons[\s\S]{0,80}redirect/)
+    const page = src()
+    expect(page).toContain('resolveCertificateEligibility')
+    expect(page).toMatch(/if \(!eligibility\.eligible\)/)
+
+    const assess = stripTs(read('lib/learn/assessment.ts'))
+    expect(assess).toContain('lesson_progress')
+    expect(assess).toContain('quiz_attempts')
+    // Incomplete learner is refused.
+    expect(assess).toMatch(/completedLessons < totalLessons/)
+    expect(assess).toMatch(/lessons_incomplete/)
     // A course with no lessons cannot mint one.
-    expect(s).toMatch(/totalLessons === 0[\s\S]{0,120}redirect/)
+    expect(assess).toMatch(/totalLessons === 0/)
   })
 
   it('creates the certificate only after every completion check', () => {
     const s = src()
-    const completionAt = s.search(/completedCount/)
-    const insertAt = s.search(/\.from\(\s*['"`]certificates['"`]\s*\)[\s\S]{0,200}\.insert/)
-    expect(completionAt).toBeGreaterThan(-1)
-    expect(insertAt).toBeGreaterThan(completionAt)
+    const verdictAt = s.search(/if \(!eligibility\.eligible\)/)
+    const insertAt  = s.search(/\.from\(\s*['"`]certificates['"`]\s*\)[\s\S]{0,200}\.insert/)
+    expect(verdictAt).toBeGreaterThan(-1)
+    expect(insertAt).toBeGreaterThan(verdictAt)
   })
 })
 
