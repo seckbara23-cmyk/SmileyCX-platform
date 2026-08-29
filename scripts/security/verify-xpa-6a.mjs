@@ -492,13 +492,31 @@ try {
   }
 
   console.log('\n── 8. Prior phases intact ──────────────────────────────────────')
-  for (const [label, path, want] of [
-    ['ai_sessions', 'ai_sessions?select=id&limit=1', 11],
-    ['ai_turns', 'ai_turns?select=id&limit=1', 36],
-    ['unpublished voice personas', 'ai_scenarios?select=id&is_published=eq.false', 4],
+  //
+  // XPA-8 F-5 / Track 4 - `ai_sessions` and `ai_turns` are APPEND-ONLY tables
+  // that grow whenever a learner legitimately practises. Pinning them to an
+  // exact count asserted "nothing was destroyed" by asserting "nothing has
+  // happened", so the pilot first real voice session turned this section red
+  // (12 vs 11, 40 vs 36) while nothing was actually wrong.
+  //
+  // The invariant these checks exist to defend is PRESERVATION, not stasis:
+  // recorded pilot work must never disappear. That is >= against a frozen
+  // baseline. The baseline stays at the audited pilot floor and is deliberately
+  // NOT re-pinned to the current totals - re-pinning a preservation check to
+  // present reality is exactly how it stops detecting deletion.
+  //
+  // `unpublished voice personas` keeps exact equality on purpose: four planned
+  // personas is a fixed roster, not a growing table, and a fifth appearing is as
+  // much a finding as a fourth disappearing.
+  const PRESERVE_FLOOR = { sessions: 11, turns: 36 }
+  for (const [label, path, want, mode] of [
+    ['ai_sessions', 'ai_sessions?select=id&limit=1', PRESERVE_FLOOR.sessions, 'min'],
+    ['ai_turns', 'ai_turns?select=id&limit=1', PRESERVE_FLOOR.turns, 'min'],
+    ['unpublished voice personas', 'ai_scenarios?select=id&is_published=eq.false', 4, 'exact'],
   ]) {
     const r = await rest(path, { key: SVC })
-    record(label, `${r.total} (want ${want})`, r.total === want)
+    const held = mode === 'min' ? r.total >= want : r.total === want
+    record(label, mode === 'min' ? `${r.total} (>= ${want})` : `${r.total} (want ${want})`, held)
   }
   const pvs = await rest('public_voice_scenarios?select=id')
   record('anon public_voice_scenarios', `${classify(pvs)} (${pvs.total} rows)`,

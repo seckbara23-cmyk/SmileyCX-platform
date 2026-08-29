@@ -1,11 +1,12 @@
 'use server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { requirePlatformAdmin } from '@/lib/auth/session'
+import { recordPublicationTransition } from '@/lib/admin/publication-audit'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
 export async function createCourse(formData: FormData) {
-  await requirePlatformAdmin()
+  const admin = await requirePlatformAdmin()
   const supabase = createAdminClient()
 
   const title       = (formData.get('title') as string ?? '').trim()
@@ -52,6 +53,24 @@ export async function createCourse(formData: FormData) {
     .single()
 
   if (error) throw new Error(error.message)
+
+  // A course created with the box ticked becomes publicly discoverable the
+  // moment it exists. That is a publication transition even though no previous
+  // row existed, and auditing only the edit form would leave this path silent —
+  // reproducing the exact gap F-5 exists to close. `previousIsPublished: null`
+  // is what distinguishes it from a re-publication.
+  if (is_published) {
+    await recordPublicationTransition({
+      courseId:            data.id,
+      courseTitle:         title,
+      courseSlug:          slug,
+      previousIsPublished: null,
+      newIsPublished:      true,
+      actorId:             admin.id,
+      actorEmail:          admin.email,
+      outcome:             'success',
+    })
+  }
 
   revalidatePath('/courses')
   revalidatePath(`/courses/${slug}`)
