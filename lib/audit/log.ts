@@ -59,6 +59,20 @@ export type AuditEventType =
   | 'organization.member_added'
   | 'organization.member_activated'
   | 'organization.member_removed'
+  // XPA-8 F-5 — course PUBLICATION lifecycle. Publication decides whether a
+  // course is DISCOVERABLE by the public; it decides nothing about ACCESS,
+  // because `has_course_access()` has no `is_published` arm and an entitled
+  // learner keeps a withdrawn course. Named apart from the entitlement events
+  // for exactly that reason: an investigator must be able to tell a catalogue
+  // change from an access change at a glance.
+  //
+  // They exist because three re-publications of withdrawn courses had to be
+  // attributed forensically from `updated_at`, and the actor could never be
+  // established. Only TRANSITIONS are recorded — a save that leaves publication
+  // unchanged is not a publication event, and logging it would bury the ones
+  // that are. See lib/admin/publication-audit.ts.
+  | 'course.published'
+  | 'course.unpublished'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

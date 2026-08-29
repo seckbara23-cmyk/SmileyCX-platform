@@ -123,8 +123,18 @@ export default function NewCourseForm() {
           <input type="checkbox" name="is_free" className="w-4 h-4 rounded text-primary accent-primary" />
           <span className="text-sm font-medium text-gray-700">Formation gratuite</span>
         </label>
+        {/*
+          XPA-8 F-5 Track 3 — a new course starts UNPUBLISHED.
+
+          This box was `defaultChecked` unconditionally, so every course created
+          through this form went straight into the public catalogue, placeholder
+          lessons and all. Publishing is now a deliberate act.
+
+          The control itself stays. Removing it would only move publication
+          somewhere less visible, and the transition is now audited either way.
+        */}
         <label className="flex items-center gap-3 cursor-pointer">
-          <input type="checkbox" name="is_published" defaultChecked className="w-4 h-4 rounded text-primary accent-primary" />
+          <input type="checkbox" name="is_published" className="w-4 h-4 rounded text-primary accent-primary" />
           <span className="text-sm font-medium text-gray-700">Publier immédiatement</span>
         </label>
       </div>
