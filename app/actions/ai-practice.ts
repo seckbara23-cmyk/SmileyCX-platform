@@ -510,7 +510,33 @@ export async function completeAiSession(
     if (!session) return { error: 'Session introuvable.' }
 
     const admin = createAdminClient()
-    const { error } = await admin
+
+    // ── VOICE-A1 F-2: the SERVER is the idempotency boundary ───────────────
+    //
+    // The client used to be the only guard (`finalizedRef`), which holds for
+    // exactly one component instance. Every export of a `'use server'` module
+    // is a callable HTTP endpoint, so a replay — a double click, a retried
+    // request, a second tab — reached this update unguarded and rewrote
+    // `completed_at`, could flip `completed` into `abandoned`, and re-fired
+    // both the competency engine and the lesson-progress write.
+    //
+    // The transition is therefore filtered on `status = 'active'` and executed
+    // as ONE statement, so Postgres decides the winner rather than a
+    // read-then-write in application code. Two concurrent finalisations cannot
+    // both succeed: the loser matches zero rows.
+    //
+    // A cheap pre-check first, so the common replay costs no write at all.
+    // It is an optimisation, NOT the guarantee — the guarantee is the
+    // `.eq('status', 'active')` filter below.
+    if (session.status !== 'active') {
+      log.info(
+        { sessionId, currentStatus: session.status, requested: status },
+        'completeAiSession: already terminal — no-op',
+      )
+      return { ok: true }
+    }
+
+    const { data: transitioned, error } = await admin
       .from('ai_sessions')
       .update({
         status,
@@ -518,10 +544,24 @@ export async function completeAiSession(
         duration_seconds: durationSeconds ?? null,
       })
       .eq('id', sessionId)
+      .eq('status', 'active')
+      .select('id')
 
     if (error) {
       log.error({ sessionId, error: error.message }, 'completeAiSession failed')
       return { error: 'Mise à jour impossible.' }
+    }
+
+    // Zero rows means the row was already terminal when the statement ran —
+    // another caller won the race between the pre-check and here. Success, but
+    // WE did not perform the transition, so nothing downstream may run: the
+    // engine and the lesson-progress write belong to the caller that actually
+    // moved the row out of `active`.
+    //
+    // A 2xx is not evidence. The row effect is.
+    if (!transitioned || transitioned.length === 0) {
+      log.info({ sessionId, requested: status }, 'completeAiSession: lost the finalisation race — no-op')
+      return { ok: true }
     }
 
     // Phase 2A: deterministic Competency Engine (no LLM). Gated on the coach

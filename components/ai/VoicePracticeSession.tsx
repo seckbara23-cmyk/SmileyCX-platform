@@ -72,6 +72,12 @@ export default function VoicePracticeSession({
   const turnIndexRef    = useRef(0)
   const saveChainRef    = useRef<Promise<void>>(Promise.resolve())
   const endingRef       = useRef(false)   // learner clicked Terminer (normal end)
+  // VOICE-A1 F-2: two distinct facts, previously conflated into one ref.
+  //   finalizingRef — a finalisation is IN FLIGHT (re-entrancy lock)
+  //   finalizedRef  — the server has CONFIRMED a terminal state
+  // Collapsing them let a caller claim finalisation it never performed, which
+  // is exactly how a navigated-away session stayed `active` for ever.
+  const finalizingRef   = useRef(false)
   const finalizedRef    = useRef(false)
   const unmountedRef    = useRef(false)
   const transcriptRef   = useRef<HTMLDivElement>(null)
@@ -98,15 +104,42 @@ export default function VoicePracticeSession({
     if (bufferRef.current.length >= 2) void flushTurns()
   }
 
+  /**
+   * The single lifecycle authority. Every terminal path goes through here.
+   *
+   * VOICE-A1 F-2: finalisation is only CLAIMED once the server has confirmed
+   * it. The old code set the guard on entry, so any path that set it without
+   * persisting — the unmount cleanup did exactly that — permanently blocked
+   * every later attempt and left the row `active`.
+   *
+   * `flushTurns()` is awaited BEFORE the terminal write so the last learner and
+   * agent turns are never lost to a finalisation that raced ahead of them.
+   *
+   * Provider-independent by design: the application session becomes terminal
+   * whether or not ElevenLabs acknowledges shutdown. The server is idempotent,
+   * so a duplicate reaching it is a no-op rather than a rewrite.
+   */
   async function finalize(status: 'completed' | 'abandoned', isError: boolean, message?: string) {
-    if (finalizedRef.current) return
-    finalizedRef.current = true
-    await flushTurns()
+    if (finalizedRef.current || finalizingRef.current) return
+    finalizingRef.current = true
     const sid = sessionIdRef.current
     const durationSeconds = startedAtRef.current
       ? Math.round((Date.now() - startedAtRef.current) / 1000)
       : undefined
-    if (sid) await completeAiSession({ sessionId: sid, anonId: anon, status, durationSeconds })
+    try {
+      await flushTurns()
+      if (sid) {
+        const res = await completeAiSession({ sessionId: sid, anonId: anon, status, durationSeconds })
+        // Claim finalisation ONLY on a confirmed terminal state. On failure the
+        // flag stays false so a later path (unmount, disconnect) can retry.
+        if (!res?.error) finalizedRef.current = true
+      } else {
+        // No session row was ever created — there is nothing to make terminal.
+        finalizedRef.current = true
+      }
+    } finally {
+      finalizingRef.current = false
+    }
     if (unmountedRef.current) return
     if (isError) { setError(message ?? 'Une erreur est survenue.'); setState('erreur') }
     else setState('termine')
@@ -237,10 +270,31 @@ export default function VoicePracticeSession({
     return () => {
       unmountedRef.current = true
       const conv = conversationRef.current
-      if (conv && !finalizedRef.current) {
-        finalizedRef.current = true
-        void flushTurns().then(() => conv.endSession().catch(() => {}))
-      }
+
+      // ── VOICE-A1 F-2 ────────────────────────────────────────────────────
+      //
+      // Leaving the exercise is NOT completing it. A learner who navigates
+      // away without using the completion flow abandons the session, and that
+      // is a real lifecycle outcome which must be PERSISTED — not merely
+      // flagged locally, which is what this cleanup used to do:
+      //
+      //     finalizedRef.current = true          // claimed…
+      //     void flushTurns().then(() => conv.endSession())   // …never wrote
+      //
+      // That poisoned `finalize()` for the rest of the component's life, so
+      // the `onDisconnect` its own `endSession()` triggered returned early and
+      // the row stayed `active` for ever.
+      //
+      // `abandoned` deliberately grants no lesson credit and does not run the
+      // competency engine — both are reserved for `completed`, and time spent
+      // talking is not completion.
+      //
+      // The provider is told to stop AFTER our own state is settled: the
+      // application lifecycle does not depend on ElevenLabs acknowledging it.
+      const stopProvider = () => { conv?.endSession().catch(() => {}) }
+
+      if (!finalizedRef.current) void finalize('abandoned', false).finally(stopProvider)
+      else stopProvider()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
