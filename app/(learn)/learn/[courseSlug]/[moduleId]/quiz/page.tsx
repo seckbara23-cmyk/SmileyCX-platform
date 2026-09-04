@@ -18,6 +18,11 @@ interface QuizRow {
   id:            string
   title:         string
   passing_score: number | null
+  // QUIZ-1A: a formative quiz hangs off a LESSON (module_id / course_id NULL).
+  // Needed so 'continue' resolves to the next lesson rather than the next
+  // MODULE — the production warm-up sits on lesson 4 of 7, and jumping to the
+  // next module would skip three lessons.
+  lesson_id?:    string | null
   // XPA-4 (migration 032). Both default false, so a quiz that has not opted in
   // renders exactly as before. Presentation only — never affects grading.
   randomize_questions?: boolean | null
@@ -76,6 +81,9 @@ export default function ModuleQuizPage() {
   const [submitError,      setSubmitError]       = useState('')
   const [submissionResult, setSubmissionResult]  = useState<QuizSubmitResult | null>(null)
   const [alreadyPassed,    setAlreadyPassed]     = useState(false)
+  // QUIZ-1A forward resolution for a lesson-scoped formative quiz.
+  const [quizLessonId,     setQuizLessonId]      = useState<string | null>(null)
+  const [nextInModule,     setNextInModule]      = useState<string | null>(null)
 
   const loadData = useCallback(async () => {
     const { data: course } = await supabase
@@ -150,7 +158,7 @@ export default function ModuleQuizPage() {
     // Primary: module-level quiz (lesson_id = NULL, module_id = this module)
     const { data: modQuiz, error: quizErr } = await supabase
       .from('quizzes')
-      .select('id, title, passing_score, randomize_questions, randomize_options')
+      .select('id, title, passing_score, randomize_questions, randomize_options, lesson_id')
       .eq('module_id', resolvedId)
       // XPA-4: deterministic selection. `.limit(1)` with no ORDER BY made this an
       // ACCIDENTAL selector — with more than one matching quiz Postgres may return
@@ -176,7 +184,7 @@ export default function ModuleQuizPage() {
         // candidates — precisely where an unordered limit(1) is unsafe.
         const { data: lessonQuiz, error: lqErr } = await supabase
           .from('quizzes')
-          .select('id, title, passing_score, randomize_questions, randomize_options')
+          .select('id, title, passing_score, randomize_questions, randomize_options, lesson_id')
           .in('lesson_id', lessonIds)
           .order('created_at', { ascending: true })
           .order('id', { ascending: true })
@@ -189,6 +197,16 @@ export default function ModuleQuizPage() {
 
     if (quizData) {
       setQuiz(quizData)
+
+      // QUIZ-1A: where does 'continue' go? For a MODULE quiz the answer is the
+      // next module, unchanged. For a LESSON-scoped formative quiz it is the
+      // next lesson of THIS module — anything else silently skips the lessons
+      // between the quiz and the module boundary.
+      if (quizData.lesson_id) {
+        setQuizLessonId(quizData.lesson_id)
+        const at = curLessons.findIndex((l: LessonMeta) => l.id === quizData.lesson_id)
+        setNextInModule(at >= 0 ? (curLessons[at + 1]?.id ?? null) : null)
+      }
 
       const { data: qs, error: qsErr } = await supabase
         .from('quiz_questions')
@@ -269,9 +287,24 @@ export default function ModuleQuizPage() {
     )
   }
 
-  const backHref = lastLessonId
-    ? `/learn/${courseSlug}/${moduleId}/${lastLessonId}`
-    : `/courses/${courseSlug}`
+  // QUIZ-1A: return to the lesson the quiz belongs to, when it has one.
+  // "Back" on a formative quiz meant the module's LAST lesson, which threw the
+  // learner forward rather than back.
+  const backHref = quizLessonId
+    ? `/learn/${courseSlug}/${moduleId}/${quizLessonId}`
+    : lastLessonId
+      ? `/learn/${courseSlug}/${moduleId}/${lastLessonId}`
+      : `/courses/${courseSlug}`
+
+  // A lesson-scoped quiz is FORMATIVE: it is offered, it never gates. So its
+  // forward link is shown whatever the score — a learner who fails still
+  // continues, keeps course access and keeps certificate eligibility.
+  const isFormativeLessonQuiz = !!quizLessonId
+  const formativeNextHref = nextInModule
+    ? `/learn/${courseSlug}/${moduleId}/${nextInModule}`
+    : nextModFirst
+      ? `/learn/${courseSlug}/${nextModFirst.modId}/${nextModFirst.lessonId}`
+      : null
 
   return (
     <div className="h-[calc(100vh-48px)] flex flex-col bg-[#0f1117]">
@@ -547,6 +580,14 @@ export default function ModuleQuizPage() {
                       <Award className="w-5 h-5 shrink-0" />
                       <p className="text-sm font-semibold">Bravo&nbsp;! Vous avez valid&eacute; ce module.</p>
                     </div>
+                  ) : isFormativeLessonQuiz ? (
+                    // Formative: no score is required to continue, so the old
+                    // "you must reach X% to move on" line would simply be false.
+                    <p className="mt-3 text-sm text-white/60">
+                      Cet exercice est un entra&icirc;nement&nbsp;: votre score ne conditionne
+                      ni la suite du cours ni votre certificat. Vous pouvez recommencer
+                      ou continuer.
+                    </p>
                   ) : (
                     <p className="mt-3 text-sm text-red-400">
                       Vous devez obtenir au moins {requiredScore}&nbsp;% pour passer au module suivant.
@@ -554,7 +595,14 @@ export default function ModuleQuizPage() {
                   )}
 
                   <div className="flex flex-wrap items-center gap-3 mt-5">
-                    {isPassed && nextModFirst && (
+                    {/* QUIZ-1A: formative forward link — shown pass OR fail. */}
+                    {isFormativeLessonQuiz && formativeNextHref && (
+                      <Link href={formativeNextHref}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-primary text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity">
+                        Continuer <ChevronRight className="w-4 h-4" />
+                      </Link>
+                    )}
+                    {!isFormativeLessonQuiz && isPassed && nextModFirst && (
                       <Link href={`/learn/${courseSlug}/${nextModFirst.modId}/${nextModFirst.lessonId}`}
                         className="flex items-center gap-2 px-5 py-2.5 bg-success text-white text-sm font-bold rounded-lg hover:opacity-90 transition-opacity">
                         Passer au module suivant <ChevronRight className="w-4 h-4" />

@@ -54,6 +54,11 @@ export default function LessonPlayerPage() {
 
   const [validatedModules, setValidatedModules] = useState<Set<string>>(new Set())
   const [modulesWithQuiz,  setModulesWithQuiz]  = useState<Set<string>>(new Set())
+  // QUIZ-1A: lesson-scoped formative quizzes, keyed by the lesson they hang off.
+  // Kept SEPARATE from `modulesWithQuiz` on purpose — that set is the module
+  // GATE, and a formative quiz is offered, never gating (Ruling 1).
+  const [lessonQuizzes,    setLessonQuizzes]    = useState<Map<string, string>>(new Map())
+  const [attemptedQuizzes, setAttemptedQuizzes] = useState<Set<string>>(new Set())
   const [hasFinalExam,     setHasFinalExam]     = useState(false)
   const [finalExamPassed,  setFinalExamPassed]  = useState(false)
   const [exercises,        setExercises]        = useState<ExerciseData[]>([])
@@ -251,6 +256,53 @@ export default function LessonPlayerPage() {
         setModulesWithQuiz(gated)
       })
 
+    // ── QUIZ-1A: discover LESSON-scoped formative quizzes ──────────────────
+    //
+    // The gate query above keys on `module_id`, and the production warm-up has
+    // `module_id = NULL` — so navigation could not see it at all. The lesson
+    // finished, the auto-advance countdown fired, and the learner was carried
+    // straight past the quiz. That is the "quizzes are skipped automatically"
+    // report, and it is one query, not a design problem.
+    //
+    // This lookup is deliberately additive and deliberately separate: it feeds
+    // an OFFER (the auto-advance target and the CTA), never `nextIsBlocked`.
+    // A formative quiz must never require a passing score to continue.
+    const lessonIds = modules.flatMap(m => (m.lessons ?? []).map(l => l.id))
+    if (lessonIds.length > 0) {
+      supabase.from('quizzes').select('id, lesson_id')
+        .in('lesson_id', lessonIds)
+        .is('module_id', null)
+        .is('course_id', null)
+        .then(({ data: lq }) => {
+          const byLesson = new Map<string, string>()
+          ;(lq ?? []).forEach(q => {
+            if (q.lesson_id) byLesson.set(q.lesson_id as string, q.id as string)
+          })
+          setLessonQuizzes(byLesson)
+
+          // Which of them has this learner already attempted? An attempt — pass
+          // or fail — is enough to stop re-offering, so finishing a quiz always
+          // resolves forward and lesson -> quiz -> lesson can never cycle.
+          const quizIds = Array.from(byLesson.values())
+          if (quizIds.length === 0) return
+          if (PILOT_MODE) {
+            const done = new Set<string>()
+            for (const id of quizIds) {
+              try { if (localStorage.getItem(`quiz-lesson-${id}`)) done.add(id) } catch {}
+            }
+            setAttemptedQuizzes(done)
+            return
+          }
+          supabase.auth.getUser().then(({ data: { user } }) => {
+            if (!user) return
+            supabase.from('quiz_attempts').select('quiz_id')
+              .eq('user_id', user.id).in('quiz_id', quizIds)
+              .then(({ data: at }) =>
+                setAttemptedQuizzes(new Set((at ?? []).map(x => x.quiz_id as string))))
+          })
+        })
+    }
+
     // Check for course-level final exam quiz
     if (courseId) {
       supabase.from('quizzes').select('id').eq('course_id', courseId).maybeSingle()
@@ -446,6 +498,9 @@ export default function LessonPlayerPage() {
   const nextIsNewModule    = !!nextLesson && nextLesson.module.id !== module?.id
   const currentModHasQuiz  = modulesWithQuiz.has(module?.id ?? '')
   const currentModPassed   = validatedModules.has(module?.id ?? '')
+  // QUIZ-1A: the formative quiz attached to THIS lesson, if any. Deliberately
+  // absent from `nextIsBlocked` below — offered, never gating (Ruling 1).
+  const lessonQuizId       = lesson ? lessonQuizzes.get(lesson.id) : undefined
   const nextIsBlocked      = !PILOT_MODE && nextIsNewModule && isLastLessonInModule && currentModHasQuiz && !currentModPassed
 
   // ── Lesson metadata ────────────────────────────────────────────────────────
@@ -491,6 +546,20 @@ export default function LessonPlayerPage() {
       // `${module?.id}` would have produced "/learn/<slug>/undefined/quiz".
       const quizHref = moduleQuizHref(courseSlug, module)
       if (quizHref) return { href: quizHref, label: 'Quiz du module' }
+    }
+    // ── QUIZ-1A: OFFER the lesson's formative quiz ─────────────────────────
+    //
+    // Checked AFTER the module gate, so a real gate is never bypassed by an
+    // offer. This branch only redirects the auto-advance destination — it sets
+    // nothing that blocks, and `nextIsBlocked` is untouched, so a learner who
+    // ignores or fails the quiz still moves on and keeps course access and
+    // certificate eligibility exactly as before.
+    //
+    // Suppressed once attempted, which is what makes lesson -> quiz -> lesson
+    // terminate instead of cycling.
+    if (lessonQuizId && !attemptedQuizzes.has(lessonQuizId)) {
+      const quizHref = moduleQuizHref(courseSlug, module)
+      if (quizHref) return { href: quizHref, label: 'Faire le quiz' }
     }
     if (isLastLesson && hasFinalExam && !finalExamPassed) {
       return { href: `/learn/${courseSlug}/final-exam`, label: 'Examen final' }
