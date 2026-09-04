@@ -85,13 +85,20 @@ export default function HomePage() {
 
             {/* Section header */}
             <div className="cx-section-title text-center mb-12">
-              <span className="inline-block text-xs font-bold text-secondary uppercase tracking-widest mb-3">
+              {/*
+                PILOT-UX-1 (Marième, "Corrections Following the Pilot Phase"):
+                the "Ce que nous offrons" label was too small to read as a
+                section title — raised from text-xs to text-sm / md:text-base.
+                Typography only; the section layout is unchanged.
+              */}
+              <span className="inline-block text-sm md:text-base font-bold text-secondary uppercase tracking-widest mb-3">
                 Ce que nous offrons
               </span>
               <h2>Des formations adapt&eacute;es &agrave; vos besoins</h2>
+              {/* Approved lead copy, verbatim from the pilot corrections deck. */}
               <p>
-                Apprenez concr&egrave;tement avec des exemples r&eacute;els adapt&eacute;s au contexte local
-                et des outils directement applicables.
+                Choisissez un parcours de formation adapt&eacute; &agrave; votre niveau et apprenez
+                &agrave; votre rythme.
               </p>
             </div>
 
@@ -114,7 +121,16 @@ export default function HomePage() {
                   </p>
                   <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                     <ul className="flex-1 space-y-3 text-sm text-dark">
-                      {['Accès immédiat', 'Vidéos + ressources PDF', 'Mobile & desktop'].map(f => (
+                      {/*
+                        Approved benefit list from the pilot corrections deck.
+                        NOTE: "Quiz" and "Ressources PDF" are advertised here
+                        while the learner-facing quiz flow and PDF resources are
+                        still open items in Marième's own action table (both
+                        "High / To do"). The claim is kept per the phase brief —
+                        the functionality is being closed in later phases — and
+                        the mismatch is reported rather than silently resolved.
+                      */}
+                      {['Accès immédiat', 'Cas pratiques • Quiz • Ressources PDF', 'Mobile, tablette et ordinateur'].map(f => (
                         <li key={f} className="flex items-center gap-2">
                           <CheckCircle className="w-4 h-4 text-success shrink-0" /> {f}
                         </li>

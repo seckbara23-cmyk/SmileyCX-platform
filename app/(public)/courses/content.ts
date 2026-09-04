@@ -6,6 +6,13 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Internal parcours identity. PILOT-UX-1 renamed the FIRST journey's
+ * learner-facing label from "Débutant" to "Fondations" per Marième's pilot
+ * corrections; the id stays `debutant` on purpose. It is a stable key used for
+ * selection state and for the catalogue mapping (C1 → debutant), and renaming
+ * a key to match a caption is how presentation quietly becomes schema.
+ */
 export type ParcoursId = 'debutant' | 'intermediaire' | 'avance'
 
 export type CourseItem = {
@@ -49,12 +56,15 @@ export const HERO_CHIPS: { Icon: LucideIcon; label: string }[] = [
 export const PARCOURS: ParcoursConfig[] = [
   {
     id:     'debutant',
-    badge:  'Parcours Débutant',
-    label:  'Débutant',
+    badge:  'Parcours Fondations',
+    label:  'Fondations',
     title:  "Pour découvrir les bases de l'expérience client",
     desc:   'Une approche accessible pour poser des fondations solides.',
     bullets: [
-      'Agents, assistants, clients, entrepreneurs',
+      // Pilot correction: the narrower persona list ("Agents, assistants,
+      // clients, entrepreneurs") excluded the people the course is actually
+      // for. The approved wording is deliberately role-agnostic.
+      'Toute personne en contact avec des clients, quel que soit son métier',
       'Approche humaine et structurée',
       'Fondamentaux indispensables',
     ],
@@ -112,13 +122,13 @@ export const PARCOURS: ParcoursConfig[] = [
 // ── Course catalog (static fallback — DB rows override matching slugs) ────────
 
 export const STATIC_CATALOG: CourseItem[] = [
-  // Débutant
+  // Fondations
   {
     slug:      'fondamentaux-experience-client',
     title:     'Expérience client : les fondamentaux pour fidéliser vos relations',
     desc:      "Découvrez les principes essentiels pour vos clients et posez les bases d'une expérience positive et durable.",
     duration:  '3h',
-    level:     'Débutant',
+    level:     'Fondations',
     image:     '/images/Picture5.jpg',
     available: true,
     parcours:  'debutant',
@@ -128,7 +138,7 @@ export const STATIC_CATALOG: CourseItem[] = [
     title:     'Créer des interactions clients qui donnent envie de revenir',
     desc:      "Maîtrisez la communication, l'écoute active et les techniques de conversation qui permettent d'offrir un service client de qualité.",
     duration:  '2h30',
-    level:     'Débutant',
+    level:     'Fondations',
     image:     '/images/Picture3.jpg',
     available: true,
     parcours:  'debutant',
@@ -138,7 +148,7 @@ export const STATIC_CATALOG: CourseItem[] = [
     title:     "Les bases d'un service client digital professionnel et performant",
     desc:      'Utilisez les canaux digitaux pour répondre vite, réduire les frictions et offrir une expérience client fluide et moderne.',
     duration:  '2h',
-    level:     'Débutant',
+    level:     'Fondations',
     image:     '/images/Elearning.jpeg',
     available: false,
     parcours:  'debutant',
@@ -259,11 +269,11 @@ export type PricingPlan = {
 export const PRICING_PLANS: PricingPlan[] = [
   {
     id:           'debutant',
-    name:         'Parcours Débutant',
+    name:         'Parcours Fondations',
     tagline:      'La base pour bien commencer',
     monthlyPrice: 29000,
     features: [
-      'Accès à toutes les formations débutant',
+      'Accès à toutes les formations Fondations',
       'Certificat de réussite',
       'Ressources téléchargeables',
       'Support par email',
@@ -350,7 +360,9 @@ export const BENEFITS: { Icon: LucideIcon; title: string; desc: string }[] = [
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 export function levelLabel(level: string): string {
-  if (level === 'beginner'     || level === 'Débutant')      return 'Débutant'
+  // 'Débutant' is still accepted as INPUT so any legacy row or cached payload
+  // still resolves; the OUTPUT is the approved label.
+  if (level === 'beginner' || level === 'Débutant' || level === 'Fondations') return 'Fondations'
   if (level === 'intermediate' || level === 'Intermédiaire') return 'Intermédiaire'
   if (level === 'advanced'     || level === 'Avancé')        return 'Avancé'
   return level

@@ -28,7 +28,9 @@ export function generateReference(prefix = 'SCX'): string {
 
 /** Map level to label */
 export const LEVEL_LABELS: Record<string, string> = {
-  beginner:     'Débutant',
+  // PILOT-UX-1: learner-facing label for the first journey is 'Fondations'.
+  // The DB value stays 'beginner' — this map is presentation only.
+  beginner:     'Fondations',
   intermediate: 'Intermédiaire',
   advanced:     'Avancé',
 }
