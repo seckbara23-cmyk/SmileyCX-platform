@@ -8,7 +8,7 @@ import { ensureAcademicEnrollment } from '@/app/actions/enrollment'
 // UAT-ACCESS-01: FREE_ACCESS_MODE is deliberately no longer imported here.
 // It was an access authority in this file and must never be one again.
 import { PILOT_MODE } from '@/lib/pilot'
-import { moduleQuizHref } from '@/lib/learn/routes'
+import { resolveAutoAdvanceTarget, type AdvanceTarget } from '@/lib/learn/auto-advance'
 import { lessonAssetSrc } from '@/lib/media/paths'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
@@ -532,45 +532,28 @@ export default function LessonPlayerPage() {
   })()
 
   // ── Auto-advance target ────────────────────────────────────────────────────
-  type AdvanceTarget = { href: string; label: string }
-
+  //
+  // QUIZ-1A FIX: the decision moved to `lib/learn/auto-advance.ts`. It used to
+  // live here and opened with `if (PILOT_MODE) return nextLesson`, which sat
+  // ABOVE every quiz branch. Production runs PLATFORM_MODE=pilot, so the
+  // formative-quiz offer was unreachable and the player skipped the quiz — the
+  // behaviour the UAT reproduced. Source-string tests could see the branch but
+  // not that nothing could reach it; a pure resolver can be exercised directly.
   function getAutoAdvanceTarget(): AdvanceTarget | null {
-    if (PILOT_MODE) {
-      if (!nextLesson) return null
-      return { href: `/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`, label: 'Leçon suivante' }
-    }
-    // Quiz gate: always route through the module quiz before advancing further,
-    // even when this is the very last lesson of the course.
-    if (isLastLessonInModule && currentModHasQuiz && !currentModPassed) {
-      // UAT-ROUTE-01: `module` is state and can be null before resolution, so
-      // `${module?.id}` would have produced "/learn/<slug>/undefined/quiz".
-      const quizHref = moduleQuizHref(courseSlug, module)
-      if (quizHref) return { href: quizHref, label: 'Quiz du module' }
-    }
-    // ── QUIZ-1A: OFFER the lesson's formative quiz ─────────────────────────
-    //
-    // Checked AFTER the module gate, so a real gate is never bypassed by an
-    // offer. This branch only redirects the auto-advance destination — it sets
-    // nothing that blocks, and `nextIsBlocked` is untouched, so a learner who
-    // ignores or fails the quiz still moves on and keeps course access and
-    // certificate eligibility exactly as before.
-    //
-    // Suppressed once attempted, which is what makes lesson -> quiz -> lesson
-    // terminate instead of cycling.
-    if (lessonQuizId && !attemptedQuizzes.has(lessonQuizId)) {
-      const quizHref = moduleQuizHref(courseSlug, module)
-      if (quizHref) return { href: quizHref, label: 'Faire le quiz' }
-    }
-    if (isLastLesson && hasFinalExam && !finalExamPassed) {
-      return { href: `/learn/${courseSlug}/final-exam`, label: 'Examen final' }
-    }
-    if (isLastLesson) {
-      return { href: `/certificate/${courseSlug}`, label: 'Vers votre certificat' }
-    }
-    if (nextLesson) {
-      return { href: `/learn/${courseSlug}/${nextLesson.module.id}/${nextLesson.id}`, label: 'Leçon suivante' }
-    }
-    return null
+    return resolveAutoAdvanceTarget({
+      pilotMode:            PILOT_MODE,
+      courseSlug,
+      module,
+      nextLesson:           nextLesson ? { moduleId: nextLesson.module.id, lessonId: nextLesson.id } : null,
+      isLastLesson,
+      isLastLessonInModule,
+      moduleHasQuiz:        currentModHasQuiz,
+      moduleQuizPassed:     currentModPassed,
+      lessonQuizId:         lessonQuizId ?? null,
+      lessonQuizAttempted:  !!lessonQuizId && attemptedQuizzes.has(lessonQuizId),
+      hasFinalExam,
+      finalExamPassed,
+    })
   }
 
   const autoAdvanceTarget   = getAutoAdvanceTarget()

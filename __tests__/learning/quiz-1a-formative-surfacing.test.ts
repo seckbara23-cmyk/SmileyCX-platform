@@ -47,6 +47,10 @@ const LESSON = 'app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx'
 const QUIZ   = 'app/(learn)/learn/[courseSlug]/[moduleId]/quiz/page.tsx'
 const ACTION = 'app/actions/quiz.ts'
 const ASSESS = 'lib/learn/assessment.ts'
+// The auto-advance decision moved here after the production UAT proved the
+// inline version was unreachable in pilot mode. Behaviour is now covered by
+// quiz-1a-auto-advance-resolver.test.ts; the assertions below cover the WIRING.
+const RESOLVER = 'lib/learn/auto-advance.ts'
 
 // ══════════════════════════════════════════════════════════════════════════
 describe('QUIZ-1A — discovery', () => {
@@ -81,17 +85,30 @@ describe('QUIZ-1A — offer, not gate (Ruling 1)', () => {
   const src = () => stripJs(read(LESSON))
 
   it('3. auto-advance targets the quiz instead of the next lesson', () => {
-    const s = src()
-    expect(s).toMatch(/if \(lessonQuizId && !attemptedQuizzes\.has\(lessonQuizId\)\)/)
-    expect(s).toMatch(/label: 'Faire le quiz'/)
+    const r = stripJs(read(RESOLVER))
+    expect(r).toMatch(/if \(i\.lessonQuizId && !i\.lessonQuizAttempted\)/)
+    expect(r).toMatch(/label: 'Faire le quiz'/)
+    // …and the player actually delegates to it.
+    expect(src()).toMatch(/resolveAutoAdvanceTarget\(\{/)
   })
 
   it('4. the CTA/route is built through moduleQuizHref, never string-concatenated', () => {
-    const s = src()
-    const branch = s.slice(s.indexOf('if (lessonQuizId'))
-    expect(branch.slice(0, 400)).toMatch(/moduleQuizHref\(courseSlug, module\)/)
+    const r = stripJs(read(RESOLVER))
+    expect(r).toMatch(/moduleQuizHref\(i\.courseSlug, i\.module\)/)
     // UAT-ROUTE-01 invariant: no manufactured segments.
-    expect(branch.slice(0, 400)).not.toMatch(/\$\{module\?\.id\}/)
+    expect(r).not.toMatch(/\$\{i\.module\?\.id\}/)
+  })
+
+  it('the pilot short-cut can no longer strand the offer — THE UAT DEFECT', () => {
+    // Production runs PLATFORM_MODE=pilot. The old inline function opened with
+    // `if (PILOT_MODE) return nextLesson`, above every quiz branch, so the
+    // formative offer was dead code on the deployed build.
+    const r = stripJs(read(RESOLVER))
+    const offerAt = r.indexOf("label: 'Faire le quiz'")
+    const pilotAt = r.indexOf('if (i.pilotMode) return nextLessonTarget')
+    expect(offerAt).toBeGreaterThan(-1)
+    expect(pilotAt).toBeGreaterThan(-1)
+    expect(pilotAt, 'the pilot short-cut must come AFTER the offer').toBeGreaterThan(offerAt)
   })
 
   it('6/7. the formative quiz is NOT part of the blocking condition', () => {
@@ -106,11 +123,15 @@ describe('QUIZ-1A — offer, not gate (Ruling 1)', () => {
   })
 
   it('the module gate is evaluated BEFORE the formative offer, so a gate is never bypassed', () => {
-    const s = src()
-    const gateAt  = s.indexOf("label: 'Quiz du module'")
-    const offerAt = s.indexOf("label: 'Faire le quiz'")
+    const r = stripJs(read(RESOLVER))
+    const gateAt  = r.indexOf("label: 'Quiz du module'")
+    const offerAt = r.indexOf("label: 'Faire le quiz'")
     expect(gateAt).toBeGreaterThan(-1)
     expect(offerAt).toBeGreaterThan(gateAt)
+  })
+
+  it('QUIZ-1A does not arm the dormant module gate — it keeps its !pilotMode guard', () => {
+    expect(stripJs(read(RESOLVER))).toMatch(/if \(!i\.pilotMode && i\.isLastLessonInModule && i\.moduleHasQuiz/)
   })
 
   it('8. requires_final_exam / certificate authority is untouched by this phase', () => {
@@ -131,9 +152,10 @@ describe('QUIZ-1A — forward resolution and loop safety', () => {
     // This is what makes lesson -> quiz -> lesson terminate: after an attempt
     // (pass OR fail) the auto-advance target reverts to the next lesson.
     const s = stripJs(read(LESSON))
-    expect(s).toMatch(/!attemptedQuizzes\.has\(lessonQuizId\)/)
+    expect(s).toMatch(/lessonQuizAttempted:\s+!!lessonQuizId && attemptedQuizzes\.has\(lessonQuizId\)/)
     expect(s).toMatch(/setAttemptedQuizzes\(/)
     expect(s).toMatch(/\.select\('quiz_id'\)/)
+    expect(stripJs(read(RESOLVER))).toMatch(/!i\.lessonQuizAttempted/)
   })
 
   it('a mid-module quiz continues to the NEXT LESSON, not the next module', () => {
