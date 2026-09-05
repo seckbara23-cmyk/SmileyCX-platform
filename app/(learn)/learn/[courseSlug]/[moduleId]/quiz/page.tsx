@@ -370,7 +370,21 @@ export default function ModuleQuizPage() {
                   <ul className="space-y-1.5">
                     <li>• R&eacute;pondez &agrave; toutes les questions</li>
                     <li>• Cliquez sur &laquo;&nbsp;V&eacute;rifier mes r&eacute;ponses&nbsp;&raquo; pour voir votre score</li>
-                    <li>• Vous devez obtenir au moins {requiredScore}&nbsp;% pour valider ce module</li>
+                    {/*
+                      QUIZ-1B: this line used to claim a minimum score was
+                      required, unconditionally. For a lesson-scoped FORMATIVE
+                      quiz that is simply false — the production UAT scored 33%
+                      and continued — and it contradicted the post-submission
+                      copy on the same page. A module-scoped quiz genuinely does
+                      gate, so it keeps the pass-score instruction. The final
+                      exam has its own page and its own attempt semantics and is
+                      untouched.
+                    */}
+                    {isFormativeLessonQuiz ? (
+                      <li>• Cet exercice est un entra&icirc;nement&nbsp;: votre score ne bloque pas la suite du cours</li>
+                    ) : (
+                      <li>• Vous devez obtenir au moins {requiredScore}&nbsp;% pour valider ce module</li>
+                    )}
                     <li>• Vous pouvez recommencer le quiz autant de fois que n&eacute;cessaire</li>
                   </ul>
                 </div>
@@ -578,7 +592,20 @@ export default function ModuleQuizPage() {
                   {quizPassed ? (
                     <div className="flex items-center gap-2 mt-3 text-success">
                       <Award className="w-5 h-5 shrink-0" />
-                      <p className="text-sm font-semibold">Bravo&nbsp;! Vous avez valid&eacute; ce module.</p>
+                      {/*
+                        QUIZ-1B: a lesson-scoped FORMATIVE quiz validates no
+                        module — it is an exercise. Claiming otherwise here
+                        repeats, in the success case, the same false gating
+                        claim the pre-submission instruction used to carry. A
+                        module-scoped quiz genuinely does validate its module,
+                        so it keeps the original wording. The final exam has
+                        its own page and its own copy, and is untouched.
+                      */}
+                      <p className="text-sm font-semibold">
+                        {isFormativeLessonQuiz
+                          ? <>Bravo&nbsp;! Vous avez r&eacute;ussi cet exercice.</>
+                          : <>Bravo&nbsp;! Vous avez valid&eacute; ce module.</>}
+                      </p>
                     </div>
                   ) : isFormativeLessonQuiz ? (
                     // Formative: no score is required to continue, so the old
