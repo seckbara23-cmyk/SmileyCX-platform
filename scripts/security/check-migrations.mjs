@@ -8,6 +8,13 @@
  * OWNERSHIP, not COLUMN VALUES, so the row owner can freely rewrite privileged
  * columns. That is exactly how `platform_role` became self-escalatable.
  *
+ * It also catches a defect class that reaches production a different way: a
+ * PL/pgSQL RAISE whose format string and argument list disagree. Postgres
+ * rejects that at COMPILE time (42601 "too many parameters specified for
+ * RAISE"), so the whole migration fails to run — but nothing in this repository
+ * parses PL/pgSQL, so it was previously invisible until an operator pasted the
+ * file into the SQL editor. QUIZ-1B migration 052 failed exactly this way.
+ *
  * Run:  npm run lint:sql
  * Exit 0 = no NEW findings, exit 1 = a new risky policy or dangerous statement.
  *
@@ -107,6 +114,101 @@ function findRlsDisablers(masked, original, file) {
   return findings
 }
 
+/**
+ * A RAISE whose placeholder count does not match its argument count.
+ *
+ * This needs literal-aware scanning rather than the shared comment mask: the
+ * format string is itself a quoted literal, and migrations carry commented-out
+ * ROLLBACK blocks whose RAISE statements must NOT be linted. Newlines are
+ * preserved while stripping, so reported line numbers match the original file.
+ */
+function stripCommentsLiteralAware (sql) {
+  let out = '', inStr = false
+  for (let i = 0; i < sql.length; i++) {
+    const c = sql[i], n = sql[i + 1]
+    if (inStr) {
+      out += c
+      if (c === "'") { if (n === "'") { out += n; i++ } else inStr = false }
+      continue
+    }
+    if (c === "'") { inStr = true; out += c; continue }
+    if (c === '-' && n === '-') { while (i < sql.length && sql[i] !== '\n') i++; out += '\n'; continue }
+    out += c
+  }
+  return out
+}
+
+/** Read a single-quoted literal at i, handling '' escapes. */
+function readLiteral (sql, i) {
+  let v = ''
+  i++
+  while (i < sql.length) {
+    if (sql[i] === "'") {
+      if (sql[i + 1] === "'") { v += "'"; i += 2; continue }
+      return { value: v, end: i + 1 }
+    }
+    v += sql[i++]
+  }
+  return { value: v, end: i }
+}
+
+/** Count % placeholders, treating %% as an escaped literal percent. */
+function countPlaceholders (s) {
+  let n = 0
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== '%') continue
+    if (s[i + 1] === '%') { i++; continue }
+    n++
+  }
+  return n
+}
+
+/** Split the argument list following the format string, up to the closing ';'. */
+function readRaiseArgs (sql, i) {
+  let depth = 0, cur = '', args = []
+  while (i < sql.length) {
+    const c = sql[i]
+    if (c === "'") { const r = readLiteral(sql, i); cur += 'x'; i = r.end; continue }
+    if (c === '(') depth++
+    if (c === ')') depth--
+    if (c === ';' && depth === 0) { if (cur.trim()) args.push(cur.trim()); return args }
+    if (c === ',' && depth === 0) { if (cur.trim()) args.push(cur.trim()); cur = ''; i++; continue }
+    cur += c
+    i++
+  }
+  return args
+}
+
+function findRaiseArityMismatches (_masked, original, file) {
+  const sql = stripCommentsLiteralAware(original)
+  const findings = []
+  const re = /\braise\s+(exception|notice|warning|info|log|debug)\s*/gi
+  let m
+  while ((m = re.exec(sql)) !== null) {
+    let i = m.index + m[0].length
+    while (i < sql.length && /\s/.test(sql[i])) i++
+    if (sql[i] !== "'") continue          // RAISE USING, or a bare re-raise
+    const lit = readLiteral(sql, i)
+    let j = lit.end
+    while (j < sql.length && /\s/.test(sql[j])) j++
+    const args = sql[j] === ',' ? readRaiseArgs(sql, j + 1) : []
+    const holes = countPlaceholders(lit.value)
+    if (holes === args.length) continue
+    if (isSuppressed(original, m.index)) continue
+    const line = sql.slice(0, m.index).split('\n').length
+    findings.push({
+      id:      `${file}::raise-arity::${line}`,
+      file,
+      line,
+      message: `RAISE has ${holes} placeholder(s) but ${args.length} argument(s)`,
+      detail:
+        'PostgreSQL rejects this at COMPILE time (42601), so the ENTIRE migration\n' +
+        '    fails to run. Add or remove a % in the format string, or fix the argument\n' +
+        `    list. Message: ${JSON.stringify(lit.value.slice(0, 90))}`,
+    })
+  }
+  return findings
+}
 // ── Run ──────────────────────────────────────────────────────────────────────
 
 const baseline = existsSync(BASELINE_PATH)
@@ -122,6 +224,7 @@ for (const file of files) {
   all.push(
     ...findWritePoliciesWithoutCheck(masked, original, file),
     ...findRlsDisablers(masked, original, file),
+    ...findRaiseArityMismatches(masked, original, file),
   )
 }
 

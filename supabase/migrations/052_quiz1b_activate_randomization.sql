@@ -124,7 +124,7 @@ begin
     raise exception 'QUIZ-1B 052: quiz % is module-scoped (module_id %) — out of scope', c_quiz, v_module;
   end if;
   if v_course is not null then
-    raise exception 'QUIZ-1B 052: quiz % is course-scoped (a FINAL EXAM) — out of scope', c_quiz, v_course;
+    raise exception 'QUIZ-1B 052: quiz % is course-scoped (a FINAL EXAM, course_id %) — out of scope', c_quiz, v_course;
   end if;
 
   -- ── 3. Pre-state must be exactly false / false ──────────────────────────
