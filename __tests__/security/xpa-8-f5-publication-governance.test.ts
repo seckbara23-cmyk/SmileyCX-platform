@@ -225,8 +225,18 @@ describe('XPA-8 F-5 Track 3 — publication transitions are audited', () => {
 
   it('updateCourse reads the PRIOR state from the row, not from the form', () => {
     const src = stripJs(read(EDIT))
-    expect(src).toMatch(/const \{ data: prior \}[\s\S]{0,220}\.select\('is_published, slug'\)/)
-    expect(src).toMatch(/publicationChanged\s*=\s*!!prior && prior\.is_published !== is_published/)
+    // F-5.2 widened the destructuring to CAPTURE the lookup error. The intent
+    // this test guards - prior state comes from the ROW, never the form - is
+    // unchanged; only the shape of the destructuring moved.
+    expect(src).toMatch(/const \{ data: prior, error: priorError \}[\s\S]{0,220}\.select\('is_published, slug'\)/)
+    // This line used to pin `!!prior && prior.is_published !== is_published`.
+    // That expression WAS the fail-open: a failed lookup became `prior = null`,
+    // which became 'nothing changed', and the UPDATE proceeded with no audit -
+    // the defect behind the unattributable 2026-09-05 republication. Pinning it
+    // would make this suite assert the bug. It now pins the fail-closed form,
+    // which is strictly stronger: prior is proven non-null before it is read.
+    expect(src).toMatch(/publicationChanged\s*=\s*prior\.is_published !== is_published/)
+    expect(src).toMatch(/if \(priorError\)[\s\S]{0,400}throw new Error/)
   })
 
   it('updateCourse audits both the success and the refusal path, transitions only', () => {
