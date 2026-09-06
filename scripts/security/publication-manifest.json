@@ -1,0 +1,87 @@
+{
+  "$comment": [
+    "F-5.2 approved publication state for scripts/security/verify-publication-governance.mjs.",
+    "",
+    "This file is a RULING, not a measurement. It records the catalogue state the",
+    "owner has approved. The verifier compares production against it and reports",
+    "any difference — so when the owner legitimately publishes a new course, the",
+    "verifier is SUPPOSED to go red until this file is updated to match. That is",
+    "the control working: a publication that nobody wrote down is exactly what",
+    "F-5.2 exists to surface.",
+    "",
+    "WHY THIS ENCODES 7 PUBLISHED AND NOT 5.",
+    "Migration 049 restored 5-published/2-withdrawn. On 2026-09-05 the content",
+    "owner published `mesurer-l-experience-client` (C2-F2) and",
+    "`developper-une-culture-client`, then authored five new lessons on the",
+    "latter. The forensic audit could not attribute that change because no audit",
+    "row existed — the defect F-5.2 corrects. Bara has since ruled the change",
+    "LEGITIMATE owner evolution of the catalogue. So the approved state is what",
+    "production holds TODAY, not the historical 049 state.",
+    "",
+    "TO UPDATE: change `approved_state`, bump `approved_at`, and say who ruled.",
+    "Updating this file is the act of approving what production already shows —",
+    "do it deliberately, not to make a red verifier go green."
+  ],
+  "approved_by": "Bara Seck (platform owner) — ruling relayed 2026-09-06",
+  "approved_at": "2026-09-06",
+  "ruling": "Publication state as of 2026-09-06 is legitimate owner evolution of the catalogue. Migration 049's 5-published/2-withdrawn state is superseded and must NOT be restored. Preview flags are owner-managed content configuration and are not cleared by F-5.2.",
+  "strictness": {
+    "is_published": "EXACT — any difference is reported as drift and must be explained or approved.",
+    "course_set": "EXACT — a course appearing or disappearing is drift.",
+    "lessons": "GROWTH ALLOWED — the owner authors content continuously. Growth is reported as informational; SHRINKAGE is reported as drift, because lessons should not vanish.",
+    "preview_lessons": "INFORMATIONAL — owner-managed content configuration per the 2026-09-06 ruling. Reported, never failed."
+  },
+  "approved_state": [
+    {
+      "slug": "communiquer-avec-les-clients-sur-les-canaux-digitaux",
+      "code": "C1-F3",
+      "is_published": true,
+      "lessons": 17,
+      "preview_lessons": 0
+    },
+    {
+      "slug": "developper-une-culture-client",
+      "code": null,
+      "is_published": true,
+      "lessons": 15,
+      "preview_lessons": 5,
+      "note": "Published 2026-09-05 by the content owner; five lessons authored the same afternoon. Ruled legitimate 2026-09-06."
+    },
+    {
+      "slug": "gerer-les-reclamations-et-transformer-l-insatisfaction-en-opportunite",
+      "code": "C2-F4",
+      "is_published": true,
+      "lessons": 13,
+      "preview_lessons": 0
+    },
+    {
+      "slug": "les-fondamentaux-de-l-experience-client",
+      "code": "C1-F1",
+      "is_published": true,
+      "lessons": 17,
+      "preview_lessons": 0
+    },
+    {
+      "slug": "les-fondamentaux-du-service-client",
+      "code": "C1-F2",
+      "is_published": true,
+      "lessons": 18,
+      "preview_lessons": 0
+    },
+    {
+      "slug": "manager-une-equipe-orientee-client",
+      "code": "C2-F1",
+      "is_published": true,
+      "lessons": 17,
+      "preview_lessons": 0
+    },
+    {
+      "slug": "mesurer-l-experience-client",
+      "code": "C2-F2",
+      "is_published": true,
+      "lessons": 21,
+      "preview_lessons": 1,
+      "note": "Published 2026-09-05 by the content owner. Ruled legitimate 2026-09-06."
+    }
+  ]
+}
