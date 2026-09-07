@@ -1,7 +1,7 @@
 'use client'
 import { useEffect, useState, useCallback, useRef } from 'react'
 import Link from 'next/link'
-import { List, Loader2, Captions } from 'lucide-react'
+import { List, Loader2, Captions, FileText } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { ensureAcademicEnrollment } from '@/app/actions/enrollment'
@@ -144,7 +144,7 @@ export default function LessonPlayerPage() {
 
     const { data: mods } = await supabase
       .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, duration_minutes, order_index)')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, pdf_url, pdf_object_path, duration_minutes, order_index)')
       .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
@@ -190,7 +190,7 @@ export default function LessonPlayerPage() {
 
     const { data: mods } = await supabase
       .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, duration_minutes, order_index)')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, pdf_url, pdf_object_path, duration_minutes, order_index)')
       .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
@@ -599,6 +599,10 @@ export default function LessonPlayerPage() {
   const isProtectedVideo = Boolean(lesson.video_object_path)
   const videoSrc    = lessonAssetSrc(lesson.id, 'video',    lesson.video_object_path,    lesson.video_url)
   const subtitleSrc = lessonAssetSrc(lesson.id, 'subtitle', lesson.subtitle_object_path, lesson.subtitle_url)
+  // PDF-1. Same helper, same precedence, same delivery route — a lesson
+  // support is protected course content, not a download link. Null when the
+  // lesson has no PDF, which is 115 of 118 lessons today.
+  const pdfSrc      = lessonAssetSrc(lesson.id, 'pdf',      lesson.pdf_object_path,      lesson.pdf_url)
 
   return (
     <div className="relative flex h-[calc(100vh-48px)] bg-[#0f1117]">
@@ -755,6 +759,33 @@ export default function LessonPlayerPage() {
                 className="prose prose-invert prose-sm max-w-none text-white/80"
                 dangerouslySetInnerHTML={{ __html: lesson.content.replace(/\n/g, '<br/>') }}
               />
+            )}
+
+            {/*
+              PDF-1 — lesson resources.
+
+              Rendered ONLY when the lesson actually has a support document.
+              115 of 118 lessons have none, so an always-present "no resources"
+              panel would be noise on almost every screen.
+
+              `pdfSrc` is an application URL, never a Storage URL: it resolves
+              to /api/media/lesson/<id>/pdf, which re-checks the entitlement on
+              every request and 302s to a URL valid for two minutes. Nothing
+              durable is rendered, and this component signs nothing.
+            */}
+            {pdfSrc && (
+              <div className="mt-8 rounded-xl border border-white/10 bg-white/5 p-4">
+                <p className="mb-3 text-sm font-semibold text-white/90">Ressources</p>
+                <a
+                  href={pdfSrc}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-medium text-white/80 transition-colors hover:bg-white/10 hover:text-white"
+                >
+                  <FileText className="h-4 w-4 shrink-0" />
+                  Télécharger le support PDF
+                </a>
+              </div>
             )}
 
             {exercises.map(ex => (
