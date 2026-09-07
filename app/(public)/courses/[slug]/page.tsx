@@ -544,7 +544,16 @@ export default async function CourseDetailPage({ params }: Props) {
                   href={pathHref(p)}
                   className="inline-flex items-center gap-2 px-3.5 py-2 rounded-full border border-black/[0.08] bg-light/60 text-sm text-dark hover:border-primary/40 hover:bg-primary/5 transition-colors"
                 >
-                  <span className="font-mono text-[11px] font-bold text-secondary">{p.code}</span>
+                  {/*
+                    B-2.5: the internal catalogue code (PM-CONS, SEC-COM…) used to
+                    render here in monospace beside the title. It is a join key, a
+                    React key and a URL segment — none of which a visitor can read.
+                    Worse, it was usually redundant: "PM-CONS Parcours Conseiller"
+                    says the same thing twice, once in machine language. C1-F1
+                    belongs to all fifteen paths, so its page showed fifteen of them.
+                    The code is still the key and still drives pathHref; only the
+                    rendered span is gone.
+                  */}
                   {p.title}
                 </Link>
               ))}

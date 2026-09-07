@@ -50,9 +50,13 @@ export default async function PathDetail({ code, kind }: Props) {
             <ArrowLeft className="w-4 h-4" aria-hidden /> {backLabel}
           </Link>
 
-          <p className="font-mono text-xs font-bold text-secondary tracking-wide mb-2">
-            {path.code}
-          </p>
+          {/*
+            B-2.5: the code eyebrow above the title is gone. The heading already
+            names the path ("Parcours Conseiller", "Commerce & PME"); the code
+            above it was an internal identifier the reader could not interpret.
+            It remains the lookup key and the URL segment — see the URL note in
+            the B-2.5 audit, deliberately unchanged here.
+          */}
           <h1 className="text-2xl md:text-4xl font-extrabold text-dark leading-tight mb-4">
             {path.title}
           </h1>
