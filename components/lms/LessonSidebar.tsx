@@ -14,6 +14,11 @@ export interface SidebarLessonRow {
   // Storage URL. Null until migration 042 backfills them.
   video_object_path?: string | null
   subtitle_object_path?: string | null
+  // PDF-1: the lesson support document. Same two-column contract as the
+  // media above — a path wins over a legacy URL, and delivery goes through
+  // /api/media/lesson/<id>/pdf behind the entitlement check.
+  pdf_url?: string | null
+  pdf_object_path?: string | null
 }
 export interface SidebarModuleRow {
   id: string; slug: string; title: string; order_index: number
