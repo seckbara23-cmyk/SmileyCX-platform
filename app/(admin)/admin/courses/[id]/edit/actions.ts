@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { recordPublicationTransition } from '@/lib/admin/publication-audit'
 import { createLogger } from '@/lib/logger'
+import { resolveCourseCodeAssignment } from '@/lib/admin/course-codes'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
@@ -73,6 +74,36 @@ export async function updateCourse(formData: FormData) {
 
   const publicationChanged = prior.is_published !== is_published
 
+  // ── CAT-1: academic identity ─────────────────────────────────────────
+  //
+  // Read separately rather than widening the F-5.2 prior-state select, which
+  // is pinned by the publication-governance suite. Same fail-closed rule
+  // applies: without a trustworthy current code there is no safe way to tell
+  // an assignment from a replacement, so refuse rather than guess.
+  const { data: codeRow, error: codeReadError } = await supabase
+    .from('courses')
+    .select('code')
+    .eq('id', id)
+    .maybeSingle()
+
+  if (codeReadError || !codeRow) {
+    log.error({ courseId: id, error: codeReadError?.message },
+      'CAT-1 — refusing course update: academic code unreadable')
+    throw new Error(
+      "Impossible de lire le code académique actuel de ce cours. " +
+      'Aucune modification enregistrée. Réessayez.',
+    )
+  }
+
+  const codeAssignment = await resolveCourseCodeAssignment(
+    codeRow.code as string | null, formData.get('code') as string | null, id,
+  )
+  if (!codeAssignment.ok) {
+    log.error({ courseId: id, reason: codeAssignment.error },
+      'CAT-1 — refusing course update: invalid academic code assignment')
+    throw new Error(codeAssignment.error)
+  }
+
   const { error } = await supabase
     .from('courses')
     .update({
@@ -84,6 +115,10 @@ export async function updateCourse(formData: FormData) {
       is_free,
       is_published,
       intro_video_url,
+      // Present only on a genuine first assignment. An unchanged or absent
+      // code never reaches the UPDATE, so the immutability trigger is never
+      // even asked a question it would have to refuse.
+      ...(codeAssignment.code ? { code: codeAssignment.code } : {}),
       ...(cover_url !== undefined ? { cover_url } : {}),
       ...(slug ? { slug } : {}),
       updated_at:     new Date().toISOString(),
