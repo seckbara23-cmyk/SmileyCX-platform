@@ -22,12 +22,15 @@ export default function PathCard({ path, availableCount }: Props) {
       href={pathHref(path)}
       className="cx-card cx-card-hover flex flex-col p-5 group"
     >
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <span className="font-mono text-[11px] font-bold text-secondary tracking-wide">
-          {path.code}
-        </span>
+      {/*
+        B-2.5: the internal code chip that sat opposite the arrow is gone — it is
+        an internal identifier and meant nothing to a visitor. `ml-auto` replaces
+        what `justify-between` was doing for it, so the arrow stays where it was
+        and the card is otherwise untouched.
+      */}
+      <div className="flex items-start gap-3 mb-2">
         <ArrowRight
-          className="w-4 h-4 text-cx-gray/40 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0"
+          className="w-4 h-4 text-cx-gray/40 group-hover:text-primary group-hover:translate-x-0.5 transition-all shrink-0 ml-auto"
           aria-hidden
         />
       </div>
