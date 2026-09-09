@@ -1,12 +1,13 @@
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
 import Link from 'next/link'
-import { ArrowLeft, BookOpen, Plus } from 'lucide-react'
+import { ArrowLeft, BookOpen, Plus, Lock } from 'lucide-react'
 import { notFound } from 'next/navigation'
 import type { Metadata } from 'next'
 import { updateCourse } from './actions'
 import CourseCoverUpload from './CourseCoverUpload'
 import DeleteCourseButton from './DeleteCourseButton'
+import { listAssignableCourseCodes } from '@/lib/admin/course-codes'
 
 export const metadata: Metadata = { title: 'Admin — Modifier une formation' }
 
@@ -24,6 +25,12 @@ export default async function AdminEditCoursePage({ params }: Props) {
     .single()
 
   if (!course) notFound()
+
+  // CAT-1: only codes that could legitimately be assigned right now —
+  // registered, not retired, not already carried by another course. Loaded
+  // only while the course still has none; a coded course is shown its code
+  // and offered no alternatives.
+  const assignableCodes = course.code ? [] : await listAssignableCourseCodes(course.id as string)
 
   // Load modules with lesson counts
   const { data: modules } = await supabase
@@ -106,6 +113,63 @@ export default async function AdminEditCoursePage({ params }: Props) {
               <option value="intermediate">Intermédiaire</option>
               <option value="advanced">Avancé</option>
             </select>
+          </div>
+
+          {/*
+            CAT-1 — academic identity.
+
+            The public catalogue groups by this code's catalogue prefix and every
+            parcours membership is keyed on it, so a published course without one
+            renders its own page and appears nowhere else. It is assignable ONCE:
+            migration 028's courses_code_immutable trigger refuses any later
+            change, and the server action refuses before the write.
+          */}
+          <div className="flex flex-col gap-1.5">
+            <label htmlFor="course-code" className="text-sm font-semibold text-gray-700">
+              Code académique
+            </label>
+
+            {course.code ? (
+              <>
+                {/*
+                  Locked. The hidden input resubmits the current value so an
+                  ordinary save is a no-op rather than reading as a removal.
+                */}
+                <input type="hidden" name="code" value={course.code as string} />
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-sm font-bold text-gray-900 px-3.5 py-2.5 rounded-xl border border-gray-200 bg-gray-50">
+                    {course.code as string}
+                  </span>
+                  <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5">
+                    <Lock className="w-3 h-3" aria-hidden /> Définitif
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Le code académique est une identité permanente. Il ne peut être ni
+                  modifié ni supprimé. Le titre reste modifiable.
+                </p>
+              </>
+            ) : (
+              <>
+                <select
+                  id="course-code"
+                  name="code"
+                  defaultValue=""
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none"
+                >
+                  <option value="">— Aucun (la formation n’apparaîtra pas au catalogue) —</option>
+                  {assignableCodes.map(c => (
+                    <option key={c.code} value={c.code}>
+                      {c.code}{c.canonical_title ? ` — ${c.canonical_title}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-amber-700">
+                  À choisir une seule fois : une fois enregistré, le code devient
+                  définitif et ne pourra plus être modifié.
+                </p>
+              </>
+            )}
           </div>
 
           <div className="flex flex-col gap-1.5">

@@ -2,6 +2,7 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { recordPublicationTransition } from '@/lib/admin/publication-audit'
+import { resolveCourseCodeAssignment } from '@/lib/admin/course-codes'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
@@ -35,6 +36,13 @@ export async function createCourse(formData: FormData) {
     throw new Error('Impossible de générer un slug valide depuis le titre.')
   }
 
+  // CAT-1: a course may be born with its academic identity. Optional — a
+  // course with no code is still a valid draft; it simply will not appear in
+  // the public catalogue until one is assigned, which is now possible from
+  // the edit form. Passing `undefined` as the current code means "none yet".
+  const codeAssignment = await resolveCourseCodeAssignment(null, formData.get('code') as string | null)
+  if (!codeAssignment.ok) throw new Error(codeAssignment.error)
+
   const { data, error } = await supabase
     .from('courses')
     .insert({
@@ -48,6 +56,7 @@ export async function createCourse(formData: FormData) {
       is_free,
       is_published,
       language:       'fr',
+      ...(codeAssignment.code ? { code: codeAssignment.code } : {}),
     })
     .select('id')
     .single()

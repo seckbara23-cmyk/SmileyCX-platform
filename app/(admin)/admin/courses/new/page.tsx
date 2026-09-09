@@ -3,11 +3,17 @@ import Link from 'next/link'
 import { ArrowLeft } from 'lucide-react'
 import type { Metadata } from 'next'
 import NewCourseForm from './NewCourseForm'
+import { listAssignableCourseCodes } from '@/lib/admin/course-codes'
 
 export const metadata: Metadata = { title: 'Admin — Nouvelle formation' }
 
 export default async function AdminNewCoursePage() {
   await requirePlatformAdmin()
+
+  // CAT-1: a course may be given its academic identity at creation. Optional —
+  // a code can still be assigned later from the edit form, but never changed
+  // once set.
+  const assignableCodes = await listAssignableCourseCodes()
 
   return (
     <div className="p-4 sm:p-6 max-w-2xl mx-auto space-y-6">
@@ -23,7 +29,7 @@ export default async function AdminNewCoursePage() {
         <p className="text-sm text-gray-400 mt-0.5">Créez une nouvelle formation sur la plateforme.</p>
       </div>
 
-      <NewCourseForm />
+      <NewCourseForm assignableCodes={assignableCodes} />
     </div>
   )
 }

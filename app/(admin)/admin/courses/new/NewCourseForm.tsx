@@ -13,7 +13,13 @@ function toSlug(title: string): string {
     .replace(/^-|-$/g, '')
 }
 
-export default function NewCourseForm() {
+/** CAT-1 — canonical codes that can legitimately be assigned right now. */
+interface AssignableCode {
+  code: string
+  canonical_title: string | null
+}
+
+export default function NewCourseForm({ assignableCodes = [] }: { assignableCodes?: AssignableCode[] }) {
   const [slug, setSlug] = useState('')
   const [slugEdited, setSlugEdited] = useState(false)
 
@@ -75,6 +81,29 @@ export default function NewCourseForm() {
             <option value="intermediate">Intermédiaire</option>
             <option value="advanced">Avancé</option>
           </select>
+        </div>
+
+        {/*
+          CAT-1 — academic identity, optional at creation and permanent once set.
+          Without it the course renders its own page but appears in no catalogue
+          and no parcours, because both are keyed on this code.
+        */}
+        <div className="flex flex-col gap-1.5">
+          <label htmlFor="code" className="text-sm font-semibold text-gray-700">Code académique</label>
+          <select
+            id="code"
+            name="code"
+            defaultValue=""
+            className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
+          >
+            <option value="">— Aucun pour l’instant —</option>
+            {assignableCodes.map(c => (
+              <option key={c.code} value={c.code}>
+                {c.code}{c.canonical_title ? ` — ${c.canonical_title}` : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-amber-700">Définitif une fois enregistré.</p>
         </div>
 
         <div className="sm:col-span-2 flex flex-col gap-1.5">
