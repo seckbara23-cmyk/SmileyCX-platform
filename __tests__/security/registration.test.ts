@@ -465,9 +465,25 @@ describe('SEC-2 §2 — Supabase disable_signup is validated at runtime', () => 
   })
 
   it('is wired into the server startup hook', () => {
+    // Next loads instrumentation by CONVENTION, not by configuration: a file
+    // named instrumentation.ts at the project root exporting `register`. Under
+    // Next 14 that convention additionally required
+    // experimental.instrumentationHook; from Next 15 it is on by default and
+    // the key is rejected as invalid config. So this asserts the convention
+    // itself — the root location, the exported entry point, and the call —
+    // which is what actually causes the check to run.
+
+    // readFileSync throws if the file is not at the root, which is the only
+    // place Next will look for it.
     const instrumentation = readFileSync(join(ROOT, 'instrumentation.ts'), 'utf8')
+
+    // Without an exported `register`, Next loads the module and calls nothing.
+    expect(instrumentation).toMatch(/export\s+async\s+function\s+register\s*\(/)
     expect(instrumentation).toMatch(/assertSignupDisabled/)
+
+    // Re-introducing the Next 14 opt-in would now be an invalid-config error,
+    // so the guard runs in the opposite direction: the key must stay absent.
     const config = readFileSync(join(ROOT, 'next.config.mjs'), 'utf8')
-    expect(config).toMatch(/instrumentationHook:\s*true/)
+    expect(config).not.toMatch(/instrumentationHook\s*:/)
   })
 })

@@ -14,10 +14,11 @@ import LoginForm from './LoginForm'
 export const dynamic = 'force-dynamic'
 
 export default async function LoginPage({
-  searchParams,
+  searchParams: searchParamsPromise,
 }: {
-  searchParams: { next?: string; error?: string }
+  searchParams: Promise<{ next?: string; error?: string }>
 }) {
+  const searchParams = await searchParamsPromise
   const adminPortal = isAdminHost(resolveHost(await headers()))
 
   return (

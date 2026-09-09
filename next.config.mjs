@@ -1,11 +1,10 @@
 
 
 const nextConfig = {
-  // Enables instrumentation.ts, which validates the external Supabase Auth
-  // configuration at server startup (SEC-2 §2). Stable in Next 15; opt-in on 14.x.
-  experimental: {
-    instrumentationHook: true,
-  },
+  // instrumentation.ts validates the external Supabase Auth configuration at
+  // server startup (SEC-2 §2). It is loaded by default from Next 15 onward, so
+  // the former experimental.instrumentationHook opt-in is gone — Next 15 rejects
+  // the key outright. The instrumentation itself is unchanged and still runs.
   images: {
     remotePatterns: [
       { protocol: 'https', hostname: '*.supabase.co' },

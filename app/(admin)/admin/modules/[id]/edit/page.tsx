@@ -10,10 +10,11 @@ import LessonEditor from './LessonEditor'
 export const metadata: Metadata = { title: 'Admin — Modifier le module' }
 
 export default async function AdminEditModulePage({
-  params,
+  params: paramsPromise,
 }: {
-  params: { id: string }
+  params: Promise<{ id: string }>
 }) {
+  const params = await paramsPromise
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 

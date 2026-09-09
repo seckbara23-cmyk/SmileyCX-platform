@@ -76,7 +76,9 @@ const SITE_URL = PUBLIC_SITE_URL
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
-export default async function AdminUserDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminUserDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
   const userId = params.id

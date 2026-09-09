@@ -20,7 +20,9 @@ function toMCOptions(opts: unknown): string[] {
   return out
 }
 
-export default async function AdminEditQuizPage({ params }: { params: { id: string } }) {
+export default async function AdminEditQuizPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 
