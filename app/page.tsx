@@ -1,4 +1,5 @@
 import Image from 'next/image'
+import Link from 'next/link'
 import { ArrowRight, CheckCircle, Monitor, MapPin, Mail, Phone, BookOpen, Award, Users, UserCircle } from 'lucide-react'
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
@@ -142,9 +143,9 @@ export default function HomePage() {
                   </div>
                 </div>
                 {/* Footer */}
-                <a href="/courses" className="mt-6 text-sm font-semibold text-primary hover:underline inline-flex items-center gap-1">
+                <Link href="/courses" className="mt-6 text-sm font-semibold text-primary hover:underline inline-flex items-center gap-1">
                   Voir les formations <ArrowRight className="w-4 h-4" />
-                </a>
+                </Link>
               </div>
 
               {/* Formation en présentiel */}
@@ -334,12 +335,12 @@ export default function HomePage() {
               Acc&egrave;s anticip&eacute; disponible &mdash; rejoignez la phase pilote et formez vos &eacute;quipes d&egrave;s maintenant.
             </p>
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <a
+              <Link
                 href="/courses"
                 className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-white text-primary font-bold rounded-cx hover:bg-white/90 transition-all hover:-translate-y-0.5"
               >
                 Acc&eacute;der aux formations <ArrowRight className="w-5 h-5" />
-              </a>
+              </Link>
               <a
                 href="#contact"
                 className="inline-flex items-center justify-center gap-2 px-7 py-3.5 border-2 border-white/40 text-white font-semibold rounded-cx hover:bg-white/15 transition-all"
