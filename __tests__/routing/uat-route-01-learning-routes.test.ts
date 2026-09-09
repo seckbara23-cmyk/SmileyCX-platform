@@ -227,9 +227,20 @@ describe('UAT-ROUTE-01 malformed URL entered manually', () => {
 
   it('the player degrades to a real lesson instead of throwing', () => {
     const src = stripTs(read(PLAYER))
-    // resolveLesson falls through to the first available lesson when neither
+    // resolveLesson falls through to the first AVAILABLE lesson when neither
     // the module nor the lesson segment matches anything.
-    expect(src).toMatch(/if\s*\(sorted\[0\]\?\.lessons\[0\]\)/)
+    //
+    // UX-1 strengthened this rather than changing it. The fallback used to
+    // index blindly into `sorted[0]`, so a course whose FIRST module happened
+    // to be empty left the player with no lesson at all even though later
+    // modules had them, and the page then reported that populated course as
+    // an unavailable formation. It now scans for the first module that
+    // actually HAS a lesson, which is what "first available lesson" always
+    // meant.
+    expect(src).toMatch(/sorted\.find\(\s*m\s*=>\s*m\.lessons\.length\s*>\s*0\s*\)/)
+    expect(src).toMatch(/if\s*\(firstWithLesson\)/)
+    // Still a GUARDED fallback, never an unchecked index.
+    expect(src).not.toMatch(/setLesson\(sorted\[0\]\.lessons\[0\]\)/)
   })
 
   it('an unresolvable course redirects rather than rendering an error', () => {
