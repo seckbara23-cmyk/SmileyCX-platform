@@ -16,7 +16,7 @@ const PAGE_SIZE = 25
 const SITE_URL = PUBLIC_SITE_URL
 
 interface PageProps {
-  searchParams?: { q?: string; course?: string; status?: string; pdf?: string; page?: string }
+  searchParams?: Promise<{ q?: string; course?: string; status?: string; pdf?: string; page?: string }>
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -40,7 +40,9 @@ function pdfBadge(url: string | null) {
     : { cls: 'bg-amber-100 text-amber-700', label: 'Manquant' }
 }
 
-export default async function AdminCertificatesPage({ searchParams }: PageProps) {
+export default async function AdminCertificatesPage({ searchParams: searchParamsPromise }: PageProps) {
+  const searchParams = await searchParamsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 

@@ -21,11 +21,12 @@ import { coursePageHref } from '@/lib/learn/routes'
  */
 export default async function CourseAccessLayout({
   children,
-  params,
+  params: paramsPromise,
 }: {
   children: React.ReactNode
-  params: { courseSlug: string }
+  params: Promise<{ courseSlug: string }>
 }) {
+  const params = await paramsPromise
   const access = await resolveCourseAccess(params.courseSlug)
 
   if (access.allowed) return <>{children}</>

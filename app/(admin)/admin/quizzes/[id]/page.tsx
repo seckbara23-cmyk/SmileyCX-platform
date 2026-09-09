@@ -12,10 +12,11 @@ export const metadata: Metadata = { title: 'Admin — Quiz' }
 const log = createLogger('admin/quiz-detail')
 
 export default async function AdminQuizDetailPage({
-  params,
+  params: paramsPromise,
 }: {
-  params: { id: string }
+  params: Promise<{ id: string }>
 }) {
+  const params = await paramsPromise
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 

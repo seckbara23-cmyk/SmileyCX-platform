@@ -120,14 +120,14 @@ export default function Header({ compact = false }: { compact?: boolean }) {
           aria-label="Navigation principale"
         >
           {/* Logo */}
-          <a
+          <Link
             href="/#accueil"
             onClick={(e) => handleNavClick(e, 'accueil')}
             className="text-2xl font-extrabold text-primary tracking-tight shrink-0"
           >
             XP<span className="text-secondary"> Client</span>{' '}
             <span className="text-lg font-semibold text-cx-gray">Academy</span>
-          </a>
+          </Link>
 
           {/* Desktop nav */}
           <ul className="hidden md:flex items-center gap-1 list-none">

@@ -8,7 +8,9 @@ import { deleteExercise } from './actions'
 
 export const metadata: Metadata = { title: 'Admin — Exercice' }
 
-export default async function AdminExerciseDetailPage({ params }: { params: { id: string } }) {
+export default async function AdminExerciseDetailPage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 
