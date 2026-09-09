@@ -8,7 +8,9 @@ import EditExerciseForm from './EditExerciseForm'
 
 export const metadata: Metadata = { title: 'Admin — Modifier exercice' }
 
-export default async function EditExercisePage({ params }: { params: { id: string } }) {
+export default async function EditExercisePage({ params: paramsPromise }: { params: Promise<{ id: string }> }) {
+  const params = await paramsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
 

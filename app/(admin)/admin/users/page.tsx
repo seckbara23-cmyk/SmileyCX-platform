@@ -8,7 +8,7 @@ import type { Metadata } from 'next'
 export const metadata: Metadata = { title: 'Admin — Utilisateurs' }
 
 interface PageProps {
-  searchParams?: { q?: string }
+  searchParams?: Promise<{ q?: string }>
 }
 
 function RoleBadge({ role }: { role: string }) {
@@ -19,7 +19,9 @@ function RoleBadge({ role }: { role: string }) {
   return <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-500 shrink-0">Utilisateur</span>
 }
 
-export default async function AdminUsersPage({ searchParams }: PageProps) {
+export default async function AdminUsersPage({ searchParams: searchParamsPromise }: PageProps) {
+  const searchParams = await searchParamsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
   const q = searchParams?.q?.trim().toLowerCase() ?? ''

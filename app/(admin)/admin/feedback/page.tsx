@@ -6,7 +6,7 @@ import type { Metadata } from 'next'
 export const metadata: Metadata = { title: 'Admin — Retours pilote' }
 
 interface PageProps {
-  searchParams?: { course?: string }
+  searchParams?: Promise<{ course?: string }>
 }
 
 function Stars({ n }: { n: number }) {
@@ -19,7 +19,9 @@ function Stars({ n }: { n: number }) {
   )
 }
 
-export default async function AdminFeedbackPage({ searchParams }: PageProps) {
+export default async function AdminFeedbackPage({ searchParams: searchParamsPromise }: PageProps) {
+  const searchParams = await searchParamsPromise
+
   await requirePlatformAdmin()
   const supabase = createAdminClient()
   const courseFilter = searchParams?.course ?? ''
