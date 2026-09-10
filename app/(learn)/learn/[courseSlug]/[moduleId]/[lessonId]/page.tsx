@@ -128,7 +128,12 @@ export default function LessonPlayerPage() {
         if (mod.lessons[0]) { setModule(mod); setLesson(mod.lessons[0]); return }
       }
     }
-    if (sorted[0]?.lessons[0]) { setModule(sorted[0]); setLesson(sorted[0].lessons[0]) }
+    // UX-1: fall back to the first module that actually HAS a lesson, not
+    // simply the first module. Otherwise an empty leading module masks the
+    // rest of the course and the page reports it as unavailable when it is
+    // not — which is exactly the misclassification this fix is about.
+    const firstWithLesson = sorted.find(m => m.lessons.length > 0)
+    if (firstWithLesson) { setModule(firstWithLesson); setLesson(firstWithLesson.lessons[0]) }
   }
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -579,7 +584,17 @@ export default function LessonPlayerPage() {
   if (!lesson) {
     return (
       <div className="flex flex-col items-center justify-center h-[calc(100vh-48px)] bg-[#0f1117] text-white/40 gap-4">
-        <p className="text-sm">Leçon introuvable.</p>
+        {/*
+          UX-1 — this is NOT a missing-lesson state.
+
+          resolveLesson() falls back to a real lesson whenever the course has
+          one, so an unknown lessonId in the URL never lands here. Reaching
+          this branch means no lesson could be read AT ALL: the course row is
+          not visible (withdrawn), the module/lesson read returned nothing, or
+          the course has no lessons yet. Every one of those is "the formation
+          is not available right now", which is what it now says.
+        */}
+        <p className="text-sm">Cette formation est temporairement indisponible.</p>
         <Link href="/courses" className="text-primary text-sm hover:underline">← Les formations</Link>
       </div>
     )

@@ -150,9 +150,16 @@ export function denialMessage(reason: CourseAccessDenial): { title: string; body
         body:  'Votre compte n’est pas actif. Contactez-nous pour rétablir votre accès.',
       }
     case 'course_not_found':
+      // UX-1. Reached when the course row is not readable: withdrawn
+      // (courses_public_select is `is_published = true OR is_platform_admin()`,
+      // so a withdrawn course is invisible to every learner) OR the slug never
+      // existed. Those two are DELIBERATELY indistinguishable here — telling
+      // them apart would report publication state to someone RLS has decided
+      // may not see it. One honest message covers both, and it does not claim
+      // the formation is gone for good.
       return {
-        title: 'Formation introuvable',
-        body:  'Cette formation n’existe pas ou n’est plus disponible.',
+        title: 'Formation indisponible',
+        body:  'Cette formation est temporairement indisponible.',
       }
     case 'access_ended':
       return {
