@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { BookOpen, LayoutGrid } from 'lucide-react'
-import { PARCOURS, type CourseItem, type ParcoursId } from './content'
+import { PARCOURS, parcoursAvailability, type CourseItem, type ParcoursId } from './content'
 import CoursesHero from './_components/CoursesHero'
 import ParcoursCard from './_components/ParcoursCard'
 import CourseCard from './_components/CourseCard'
@@ -19,6 +19,11 @@ const ICON_WRAP: Record<Selection, string> = {
 
 export default function CoursesView({ courses }: { courses: CourseItem[] }) {
   const [selected, setSelected] = useState<Selection>('debutant')
+
+  // UAT-FU-3: derived from the published courses this page was given, never set
+  // per journey. An empty journey offers no action, so it cannot scroll anyone
+  // onto an empty list.
+  const availability = parcoursAvailability(courses)
 
   const activeParcours = PARCOURS.find(p => p.id === selected)
   const visibleCourses = (
@@ -53,7 +58,7 @@ export default function CoursesView({ courses }: { courses: CourseItem[] }) {
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             {PARCOURS.map((p) => (
-              <ParcoursCard key={p.id} parcours={p} onSelect={selectParcours} />
+              <ParcoursCard key={p.id} parcours={p} availability={availability[p.id]} onSelect={selectParcours} />
             ))}
           </div>
         </div>

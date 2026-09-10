@@ -119,6 +119,35 @@ export const PARCOURS: ParcoursConfig[] = [
   },
 ]
 
+// ── Journey availability (UAT-FU-3) ───────────────────────────────────────────
+
+/**
+ * Whether a journey can be opened right now. Presentation state only.
+ *
+ * UAT-FU-3 (Marième): a journey with nothing published must say so, rather
+ * than offer "Voir les formations" onto an empty list. The answer is DERIVED
+ * from the course list the page already holds — published courses only, read
+ * under RLS (`is_published = true`) — so no journey is ever marked by hand. The
+ * day the first C3 course is published, Avancé becomes available on its own.
+ *
+ * Deliberately two values and nothing more: no count, no titles, no planned
+ * total. Decision Q-E keeps the roadmap private, and a journey-level
+ * "Bientôt disponible" discloses nothing the empty list did not already.
+ */
+export type ParcoursAvailability = 'available' | 'upcoming'
+
+export function parcoursAvailability(
+  courses: ReadonlyArray<Pick<CourseItem, 'parcours' | 'available'>>,
+): Record<ParcoursId, ParcoursAvailability> {
+  const state = {} as Record<ParcoursId, ParcoursAvailability>
+  for (const { id } of PARCOURS) {
+    // Everything /courses supplies is available today. Checking the flag anyway
+    // means a placeholder card could never make an empty journey look open.
+    state[id] = courses.some(c => c.parcours === id && c.available) ? 'available' : 'upcoming'
+  }
+  return state
+}
+
 // ── Course catalog (static fallback — DB rows override matching slugs) ────────
 
 export const STATIC_CATALOG: CourseItem[] = [

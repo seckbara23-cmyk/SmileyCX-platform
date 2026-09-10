@@ -1,13 +1,15 @@
 'use client'
-import { ArrowRight, CheckCircle2 } from 'lucide-react'
-import type { ParcoursConfig } from '../content'
+import { ArrowRight, CheckCircle2, Clock } from 'lucide-react'
+import type { ParcoursAvailability, ParcoursConfig } from '../content'
 
 interface Props {
   parcours: ParcoursConfig
+  /** Derived from the published course list (UAT-FU-3) — never set by hand. */
+  availability: ParcoursAvailability
   onSelect: (_id: ParcoursConfig['id']) => void
 }
 
-export default function ParcoursCard({ parcours, onSelect }: Props) {
+export default function ParcoursCard({ parcours, availability, onSelect }: Props) {
   const { Icon } = parcours
 
   return (
@@ -41,14 +43,25 @@ export default function ParcoursCard({ parcours, onSelect }: Props) {
         ))}
       </ul>
 
-      {/* CTA */}
-      <button
-        type="button"
-        onClick={() => onSelect(parcours.id)}
-        className={`self-start inline-flex items-center gap-1.5 text-sm font-bold transition-colors ${parcours.ctaClass}`}
-      >
-        Voir les formations <ArrowRight className="w-4 h-4" aria-hidden />
-      </button>
+      {/*
+        CTA — UAT-FU-3. Only a journey with at least one published course offers
+        "Voir les formations". An empty journey shows a status, not an action: no
+        button, no link, no scroll onto an empty list, and nothing about what is
+        planned for it (Q-E).
+      */}
+      {availability === 'available' ? (
+        <button
+          type="button"
+          onClick={() => onSelect(parcours.id)}
+          className={`self-start inline-flex items-center gap-1.5 text-sm font-bold transition-colors ${parcours.ctaClass}`}
+        >
+          Voir les formations <ArrowRight className="w-4 h-4" aria-hidden />
+        </button>
+      ) : (
+        <p className="self-start inline-flex items-center gap-1.5 text-xs font-bold uppercase tracking-wide text-cx-gray bg-light px-3 py-1.5 rounded-full">
+          <Clock className="w-3.5 h-3.5" aria-hidden /> Bientôt disponible
+        </p>
+      )}
 
     </div>
   )
