@@ -10,7 +10,21 @@
 > not lost and not silently folded into an unrelated release.
 
 **Nothing in this document was fixed in B-2.6.** No file listed under "likely surface" was
-modified by commit `0b7977c`.
+modified by commit `0b7977c`. FU-1 and FU-2 were closed later, by separate releases — see
+each entry.
+
+## Ledger status
+
+Reconciled **10 September 2026** against production `main` @ `8ca845a`.
+
+| Finding | Status | Closed by |
+|---|---|---|
+| **UAT-FU-1** — catalogue incomplete | ✅ **CLOSED** | **CAT-1** — commit `0917a58`, PR #14, merged `209aeac` (9 Sep 2026) |
+| **UAT-FU-2** — internal codes learner-facing | ✅ **CLOSED** | **B-2.5** — commit `ed56330`, PR #13, merged `53db92f` (7 Sep 2026) |
+| **UAT-FU-3** — intermediate/advanced parcours buttons | 🟠 **OPEN** | — |
+
+The sections below keep the original 19 August triage text unchanged, followed by the
+resolution where one exists.
 
 ---
 
@@ -39,6 +53,7 @@ lesson_id)`).
 
 | | |
 |---|---|
+| **Status** | ✅ **CLOSED** by CAT-1 (`0917a58`, merged `209aeac`) |
 | **Severity** | to be triaged — potentially learner-visible catalogue incompleteness |
 | **Area** | public catalogue / parcours |
 | **B-2.6 related?** | **No.** Completion does not read, write or filter the catalogue |
@@ -66,12 +81,58 @@ name the delta. Do not "fix" the listing before that number is known.
 035, 037). Whatever changes here must not become an access authority, and must not re-list
 C2-F2, which B-2B withdrew on purpose.
 
+### Resolution — CAT-1
+
+**Measured delta: one course.** Seven courses were published and six reached `/courses`.
+The missing one was *Développer une culture client*. It was published and rendered its own
+page, but appeared in no catalogue tier and no parcours. So of the three candidate causes
+above, it was **(2) published but not listed**. It was not a query bug, though: the course
+had no academic code. It was not a cache effect.
+
+**Root cause.** `courses.code` is the permanent academic identity. The public catalogue
+groups by its catalogue prefix, and every parcours/secteur membership is keyed on it.
+Neither Admin course action ever wrote `code`, so every course authored through the Admin
+UI was born with `code = NULL`. The catalogue excludes null-code rows by design. Every
+future owner-created course would have been invisible the same way.
+
+**Fix.**
+- CAT-1 lets an administrator assign **one** registered, unused, non-retired canonical code
+  to a course that has none. The code is permanent once set; replacing it, clearing it or
+  reusing it is refused.
+- Migration 028's foreign key, unique constraint and immutability trigger remain the
+  authority.
+- No migration was added.
+- The catalogue's `.not('code', 'is', null)` filter was deliberately **not** relaxed.
+
+**Completion.**
+- C2-F5 was assigned through the Admin UI after merge, as an owner action.
+- `learning_path_courses` already linked C2-F5 to seven parcours, so the course surfaced
+  there with no further change. That also resolves the "parcours catalogue needs updating"
+  half of the report for the métier and secteur paths.
+
+**Production evidence** (10 September 2026, public anonymous reads of production):
+
+| Surface | Observed |
+|---|---|
+| `/courses` page data | **7** published courses: Fondations 3 (C1-F1, C1-F2, C1-F3) · Intermédiaire 4 (C2-F1, C2-F2, C2-F4, C2-F5) · Avancé 0 |
+| `/courses/developper-une-culture-client` | listed in **7** parcours |
+| F-5.2 approved publication set (`scripts/security/publication-manifest.json`) | 7 published |
+| Admin catalogue ("Formations produites") | 7, as reported by the owner |
+
+**Superseded constraint.** The instruction above not to re-list C2-F2 no longer applies.
+The content owner republished C2-F2 on 5 September 2026, and that was ruled legitimate on
+6 September 2026 (see `publication-manifest.json`).
+
+The level-journey buttons on `/courses` are **not** covered by this closure. They remain
+open as UAT-FU-3.
+
 ---
 
 ## UAT-FU-2 — internal architecture codes (e.g. `PM-CONS`) are learner-facing
 
 | | |
 |---|---|
+| **Status** | ✅ **CLOSED** by B-2.5 (`ed56330`, merged `53db92f`) |
 | **Severity** | to be triaged — presentation / information disclosure of internal taxonomy |
 | **Area** | course detail page |
 | **B-2.6 related?** | **No** |
@@ -94,12 +155,56 @@ prompt-engineering source material must not be publicly served (see the `public/
 policy and `check-public-assets.mjs`). This is the same principle applied to rendered text
 rather than files, which is an argument for treating it as more than cosmetic.
 
+### Resolution — B-2.5
+
+**What was leaking.** `public_learning_paths.code` (PM-CONS, PM-MAN, SEC-COM …) was
+printed as visible text by three public components:
+
+| Component | Where it showed |
+|---|---|
+| `app/(public)/courses/[slug]/page.tsx` | chips in the "Cette formation fait partie des parcours" section |
+| `components/courses/PathCard.tsx` | chip on the `/parcours` and `/secteurs` cards |
+| `components/courses/PathDetail.tsx` | eyebrow above the path title |
+
+**Governing decisions.** The owner chose to take FU-2 into B-2.5 when authorising that
+release. That is the decision the triage table below asked for before FU-2 could be
+absorbed into another phase.
+
+1. **Keep "Cette formation fait partie des parcours".** This is the second option above:
+   the section and its human-readable parcours titles stay. It is a required
+   fiche-de-formation feature (`docs/xpa-3-brief.md` §3.1, citing V4 §8).
+2. **Remove learner-visible internal codes.** Only the rendered code went; each chip,
+   card and heading now shows the path title alone.
+3. **Keep existing code-based URLs unchanged.** `/parcours/<code>`, `/secteurs/<code>`,
+   canonical and Open Graph URLs, and sitemap entries keep the lower-cased code. No slugs
+   were introduced, no redirects created, no data migrated.
+4. **Admin, internal and governance code authority stays intact.** The admin catalogue
+   still shows the full code matrix, CAT-1 code assignment is unaffected, and
+   `courses.code` / `learning_paths.code` remain the identity and lookup keys.
+
+**What deliberately remains, not visible.** Codes still appear in URLs (decision 3). They
+also appear as React list keys in the page's serialized data. Each key sits beside a link
+that carries the same code, so removing the keys would disclose nothing less.
+
+**Production evidence** (10 September 2026, public anonymous reads): **zero** internal
+codes in visible text across `/`, `/courses`, two course detail pages, `/parcours`,
+`/parcours/pm-cons`, `/secteurs` and `/secteurs/sec-com`. The three components have not
+been modified since `ed56330`.
+
+**Regression guard:** `__tests__/content/b2-5-code-leak.test.ts`. Its checks are
+positional, so a code expression may appear as an attribute value but not as rendered text,
+a template literal, or an `aria-label` / `title` / `alt` / `placeholder` value.
+
+**Caution:** `origin/staging` predates B-2.5 and still renders the code chip on the course
+page. It must not be merged.
+
 ---
 
 ## UAT-FU-3 — intermediate/advanced parcours buttons need correct published/upcoming behaviour
 
 | | |
 |---|---|
+| **Status** | 🟠 **OPEN** — not implemented |
 | **Severity** | to be triaged — navigation leads to unavailable content |
 | **Area** | parcours catalogue |
 | **B-2.6 related?** | **No** |
@@ -119,17 +224,18 @@ any form of access to unpublished content.
 
 ---
 
-## Triage notes
+## Triage notes (19 August 2026, with outcomes)
 
 | | |
 |---|---|
 | **Are any of these release blockers for B-2.6?** | **No.** Marième's verdict is explicit, and none touches completion, entitlement or RLS |
 | **Do any share a surface with B-2.6?** | **No.** `0b7977c` modified no catalogue, parcours or course-detail file |
-| **Do FU-1 and FU-3 overlap?** | **Probably.** Both concern the parcours catalogue's notion of what is published. Investigate together; they may be one root cause |
-| **Suggested sequencing** | FU-1 and FU-3 as one investigation (measure first, then fix). FU-2 is independent and needs a product ruling before any code change |
-| **Phase assignment** | Not assigned. These are **not** B-2.3, B-2.4, B-2.5 or UX-1, and must not be absorbed into them without a decision |
+| **Do FU-1 and FU-3 overlap?** | Triaged as **probably**. **Outcome:** FU-1's root cause was the unassigned course code, closed by CAT-1. That did not resolve FU-3, which remains open |
+| **Suggested sequencing** | Originally: FU-1 and FU-3 as one investigation, FU-2 independent and needing a product ruling first. **Outcome:** FU-1 and FU-2 were each closed independently; FU-3 is next |
+| **Phase assignment** | Originally unassigned, not to be folded into B-2.3, B-2.4, B-2.5 or UX-1 without a decision. **Outcome:** FU-1 → CAT-1. FU-2 → B-2.5, by owner decision. FU-3 → not yet assigned |
 
 ---
 
-**Status: RECORDED, NOT TRIAGED, NOT SCHEDULED.**
-No work has been done on any of these three findings.
+**Status (10 September 2026): FU-1 CLOSED · FU-2 CLOSED · FU-3 OPEN.**
+FU-3 is the next open Marième correction. Its implementation needs its own owner-approved
+scope.
