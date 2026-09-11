@@ -10,18 +10,19 @@
 > not lost and not silently folded into an unrelated release.
 
 **Nothing in this document was fixed in B-2.6.** No file listed under "likely surface" was
-modified by commit `0b7977c`. FU-1 and FU-2 were closed later, by separate releases — see
-each entry.
+modified by commit `0b7977c`. All three findings were closed later, by separate releases —
+see each entry.
 
 ## Ledger status
 
 Reconciled **10 September 2026** against production `main` @ `8ca845a`.
+Updated **11 September 2026**: UAT-FU-3 closed against production `main` @ `1a1359b`.
 
 | Finding | Status | Closed by |
 |---|---|---|
 | **UAT-FU-1** — catalogue incomplete | ✅ **CLOSED** | **CAT-1** — commit `0917a58`, PR #14, merged `209aeac` (9 Sep 2026) |
 | **UAT-FU-2** — internal codes learner-facing | ✅ **CLOSED** | **B-2.5** — commit `ed56330`, PR #13, merged `53db92f` (7 Sep 2026) |
-| **UAT-FU-3** — intermediate/advanced parcours buttons | 🟠 **OPEN** | — |
+| **UAT-FU-3** — intermediate/advanced parcours buttons | ✅ **CLOSED** | **UAT-FU-3 release** — commit `1feb927`, PR #17, merged `1a1359b` (11 Sep 2026) |
 
 The sections below keep the original 19 August triage text unchanged, followed by the
 resolution where one exists.
@@ -123,8 +124,8 @@ future owner-created course would have been invisible the same way.
 The content owner republished C2-F2 on 5 September 2026, and that was ruled legitimate on
 6 September 2026 (see `publication-manifest.json`).
 
-The level-journey buttons on `/courses` are **not** covered by this closure. They remain
-open as UAT-FU-3.
+The level-journey buttons on `/courses` are **not** covered by this closure. They were
+tracked separately as UAT-FU-3, since closed by PR #17.
 
 ---
 
@@ -204,7 +205,7 @@ page. It must not be merged.
 
 | | |
 |---|---|
-| **Status** | 🟠 **OPEN** — not implemented |
+| **Status** | ✅ **CLOSED** by the UAT-FU-3 release (`1feb927`, PR #17, merged `1a1359b`) |
 | **Severity** | to be triaged — navigation leads to unavailable content |
 | **Area** | parcours catalogue |
 | **B-2.6 related?** | **No** |
@@ -222,6 +223,68 @@ has to be fetched.** B-2B's verifier caught this only by requesting the page.
 An "upcoming" state must be a *presentation* state. It must not be implemented by granting
 any form of access to unpublished content.
 
+### Resolution — PR #17
+
+**Where the defect actually was.** The surface was not `/parcours`: the métier and secteur
+paths have no levels. It was the three level-journey cards on `/courses` (Fondations /
+Intermédiaire / Avancé). The components behind them were byte-identical on the UAT Preview
+`0b7977c` and on production, so what Marième saw was still live.
+
+The "probable shape" above was **not** the defect: no CTA routed to an unpublished course
+(all 7 published course pages returned 200). Instead, every journey card offered "Voir les
+formations" unconditionally. For a journey with nothing published, that button scrolled the
+learner onto "Aucune formation dans ce parcours pour le moment". That was Avancé.
+
+**Owner rulings.**
+1. **Journey cards only.** Pricing and all commercial behaviour are out of scope and
+   unchanged.
+2. **A journey with zero published courses** still shows normally and displays
+   **"Bientôt disponible"**. It offers no active "Voir les formations": no button, no link,
+   no `/contact`, no scroll onto an empty list.
+3. **A journey with one or more published courses** keeps "Voir les formations" exactly as
+   before: it filters to that journey's published courses and scrolls to them.
+4. **The state must be derived** from the published course list, never hard-coded, so an
+   empty journey opens by itself when its first course is published.
+
+**Implementation.**
+- `parcoursAvailability()` in `app/(public)/courses/content.ts` computes, per journey:
+  0 published courses → upcoming; 1 or more → available.
+- `CoursesView.tsx` calls it once, on the published list the page already loads, and passes
+  each card its value.
+- `ParcoursCard.tsx` switches its action slot on that value.
+- No journey is named in the logic, and there is no new query or authority.
+- Untouched: `courses/page.tsx`, the catalogue query, `CourseCard.tsx` and
+  `PricingSection.tsx`. No migration, no Supabase change.
+
+**Final behaviour in production.**
+
+| Journey | Published courses | Card |
+|---|---|---|
+| Fondations | 3 | **available** — "Voir les formations" |
+| Intermédiaire | 4 | **available** — "Voir les formations"; filters to its 4 formations |
+| Avancé | 0 | **upcoming** — "Bientôt disponible", no journey action |
+
+- **Derived from data:** availability comes from published-course data, so Avancé becomes
+  available automatically when its first course is published, within the page's 60-second
+  revalidation.
+- **Nothing unpublished exposed:** no unpublished course, future title, planned count or
+  placeholder card is shown. Decision Q-E holds.
+- **Rest of the page unchanged:** "Voir toutes les formations" still shows all 7 published
+  formations, and pricing is unchanged.
+
+**Evidence chain.**
+
+| Gate | Result |
+|---|---|
+| Automated tests | 21 new behavioural tests (components rendered and clicked in jsdom); full suite 1276/1276; mutation testing 8/8 caught |
+| Human Preview UAT | **PASS** — Vercel Preview `dpl_D6dBmwztSLNMKpNFGguL442aXMsx` built from `1feb927` |
+| GitHub checks on PR #17 | all success — CI (Typecheck · Lint · Test, Production build) and Security (Secret scan, RLS / migration lint, Dependency audit) |
+| Merge | PR #17 merged as `1a1359b` (tree identical to the approved `1feb927`) |
+| Vercel Production | **READY** on `1a1359b` — `dpl_Cb3FRr1nMFSsXWodvoYQhGRyN47d`, serving `www.xpclient-academy.com` and `xpclient-academy.com` |
+| Human production verification | **PASS** (11 September 2026) — Fondations and Intermédiaire show "Voir les formations"; Avancé shows "Bientôt disponible" with no normal journey action; Intermédiaire displays 4 published formations; "Voir toutes les formations" restores all 7 |
+
+**Regression guard:** `__tests__/content/uat-fu-3-parcours-availability.test.ts`.
+
 ---
 
 ## Triage notes (19 August 2026, with outcomes)
@@ -230,12 +293,22 @@ any form of access to unpublished content.
 |---|---|
 | **Are any of these release blockers for B-2.6?** | **No.** Marième's verdict is explicit, and none touches completion, entitlement or RLS |
 | **Do any share a surface with B-2.6?** | **No.** `0b7977c` modified no catalogue, parcours or course-detail file |
-| **Do FU-1 and FU-3 overlap?** | Triaged as **probably**. **Outcome:** FU-1's root cause was the unassigned course code, closed by CAT-1. That did not resolve FU-3, which remains open |
-| **Suggested sequencing** | Originally: FU-1 and FU-3 as one investigation, FU-2 independent and needing a product ruling first. **Outcome:** FU-1 and FU-2 were each closed independently; FU-3 is next |
-| **Phase assignment** | Originally unassigned, not to be folded into B-2.3, B-2.4, B-2.5 or UX-1 without a decision. **Outcome:** FU-1 → CAT-1. FU-2 → B-2.5, by owner decision. FU-3 → not yet assigned |
+| **Do FU-1 and FU-3 overlap?** | Triaged as **probably**. **Outcome:** no. FU-1's root cause was the unassigned course code, closed by CAT-1. FU-3 was a separate presentation defect on the `/courses` journey cards, closed by PR #17 |
+| **Suggested sequencing** | Originally: FU-1 and FU-3 as one investigation, FU-2 independent and needing a product ruling first. **Outcome:** each finding was closed independently: FU-2, then FU-1, then FU-3 |
+| **Phase assignment** | Originally unassigned, not to be folded into B-2.3, B-2.4, B-2.5 or UX-1 without a decision. **Outcome:** FU-1 → CAT-1. FU-2 → B-2.5, by owner decision. FU-3 → its own release, PR #17 |
 
 ---
 
-**Status (10 September 2026): FU-1 CLOSED · FU-2 CLOSED · FU-3 OPEN.**
-FU-3 is the next open Marième correction. Its implementation needs its own owner-approved
-scope.
+## Final summary
+
+**Status (11 September 2026): all three of Marième's recorded UAT follow-ups — FU-1, FU-2
+and FU-3 — are CLOSED.**
+
+| Finding | Closed by | Production |
+|---|---|---|
+| **UAT-FU-1** — catalogue incomplete | CAT-1 — PR #14 | merged `209aeac` |
+| **UAT-FU-2** — internal codes learner-facing | B-2.5 — PR #13 | merged `53db92f` |
+| **UAT-FU-3** — journey buttons ignore published state | UAT-FU-3 release — PR #17 | merged `1a1359b`, Vercel Production READY, human-verified |
+
+No finding in this document remains open. None of the three required a migration, and none
+changed RLS, entitlement, enrollment, publication or canonical code authority.
