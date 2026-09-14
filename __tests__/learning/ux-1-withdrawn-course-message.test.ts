@@ -308,8 +308,11 @@ describe('UX-1 — release invariants', () => {
   it('is a presentation-only change: no migration is introduced', () => {
     const { readdirSync } = require('fs') as typeof import('fs')
     const migrations = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(migrations.length).toBe(50)
-    // 050 stays reserved for the withdrawal-contract RLS phase; UX-1 does not take it.
-    expect(migrations.some(f => f.startsWith('050_'))).toBe(false)
+    // UX-1 shipped against 50 migrations and took none. 050 was reserved for the
+    // withdrawal-contract RLS phase and was later authored by XPA-8 WC-1, so the
+    // durable invariant is that 050 is THAT migration and no other: UX-1 never
+    // claimed a migration number, then or since.
+    expect(migrations.filter(f => f.startsWith('050_'))).toEqual(['050_withdrawal_contract.sql'])
+    expect(migrations.some(f => /ux.?1|course.?message|unavailable/i.test(f))).toBe(false)
   })
 })
