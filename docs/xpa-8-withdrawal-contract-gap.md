@@ -1,6 +1,8 @@
 # XPA-8 — architecture debt: the withdrawal contract has a hole
 
-**Recorded:** 19 August 2026 · **Status: RECORDED, NOT SCHEDULED, NOT REDESIGNED**
+**Recorded:** 19 August 2026 · ~~Status: RECORDED, NOT SCHEDULED, NOT REDESIGNED~~
+**Status (16 September 2026): ✅ CLOSED by WC-1** — migration 050, PR #19, merge `92fce22`,
+applied to production 16 September 2026. See [xpa-8-wc-1-closure.md](xpa-8-wc-1-closure.md).
 **Found during:** the pre-B-2.6 corrective phase, while restoring C2-F2's preview flags
 **Deliberately out of scope** of that corrective phase, of B-2.6, and of migration 045.
 
@@ -97,5 +99,9 @@ Option 1 is the honest fix. Option 3 is the cheap guard. They are not exclusive.
 
 ---
 
-**No work has been done on this. No policy was modified. It is recorded so that the next
-person to withdraw a course knows the guarantee is weaker than the sentence suggests.**
+~~No work has been done on this. No policy was modified. It is recorded so that the next
+person to withdraw a course knows the guarantee is weaker than the sentence suggests.~~
+
+**Closed 16 September 2026.** Migration 050 made `lessons_visible` and `modules_visible`
+require a published course for preview visibility, without clearing any flag. The guarantee
+now holds as stated. Evidence: [xpa-8-wc-1-closure.md](xpa-8-wc-1-closure.md).

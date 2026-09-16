@@ -1,6 +1,8 @@
 # XPA-8 — Withdrawal contract: proposal to close the `lessons_visible` gap
 
-**Status: PROPOSAL ONLY. No policy changed, no migration written, nothing applied.**
+~~Status: PROPOSAL ONLY. No policy changed, no migration written, nothing applied.~~
+**Status (16 September 2026): ✅ IMPLEMENTED — Option A, as migration 050** (PR #19, merge
+`92fce22`), applied to production 16 September 2026. See [xpa-8-wc-1-closure.md](xpa-8-wc-1-closure.md).
 **Prepared:** 20 August 2026, after the second occurrence.
 **Supersedes nothing.** The debt record is `docs/xpa-8-withdrawal-contract-gap.md`; this
 document is the implementation proposal that record deferred.
@@ -196,5 +198,11 @@ not share a commit with anything else.
 
 ---
 
-**Nothing in this document has been implemented. `lessons_visible` and `modules_visible` are
-untouched, and migration 048 deliberately did not alter them.**
+~~Nothing in this document has been implemented. `lessons_visible` and `modules_visible` are
+untouched, and migration 048 deliberately did not alter them.~~
+
+**Implemented as Option A in migration 050 and applied to production on 16 September 2026.**
+Option C was adapted rather than adopted as written: after 050 a preview flag on a withdrawn
+course is legitimate authoring state, so `verify-xpa-6a` now fails if any withdrawn-course
+preview is VISIBLE to anon or a learner, and reports the count of such flags instead of
+failing on them. See [xpa-8-wc-1-closure.md](xpa-8-wc-1-closure.md).
