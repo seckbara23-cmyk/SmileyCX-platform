@@ -143,10 +143,11 @@ describe('XPA-8 F-5 Track 1 — migration 049 restores state without redesigning
       expect(s, `049 must not redefine ${policy}`).not.toContain(policy)
   })
 
-  it('migration 046 does not exist and 050 has not been created', () => {
+  it('migration 046 does not exist and 050 is only the withdrawal contract', () => {
     const files = readdirSync(join(ROOT, MIGRATIONS))
     expect(files.filter(f => f.startsWith('046'))).toEqual([])
-    expect(files.filter(f => f.startsWith('050'))).toEqual([])
+    // 049 reserved 050 for the withdrawal-contract RLS phase; WC-1 authored it.
+    expect(files.filter(f => f.startsWith('050'))).toEqual(['050_withdrawal_contract.sql'])
     expect(files.filter(f => f.startsWith('049'))).toEqual([M049])
   })
 })

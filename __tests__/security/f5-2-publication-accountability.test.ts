@@ -437,10 +437,12 @@ describe('F-5.2 — emergency recovery never leaves a partially disabled control
 describe('F-5.2 — migration numbering governance holds', () => {
   const files = () => readdirSync(join(ROOT, MIGRATIONS)).filter(f => f.endsWith('.sql'))
 
-  it('30. 046 stays withdrawn; 050 and 051 stay reserved', () => {
+  it('30. 046 stays withdrawn; 050 is only the withdrawal contract; 051 stays reserved', () => {
     const f = files()
     expect(f.filter(x => x.startsWith('046')), '046 must never exist').toEqual([])
-    expect(f.filter(x => x.startsWith('050')), '050 is reserved for the withdrawal-contract RLS phase').toEqual([])
+    // Reserved for the withdrawal-contract RLS phase, and now authored by it (WC-1).
+    expect(f.filter(x => x.startsWith('050')), '050 may only be the withdrawal contract')
+      .toEqual(['050_withdrawal_contract.sql'])
     expect(f.filter(x => x.startsWith('051')), '051 is reserved for voice lexicon hardening').toEqual([])
   })
 

@@ -202,18 +202,34 @@ try {
   // The assertion is now the INVARIANT, which is strictly stronger than "the
   // count is zero" and survives whatever an administrator legitimately does:
   //
-  //   anon-visible lessons  ==  exactly the is_preview set
+  //   anon-visible lessons  ==  exactly the is_preview set OF PUBLISHED COURSES
   //   a visible preview row exposes NO body and NO object path
   //   a non-preview row is NEVER visible
-  //   modules are visible only when they hold a preview lesson
+  //   modules are visible only when they hold a preview lesson of a PUBLISHED course
   //
   // With no previews designated it collapses to the old check, so nothing is
   // lost today; the difference is that it still means something tomorrow.
-  const previewIds = new Set(
-    ((await rest('lessons?select=id&is_preview=eq.true&limit=1000', { key: SVC })).json ?? []).map(r => r.id))
-  const previewModuleIds = new Set(
-    ((await rest('lessons?select=module_id&is_preview=eq.true&limit=1000', { key: SVC })).json ?? [])
-      .map(r => r.module_id))
+  //
+  // -- XPA-8 WC-1 (migration 050): PUBLISHED COURSES ONLY --------------------
+  //
+  // A preview flag on a WITHDRAWN course must not be visible: publication
+  // controls discovery. Before 050 the policy admitted such a row on
+  // is_preview alone, and this check counted it as correct because it only
+  // asked "is the row a preview?". It now asks "is the row a preview of a
+  // published course?", which is what 050 enforces and what the public views
+  // (039) always meant. Preview flags on withdrawn courses are legitimate
+  // authoring state after 050 and are reported, not failed.
+  const pubCourseIds = new Set(
+    ((await rest('courses?select=id&is_published=eq.true&limit=1000', { key: SVC })).json ?? []).map(r => r.id))
+  const courseOfModule = new Map(
+    ((await rest('modules?select=id,course_id&limit=1000', { key: SVC })).json ?? []).map(m => [m.id, m.course_id]))
+  const allPreview = (await rest('lessons?select=id,module_id&is_preview=eq.true&limit=1000', { key: SVC })).json ?? []
+  const publishedPreview = allPreview.filter(l => pubCourseIds.has(courseOfModule.get(l.module_id)))
+  const withdrawnPreviewIds = new Set(
+    allPreview.filter(l => !pubCourseIds.has(courseOfModule.get(l.module_id))).map(l => l.id))
+  const previewIds = new Set(publishedPreview.map(r => r.id))
+  const previewModuleIds = new Set(publishedPreview.map(r => r.module_id))
+  console.log(`    preview flags on WITHDRAWN courses (hidden by 050, preserved): ${withdrawnPreviewIds.size}`)
 
   for (const t of CONTENT) {
     if (t === 'lessons') {
@@ -223,11 +239,16 @@ try {
       const leakedBody = rows.filter(l => l.content)
       const leakedPath = rows.filter(l => l.video_object_path || l.pdf_object_path)
       const invisible = [...previewIds].filter(id => !rows.some(l => l.id === id))
+      const withdrawnLeak = rows.filter(l => withdrawnPreviewIds.has(l.id))
       record('anon lessons == exactly the preview set',
         `${rows.length} visible / ${previewIds.size} preview` +
         (nonPreview.length ? ` -- ${nonPreview.length} NON-PREVIEW LEAKED` : '') +
+        (withdrawnLeak.length ? ` -- ${withdrawnLeak.length} WITHDRAWN-COURSE PREVIEW LEAKED` : '') +
         (invisible.length ? ` -- ${invisible.length} preview row(s) invisible` : ''),
-        nonPreview.length === 0 && invisible.length === 0)
+        nonPreview.length === 0 && withdrawnLeak.length === 0 && invisible.length === 0)
+      record('anon lessons from WITHDRAWN courses == 0 (WC-1)',
+        `${withdrawnLeak.length} of ${withdrawnPreviewIds.size} withdrawn-course preview row(s) visible`,
+        withdrawnLeak.length === 0)
       record('anon lessons expose no body',
         `${leakedBody.length} row(s) carrying content`, leakedBody.length === 0)
       record('anon lessons expose no object path',
@@ -317,10 +338,15 @@ try {
       const lrows = seen.json ?? []
       const nonPreview = lrows.filter(l => !l.is_preview)
       const leaked = lrows.filter(l => l.content || l.video_object_path)
+      const lWithdrawn = lrows.filter(l => withdrawnPreviewIds.has(l.id))
       record('learner lessons == exactly the preview set',
         `${lrows.length} visible / ${previewIds.size} preview` +
-        (nonPreview.length ? ` -- ${nonPreview.length} NON-PREVIEW LEAKED` : ''),
-        nonPreview.length === 0)
+        (nonPreview.length ? ` -- ${nonPreview.length} NON-PREVIEW LEAKED` : '') +
+        (lWithdrawn.length ? ` -- ${lWithdrawn.length} WITHDRAWN-COURSE PREVIEW LEAKED` : ''),
+        nonPreview.length === 0 && lWithdrawn.length === 0)
+      record('learner lessons from WITHDRAWN courses == 0 (WC-1)',
+        `${lWithdrawn.length} of ${withdrawnPreviewIds.size} withdrawn-course preview row(s) visible`,
+        lWithdrawn.length === 0)
       record('learner lessons expose no body or object path',
         `${leaked.length} row(s)`, leaked.length === 0)
       continue
