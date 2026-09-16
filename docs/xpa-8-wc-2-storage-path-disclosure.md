@@ -1,7 +1,11 @@
 # XPA-8 WC-2 — Storage path and legacy URL disclosure
 
-**Status: RECORDED · PROPOSAL ONLY.** No policy, grant, migration, data or application code has
-changed. This is a separate work item from WC-1 (migration 050) and must not be folded into it.
+~~Status: RECORDED · PROPOSAL ONLY. No policy, grant, migration, data or application code has
+changed.~~ This is a separate work item from WC-1 (migration 050) and must not be folded into it.
+
+**Status (16 September 2026): REVALIDATED · SEQUENCING CORRECTED · WC-2A (migration 054) PREPARED,
+NOT APPLIED.** No production grant, policy, data, storage or application behaviour has changed.
+Sections 0.1–0.5 below supersede this document wherever they disagree with it.
 **Recorded:** 14 September 2026, from the WC-1 Phase 0 findings.
 **Owner ruling (14 September 2026):**
 
@@ -10,6 +14,136 @@ changed. This is a separate work item from WC-1 (migration 050) and must not be 
 > internal storage paths in browser-visible data when protected server-side delivery can
 > provide the required media access. The legacy `video_url`, `pdf_url` and `subtitle_url`
 > columns are to be assessed for the same treatment.
+
+---
+
+## 0.1 Revalidation — 16 September 2026 (after WC-1 / PR #20, `main` at `d0dba74`)
+
+Read-only: repository audit plus GET-only production probes. Nothing was written.
+
+**Corpus, today** (the 14 September figures in section 2 are superseded):
+
+| | 14 Sep | 16 Sep |
+|---|---|---|
+| `video_object_path` / `pdf_object_path` / `subtitle_object_path` | 125 / 5 / 0 | 125 / **7** / 0 |
+| `video_url` / `pdf_url` / `subtitle_url` | 83 / 3 / 0 | **77** / 3 / 0 |
+| legacy URL values in total | 86 | **80** — every one a dead (HTTP 400) public `course-media` URL beside an object path |
+| URL-only rows (a legacy URL with no object path) | 0 | 0 |
+| external (non-Supabase) URLs | 0 | 0 |
+| preview rows visible to `anon` | 22 | **28**, carrying **28** video and **4** PDF object paths |
+
+The change from 24 to 28 preview rows, and a new C1-F3 module and lesson (19:09–19:10 UTC), are
+concurrent owner authoring, not WC-2 drift. The database shows *what* changed, not *why*.
+
+**Legacy URL attrition (observed, accepted).** The admin lesson editor seeds each asset field
+from `object_path ?? url` and the save action (`splitAsset`) stores a path in `*_object_path`
+and `null` in `*_url`. Saving any migrated lesson therefore clears its dead legacy URL. That is
+how 86 became 80. WC-2 neither restores nor clears these values.
+
+**Exposure matrix**
+
+| Caller | Rows | Raw columns received | Can a path fetch the file? |
+|---|---|---|---|
+| anonymous | published preview rows (28) | all six | no — every storage endpoint 400; media route 401 |
+| signed in, unentitled | the same rows (policy analysis; not probed) | all six | no — media route 403 |
+| entitled learner | the whole course | all six, into browser memory and the sidebar | only through `/api/media` (by design) |
+| platform admin, own session | all | all six | yes |
+| admin authoring pages | service role on the server, then **passed to the admin browser** | all six | trusted/admin exposure — see 0.2, decision 5 |
+| service role (media route, admin actions) | all | all six | signs URLs |
+
+- The only browser reader of the raw columns is the `'use client'` learn player (both of its
+  `modules → lessons(...)` selects) and the `LessonSidebar` row type. Every other lesson read in
+  `app/`, `components/` and `lib/` selects ids and titles, or runs with the service role.
+- `public_course_lessons`, `public_course_modules` and `my_course_access` carry no media column.
+- `is_preview` is deliberately not a delivery authority (W3), so the paths sent to anonymous and
+  unentitled callers serve no function at all.
+- Buckets: `course-content` private, `certificates` private, `course-media` **public** (covers, plus
+  dead legacy objects), `course-videos` **public** (pilot-era orphan, created by no migration).
+
+## 0.2 Owner decisions — 16 September 2026
+
+1. **Split approved.** 054 adds derived fields only. 055 restricts `SELECT` later, after the
+   compatible application is deployed and verified. 054 and 055 are never combined.
+2. **Shape:** `*_source` (`protected` | `external` | NULL) plus `*_external_url`. No booleans.
+3. **External rule, fail-closed:** only a genuinely non-Supabase http(s) host may be external.
+   Supabase-hosted URLs and `/storage/v1/` URLs or paths are always internal and never populate
+   `*_external_url`. Unknown, malformed, relative, non-http(s) or ambiguous values are never external.
+4. **Grants:** WC-2 changes `SELECT` only; no INSERT / UPDATE / DELETE change.
+5. **Admin editor:** its browser exposure is accepted for WC-2 as trusted/admin exposure, not
+   anonymous or learner exposure. The editor is not redesigned.
+6. **Legacy URLs:** attrition through the editor is accepted. The 80 values are not restored,
+   rewritten, cleared, backfilled or preserved by WC-2.
+7. **C1-F3 / C1-F2:** concurrent owner authoring; not modified or reversed.
+8. **Production identities:** no accounts created and no mutating verifier run. At the production
+   verification gate, exact manual tests for an existing entitled learner and an existing
+   unentitled account are specified first.
+9. **Out of scope** (separate follow-up security items, **not** resolved by WC-2): the public
+   orphan `course-videos` bucket; certificates; narrowing `course-media` public access; general
+   Storage architecture.
+10. **Documentation** approved.
+
+## 0.3 Corrected architecture and sequencing
+
+The original single-migration design (section 4.1) had **no safe deployment order**: applied
+first, the grant change makes the current player's whole `modules → lessons` select fail with
+42501; deployed first, the new player selects columns that do not exist yet. It is replaced by
+four gated steps, each leaving the system usable:
+
+| Step | What | Safe because |
+|---|---|---|
+| **WC-2A — migration 054** | adds six generated, stored fields; no grant, policy or data change | nothing reads them yet; every existing read is unchanged |
+| **WC-2B — application release** | the player selects `*_source` / `*_external_url` only; sidebar and shared types drop the raw fields; verifiers re-expressed | the fields exist, and the raw columns are still readable |
+| **Production playback verification** | manual tests on existing accounts (decision 8) | — |
+| **WC-2C — migration 055** | `SELECT` on the six raw columns withheld from `anon` and `authenticated` (038 pattern) | no deployed reader still uses them |
+
+## 0.4 WC-2A — the 054 contract
+
+Per kind *k* ∈ {video, pdf, subtitle}, first match wins:
+
+| # | Condition | `k_source` | `k_external_url` |
+|---|---|---|---|
+| 1 | `k_object_path` non-empty | `protected` | NULL |
+| 2 | `k_url` NULL or empty | NULL | NULL |
+| 3 | `k_url` contains `supabase`, or `storage` + (`/`, `\`, `%2f`, `%252f`…) + `v1`, case-insensitive | `protected` (internal) | NULL |
+| 4 | `k_url` ≤ 2048 chars and matches `^https?://` + DNS hostname (letter/digit/hyphen labels, alphabetic TLD) + optional `[/?#]` and RFC 3986 characters, to end of string | `external` | `k_url` |
+| 5 | anything else | NULL | NULL |
+
+Rule 4 therefore refuses userinfo (`@` in the authority), ports, IP literals, `localhost`,
+whitespace and control characters, quotes and angle brackets, protocol-relative and relative
+values, and every non-http(s) scheme. Rule 3 is deliberately broad: `https://supabase.com/...`
+is also withheld. A lesson whose only value is an internal URL gets `protected`; the media route
+only delivers object paths, so it has no playable asset, which is already true today.
+
+Agreement with today's `resolveAssetSource()` is exact for every row except a URL-only value that
+rules 3 or 5 withhold. The live corpus has none: **127 / 127 rows agree for every kind.**
+
+**Verification.** The migration proves at apply time, in one REPEATABLE READ transaction:
+- the table ACL, every column ACL and every policy on `lessons` are unchanged;
+- lessons, modules, courses and storage buckets are fingerprinted unchanged;
+- the six fields are generated and stored, each depends only on its own two raw columns, and
+  the three kinds carry identical rules;
+- every live row agrees with `resolveAssetSource()` (or is counted as withheld);
+- no external field carries a Supabase host, storage path or object path;
+- 47 adversarial cases × 3 kinds classify as specified through the real columns, re-derive on
+  update and cannot be forged (428C9); the fixture is rolled back and proven gone.
+
+Offline, on PostgreSQL 17 with production's policies, the file applies against a synthetic corpus
+and against the live corpus (read GET-only, held in memory). The exact selects of the learn
+player (anon, unentitled, entitled, admin, service), the media route and the admin editor return
+identical rows and values before and after. 23 / 23 migration mutants and 19 / 19 suite mutants
+are caught.
+
+## 0.5 Verification plan for the later steps (not yet executed)
+
+- **054 in production:** GET-only. The six fields appear in the API schema, service-role values
+  agree with `resolveAssetSource()` on every row, and anonymous reads return the same row count
+  (raw columns still readable, as expected).
+- **WC-2B:** offline and Preview first. At the production gate, manual tests on an existing
+  entitled learner (a protected video and PDF play through `/api/media`, and no `*_object_path`
+  or legacy `*_url` appears in the browser's REST responses) and on an existing unentitled
+  account. These are specified before any run.
+- **055:** each raw column returns 42501 for `anon` and `authenticated`; the permitted list still
+  reads; every content table and view still evaluates (no 42P17); answer keys (038) unchanged.
 
 ---
 
@@ -77,6 +211,9 @@ An unentitled authenticated learner never reaches the modules query (`loadCourse
 The server resolves location, after the entitlement check it already performs.
 
 ### 4.1 Database (one forward migration — next free number, proposed **054**; 051 stays reserved)
+
+> **Superseded 16 September 2026 (section 0.3).** Split into 054 (derived fields only) and a later
+> 055 (column privileges), with the application release between them.
 
 1. Add browser-safe derived columns, `GENERATED ALWAYS AS … STORED`:
    - `video_source`, `pdf_source`, `subtitle_source` — `'protected'` when the object path is set;
@@ -149,6 +286,9 @@ fix, and is **not** proposed as part of WC-2.
 | Media delivery route | none (service role) |
 | Public catalogue views | none |
 | Production verifiers | two must be updated in the same release |
+
+> **Corrected 16 September 2026:** this ordering was unsatisfiable while both changes shared one
+> migration. See section 0.3.
 
 **Ordering constraint:** application change deployed and verified **before** the grant change is
 applied. Rollback is re-granting table-wide `SELECT`, which restores today's exposure.
