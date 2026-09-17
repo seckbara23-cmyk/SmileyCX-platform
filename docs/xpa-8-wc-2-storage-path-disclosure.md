@@ -133,12 +133,50 @@ player (anon, unentitled, entitled, admin, service), the media route and the adm
 identical rows and values before and after. 23 / 23 migration mutants and 19 / 19 suite mutants
 are caught.
 
+## 0.5a WC-2A — APPLIED (17 September 2026)
+
+Migration 054 was applied to production on 17 September 2026 and verified GET-only: the six
+derived fields exist and are text; the distribution is video 125/0/2, pdf 9/0/118, subtitle
+0/0/127 protected/external/none; all 381 lesson × kind classifications agree with
+`resolveAssetSource()`; every `*_external_url` is NULL; raw media, preview flags, content,
+structure, modules, courses, publication, row counts, buckets and governance were all unchanged;
+no fixture row and no snapshot table survived. The raw columns stayed readable, as 054 intends.
+
+(An earlier attempt did not commit — it aborted on 054's own "existing lesson data changed"
+check, consistent with concurrent authoring during the apply window. Nothing was applied by it.
+The re-apply ran with authoring paused.)
+
+## 0.5b WC-2B — application cutover (this release)
+
+**The browser contract, before → after:**
+
+| | Before | After |
+|---|---|---|
+| Player lesson select (both loaders) | `content, video_url, subtitle_url, video_object_path, subtitle_object_path, pdf_url, pdf_object_path, …` | `content, video_source, video_external_url, subtitle_source, subtitle_external_url, pdf_source, pdf_external_url, …` |
+| Protected asset | path in the browser; `lessonAssetSrc()` mapped it to `/api/media/lesson/<id>/<kind>` | `*_source = protected` → the same route; **the location never reaches the browser** |
+| External asset | legacy `*_url`, whatever it held | `*_source = external` → `*_external_url`, which the database guarantees is not an internal location |
+| No asset | both columns null | `*_source = null` |
+| `SidebarLessonRow` DTO | carried `video_object_path`, `subtitle_object_path`, `pdf_object_path`, `pdf_url`, `video_url`, `subtitle_url` | carries `*_source` / `*_external_url` only |
+
+`lessonAssetSrcFromSource()` is the browser resolver. `resolveAssetSource()` and
+`lessonAssetSrc()` remain for trusted server callers and as the reference 054 restates in SQL.
+
+**Unchanged, deliberately:** `/api/media/lesson/[lessonId]/[kind]` still resolves the object path
+itself with the service role and signs it; the admin editor page, save action and upload still
+read and write all six raw columns through the service role; `certificates` is untouched.
+
+**Proof that 055 is now safe** (offline, PostgreSQL 17, live corpus of 127 lessons): with the raw
+columns revoked from `anon` and `authenticated` in a sandbox, the new player query still succeeds
+as anonymous, as a signed-in unentitled learner and as an entitled learner; the old query and
+`select *` are refused with 42501; anonymous callers still see their preview rows with a usable
+media contract; and the service-role media route, admin editor and admin writes are unaffected.
+
 ## 0.5 Verification plan for the later steps (not yet executed)
 
 - **054 in production:** GET-only. The six fields appear in the API schema, service-role values
   agree with `resolveAssetSource()` on every row, and anonymous reads return the same row count
   (raw columns still readable, as expected).
-- **WC-2B:** offline and Preview first. At the production gate, manual tests on an existing
+- **WC-2B (prepared, not deployed):** offline and Preview first. At the production gate, manual tests on an existing
   entitled learner (a protected video and PDF play through `/api/media`, and no `*_object_path`
   or legacy `*_url` appears in the browser's REST responses) and on an existing unentitled
   account. These are specified before any run.

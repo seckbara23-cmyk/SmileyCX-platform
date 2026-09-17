@@ -79,19 +79,39 @@ export interface Lesson {
   is_preview: boolean
   created_at: string
 
-  // ── Media (XPA-8 W3 / F-2) ────────────────────────────────────────────────
+  // ── Media, browser-safe (XPA-8 WC-2 / migration 054) ──────────────────────
   //
-  // Two columns per asset, meaning two different things:
+  // What a browser is allowed to know: WHAT KIND of asset a lesson has, never
+  // where a protected one is stored.
+  //
+  //   *_source        'protected' → request /api/media/lesson/<id>/<kind>,
+  //                                 which re-checks the entitlement and signs
+  //                   'external'   → use *_external_url
+  //                   null         → no asset
+  //   *_external_url  the URL, and only for 'external'. The database refuses
+  //                   to put an internal Storage location here.
+  //
+  // Derived by the database from the raw columns below, on every write.
+  video_source?: 'protected' | 'external' | null
+  video_external_url?: string | null
+  pdf_source?: 'protected' | 'external' | null
+  pdf_external_url?: string | null
+  subtitle_source?: 'protected' | 'external' | null
+  subtitle_external_url?: string | null
+
+  // ── Media locations — TRUSTED SERVER / ADMIN ONLY (XPA-8 W3 / F-2) ────────
   //
   //   *_url          an absolute URL to something we do NOT host — a YouTube
-  //                  embed, a partner CDN. Handed to the player untouched.
+  //                  embed, a partner CDN.
   //   *_object_path  an object in the PRIVATE `course-content` bucket. There is
   //                  no durable URL for it: delivery is minted per request by
   //                  /api/media/lesson/... behind an entitlement check.
   //
-  // A path wins over a URL. Both are null until migration 042 backfills them,
-  // which is what lets the application ship before the objects have moved.
-  video_url: string | null
+  // A path wins over a URL. These stay on the server: uploading, replacing,
+  // signing and administrative editing all need them, and they reach those
+  // paths through the service-role client. Migration 055 withdraws SELECT on
+  // all six from `anon` and `authenticated`, so no browser query may name them.
+  video_url?: string | null
   video_object_path?: string | null
   pdf_url?: string | null
   pdf_object_path?: string | null
