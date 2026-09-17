@@ -321,10 +321,13 @@ describe('CAT-1 — the database remains the final authority', () => {
     const { readdirSync } = require('fs') as typeof import('fs')
     const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(f => f.endsWith('.sql'))
     // CAT-1 shipped against 50 migrations. XPA-8 WC-1 later authored the reserved
-    // 050 (withdrawal contract); excluding it, the set CAT-1 saw is unchanged.
-    expect(files.filter(f => f !== '050_withdrawal_contract.sql')).toHaveLength(50)
+    // 050 (withdrawal contract) and XPA-8 WC-2A authored 054 (derived media
+    // fields); excluding those two, the set CAT-1 saw is unchanged.
+    const LATER = ['050_withdrawal_contract.sql', '054_lesson_media_derived_source.sql']
+    expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(53)
-    expect(files.filter(f => f.startsWith('054'))).toEqual([])
+    expect(Math.max(...nums)).toBe(54)
+    expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
+    expect(files.filter(f => f.startsWith('055'))).toEqual([])
   })
 })
