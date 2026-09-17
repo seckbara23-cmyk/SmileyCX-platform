@@ -47,22 +47,26 @@ const LESSON = '1f9ab4a4-776e-42ec-8f88-6f6a8da644a6'
 
 // ══════════════════════════════════════════════════════════════════════════
 describe('PDF-1 — the learner query asks for the columns', () => {
-  it('1. BOTH lesson selects include pdf_url and pdf_object_path', () => {
+  it('1. BOTH lesson selects include the PDF contract (WC-2B: pdf_source, pdf_external_url)', () => {
     const s = stripJs(read(PLAYER))
     const selects = s.match(/lessons\(id, slug, title,[^)]*\)/g) ?? []
     // Two: the initial load and the post-enrollment reload. Missing either one
     // leaves a code path where the resource silently disappears.
     expect(selects).toHaveLength(2)
     for (const sel of selects) {
-      expect(sel, 'pdf_url missing from a lesson select').toContain('pdf_url')
-      expect(sel, 'pdf_object_path missing from a lesson select').toContain('pdf_object_path')
+      expect(sel, 'pdf_source missing from a lesson select').toContain('pdf_source')
+      expect(sel, 'pdf_external_url missing from a lesson select').toContain('pdf_external_url')
+      // XPA-8 WC-2B: the browser no longer receives the storage location.
+      expect(sel, 'a lesson select still asks for the PDF location').not.toContain('pdf_object_path')
+      expect(sel, 'a lesson select still asks for the legacy PDF URL').not.toContain('pdf_url')
     }
   })
 
-  it('the row type carries both fields, or the page cannot compile', () => {
+  it('the row type carries the derived fields, or the page cannot compile', () => {
     const t = read(SIDEBAR)
-    expect(t).toMatch(/pdf_url\?:\s*string \| null/)
-    expect(t).toMatch(/pdf_object_path\?:\s*string \| null/)
+    expect(t).toMatch(/pdf_source\?:\s*LessonMediaSource/)
+    expect(t).toMatch(/pdf_external_url\?:\s*string \| null/)
+    expect(t, 'the sidebar DTO still declares a storage location').not.toMatch(/pdf_object_path/)
   })
 })
 
@@ -164,9 +168,9 @@ describe('PDF-1 — the learner surface holds the security line', () => {
     expect(block).toMatch(/rel="[^"]*noreferrer[^"]*"/)
   })
 
-  it('10. the href comes from lessonAssetSrc, not a hand-built string', () => {
+  it('10. the href comes from the shared resolver, not a hand-built string', () => {
     const s = src()
-    expect(s).toMatch(/const pdfSrc\s*=\s*lessonAssetSrc\(lesson\.id, 'pdf',\s*lesson\.pdf_object_path,\s*lesson\.pdf_url\)/)
+    expect(s).toMatch(/const pdfSrc\s*=\s*lessonAssetSrcFromSource\(lesson\.id, 'pdf',\s*lesson\.pdf_source,\s*lesson\.pdf_external_url\)/)
     const block = s.slice(s.indexOf('{pdfSrc && ('), s.indexOf('{exercises.map'))
     expect(block).toContain('href={pdfSrc}')
   })

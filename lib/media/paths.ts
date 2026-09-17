@@ -68,9 +68,50 @@ export function resolveAssetSource(
   return null
 }
 
+/**
+ * What the BROWSER is told about a lesson asset (XPA-8 WC-2, migration 054).
+ *
+ * The database derives this from the raw columns and hands out the kind of
+ * asset, never its location:
+ *
+ *   'protected'  we host it privately — ask /api/media/lesson/<id>/<kind>,
+ *                which re-checks the entitlement and signs server-side
+ *   'external'   somebody else hosts it — the URL is in `<kind>_external_url`
+ *   null         no playable asset
+ *
+ * `<kind>_external_url` is non-null ONLY for 'external', and the database
+ * refuses to put an internal Storage location in it.
+ */
+export type LessonMediaSource = 'protected' | 'external' | null
+
 /** The application URL that delivers a lesson asset. Never a Storage URL. */
 export function lessonMediaHref(lessonId: string, kind: MediaKind): string {
   return `/api/media/lesson/${lessonId}/${kind}`
+}
+
+/**
+ * The src a player should use, from the DERIVED fields alone.
+ *
+ * This is the browser-facing half of `lessonAssetSrc()` below, and the reason
+ * the learn player no longer needs `*_object_path` or the legacy `*_url`:
+ * migration 055 withdraws SELECT on those six columns from `anon` and
+ * `authenticated`, and nothing here asks for them.
+ *
+ * A protected asset resolves to the application route WITHOUT the object path
+ * ever reaching the browser — the path stays server-side, in the route that
+ * signs it. An external URL is handed over untouched. Anything else is no
+ * asset, which is the same fail-closed answer the database gives for a value
+ * it could not classify.
+ */
+export function lessonAssetSrcFromSource(
+  lessonId: string,
+  kind: MediaKind,
+  source: LessonMediaSource | string | null | undefined,
+  externalUrl: string | null | undefined,
+): string | null {
+  if (source === 'protected') return lessonMediaHref(lessonId, kind)
+  if (source === 'external') return externalUrl || null
+  return null
 }
 
 /** The application URL that delivers a certificate PDF. Never a Storage URL. */
@@ -79,10 +120,12 @@ export function certificateMediaHref(certificateId: string): string {
 }
 
 /**
- * The src a player should use for a lesson asset.
+ * The src for a lesson asset, from the RAW columns.
  *
- * Protected assets resolve to an application route that re-authorizes on every
- * request; external ones pass through untouched.
+ * TRUSTED CALLERS ONLY — server code holding the raw columns, and the
+ * reference the 054 classification restates in SQL. Browser code uses
+ * `lessonAssetSrcFromSource()` instead: after migration 055 the raw columns
+ * are not readable by `anon` or `authenticated` at all.
  */
 export function lessonAssetSrc(
   lessonId: string,
