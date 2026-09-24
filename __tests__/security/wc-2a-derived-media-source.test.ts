@@ -333,7 +333,16 @@ describe('WC-2A — application boundary', () => {
     for (const d of DERIVED) expect(actions, `actions.ts writes ${d}`).not.toContain(d)
   })
 
-  it('WC-2A ships no application reader yet (the WC-2B release changes this deliberately)', () => {
+  it('the derived fields are read only where WC-2B cut the browser over', () => {
+    // WC-2A shipped no reader at all. WC-2B moved the browser onto these
+    // fields, so they may now appear ONLY in the browser media contract: the
+    // resolver, the learn player, the sidebar row type and the shared type.
+    const ALLOWED = [
+      'lib/media/paths.ts',
+      'app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx',
+      'components/lms/LessonSidebar.tsx',
+      'types/index.ts',
+    ]
     const offenders: string[] = []
     const walk = (dir: string) => {
       for (const name of readdirSync(join(ROOT, dir))) {
@@ -341,10 +350,12 @@ describe('WC-2A — application boundary', () => {
         if (statSync(join(ROOT, p)).isDirectory()) { walk(p); continue }
         if (!/\.(ts|tsx|js|mjs)$/.test(name)) continue
         const s = read(p)
-        if (DERIVED.some(d => s.includes(d))) offenders.push(p)
+        if (DERIVED.some(d => s.includes(d)) && !ALLOWED.includes(p)) offenders.push(p)
       }
     }
     for (const d of ['app', 'components', 'lib', 'types']) walk(d)
     expect(offenders).toEqual([])
+    // and the delivery route still resolves the location itself, server-side
+    expect(read('app/api/media/lesson/[lessonId]/[kind]/route.ts')).not.toMatch(/_source|_external_url/)
   })
 })

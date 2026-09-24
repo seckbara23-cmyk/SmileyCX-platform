@@ -3,22 +3,22 @@ import Link from 'next/link'
 import { Check, CheckCircle, ClipboardList } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { buildSidebarStructure } from './sidebarStructure'
+import type { LessonMediaSource } from '@/lib/media/paths'
 
 export interface SidebarLessonRow {
   id: string; slug: string; title: string; order_index: number
-  content: string | null; video_url: string | null
-  subtitle_url: string | null; duration_minutes: number | null
-  // XPA-8 W3 (F-2): canonical paths into the PRIVATE course-content bucket.
-  // When present these win over the *_url columns, and the asset is delivered
-  // through /api/media/... behind an entitlement check rather than by a public
-  // Storage URL. Null until migration 042 backfills them.
-  video_object_path?: string | null
-  subtitle_object_path?: string | null
-  // PDF-1: the lesson support document. Same two-column contract as the
-  // media above — a path wins over a legacy URL, and delivery goes through
-  // /api/media/lesson/<id>/pdf behind the entitlement check.
-  pdf_url?: string | null
-  pdf_object_path?: string | null
+  content: string | null; duration_minutes: number | null
+  // XPA-8 WC-2B: the browser-safe media contract (migration 054). Each kind
+  // says WHAT it is — 'protected' (delivered by /api/media/lesson/<id>/<kind>
+  // behind the entitlement check), 'external' (the URL below), or null — and
+  // never WHERE a protected asset is stored. The object paths and the legacy
+  // URLs stay server-side; migration 055 withdraws them from this role.
+  video_source?: LessonMediaSource
+  video_external_url?: string | null
+  subtitle_source?: LessonMediaSource
+  subtitle_external_url?: string | null
+  pdf_source?: LessonMediaSource
+  pdf_external_url?: string | null
 }
 export interface SidebarModuleRow {
   id: string; slug: string; title: string; order_index: number

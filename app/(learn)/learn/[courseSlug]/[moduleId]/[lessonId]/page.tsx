@@ -9,7 +9,7 @@ import { ensureAcademicEnrollment } from '@/app/actions/enrollment'
 // It was an access authority in this file and must never be one again.
 import { PILOT_MODE } from '@/lib/pilot'
 import { resolveAutoAdvanceTarget, type AdvanceTarget } from '@/lib/learn/auto-advance'
-import { lessonAssetSrc } from '@/lib/media/paths'
+import { lessonAssetSrcFromSource } from '@/lib/media/paths'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
 import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
@@ -149,7 +149,7 @@ export default function LessonPlayerPage() {
 
     const { data: mods } = await supabase
       .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, pdf_url, pdf_object_path, duration_minutes, order_index)')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_source, video_external_url, subtitle_source, subtitle_external_url, pdf_source, pdf_external_url, duration_minutes, order_index)')
       .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
@@ -195,7 +195,7 @@ export default function LessonPlayerPage() {
 
     const { data: mods } = await supabase
       .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_url, subtitle_url, video_object_path, subtitle_object_path, pdf_url, pdf_object_path, duration_minutes, order_index)')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_source, video_external_url, subtitle_source, subtitle_external_url, pdf_source, pdf_external_url, duration_minutes, order_index)')
       .eq('course_id', course.id).order('order_index')
     if (!mods) return
 
@@ -600,24 +600,26 @@ export default function LessonPlayerPage() {
     )
   }
 
-  // ── XPA-8 W3 (F-2): where the media actually comes from ───────────────────
+  // ── XPA-8 WC-2B: where the media actually comes from ──────────────────────
   //
-  // A lesson we host resolves to `/api/media/lesson/<id>/video`, which
-  // re-checks the entitlement and 302s to a URL valid for five minutes. A
-  // lesson pointing at somebody else's platform keeps its own URL. Precedence
-  // is decided by `lessonAssetSrc`, never here, so the player and the delivery
-  // route cannot disagree about which asset a lesson has.
+  // This browser reads the DERIVED fields (migration 054) and never the object
+  // path or the legacy URL. `video_source = 'protected'` means "we host it":
+  // the src becomes `/api/media/lesson/<id>/video`, which re-checks the
+  // entitlement and 302s to a URL valid for five minutes, and the storage
+  // location stays server-side. `'external'` hands over `video_external_url`
+  // untouched. Null is no asset.
   //
-  // Until migration 042 backfills the paths this returns the existing
-  // video_url unchanged — which is what makes this code safe to deploy before
-  // the objects have moved.
-  const isProtectedVideo = Boolean(lesson.video_object_path)
-  const videoSrc    = lessonAssetSrc(lesson.id, 'video',    lesson.video_object_path,    lesson.video_url)
-  const subtitleSrc = lessonAssetSrc(lesson.id, 'subtitle', lesson.subtitle_object_path, lesson.subtitle_url)
-  // PDF-1. Same helper, same precedence, same delivery route — a lesson
-  // support is protected course content, not a download link. Null when the
-  // lesson has no PDF, which is 115 of 118 lessons today.
-  const pdfSrc      = lessonAssetSrc(lesson.id, 'pdf',      lesson.pdf_object_path,      lesson.pdf_url)
+  // The database decided which of those three it is, from one rule shared by
+  // all three kinds, so the player and the delivery route cannot disagree —
+  // and migration 055 can withdraw the raw columns from this session's role
+  // without changing a line here.
+  const isProtectedVideo = lesson.video_source === 'protected'
+  const videoSrc    = lessonAssetSrcFromSource(lesson.id, 'video',    lesson.video_source,    lesson.video_external_url)
+  const subtitleSrc = lessonAssetSrcFromSource(lesson.id, 'subtitle', lesson.subtitle_source, lesson.subtitle_external_url)
+  // PDF-1. Same contract, same delivery route — a lesson support is protected
+  // course content, not a download link. Null when the lesson has no PDF,
+  // which is 118 of 127 lessons today.
+  const pdfSrc      = lessonAssetSrcFromSource(lesson.id, 'pdf',      lesson.pdf_source,      lesson.pdf_external_url)
 
   return (
     <div className="relative flex h-[calc(100vh-48px)] bg-[#0f1117]">
