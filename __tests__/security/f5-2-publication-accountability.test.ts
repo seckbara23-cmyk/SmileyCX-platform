@@ -446,14 +446,16 @@ describe('F-5.2 — migration numbering governance holds', () => {
     expect(f.filter(x => x.startsWith('051')), '051 is reserved for voice lexicon hardening').toEqual([])
   })
 
-  it('31. 052 and 053 each exist exactly once; only WC-2A 054 sits above them', () => {
+  it('31. 052 and 053 each exist exactly once; only the WC-2 pair sits above them', () => {
     const f = files()
     expect(f.filter(x => x.startsWith('052'))).toHaveLength(1)
     expect(f.filter(x => x.startsWith('053'))).toHaveLength(1)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    // 053 was the highest when F-5.2 shipped; XPA-8 WC-2A later authored 054.
-    expect(f.filter(x => parseInt(x, 10) > 53)).toEqual(['054_lesson_media_derived_source.sql'])
-    expect(Math.max(...nums)).toBe(54)
+    // 053 was the highest when F-5.2 shipped; XPA-8 WC-2 later authored 054
+    // (derived fields) and 055 (their column restriction), in that order.
+    expect(f.filter(x => parseInt(x, 10) > 53).sort())
+      .toEqual(['054_lesson_media_derived_source.sql', '055_restrict_lesson_media_columns.sql'])
+    expect(Math.max(...nums)).toBe(55)
     expect(new Set(nums).size).toBe(nums.length)
   })
 

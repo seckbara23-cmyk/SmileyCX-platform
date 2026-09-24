@@ -233,11 +233,13 @@ try {
 
   for (const t of CONTENT) {
     if (t === 'lessons') {
-      const seen = await rest('lessons?select=id,is_preview,content,video_object_path,pdf_object_path&limit=1000')
+      // WC-2C (055): the six media locations are not granted to anon, so they
+      // cannot be selected at all — asserted below as EXPECTED_DENIAL rather
+      // than read and checked for emptiness.
+      const seen = await rest('lessons?select=id,is_preview,content,video_source,pdf_source&limit=1000')
       const rows = seen.json ?? []
       const nonPreview = rows.filter(l => !l.is_preview)
       const leakedBody = rows.filter(l => l.content)
-      const leakedPath = rows.filter(l => l.video_object_path || l.pdf_object_path)
       const invisible = [...previewIds].filter(id => !rows.some(l => l.id === id))
       const withdrawnLeak = rows.filter(l => withdrawnPreviewIds.has(l.id))
       record('anon lessons == exactly the preview set',
@@ -251,8 +253,18 @@ try {
         withdrawnLeak.length === 0)
       record('anon lessons expose no body',
         `${leakedBody.length} row(s) carrying content`, leakedBody.length === 0)
-      record('anon lessons expose no object path',
-        `${leakedPath.length} row(s) carrying an object path`, leakedPath.length === 0)
+      // Each location, asked for directly: no grant, so 42501.
+      for (const col of ['video_object_path', 'pdf_object_path', 'subtitle_object_path',
+                         'video_url', 'pdf_url', 'subtitle_url']) {
+        const probe = await rest(`lessons?select=id,${col}&limit=1`)
+        record(`anon lessons.${col} ungranted (WC-2C)`,
+          `HTTP ${probe.status} ${probe.code ?? ''} (${classify(probe)})`,
+          probe.status !== 200 && probe.code === '42501')
+      }
+      const star = await rest('lessons?select=*&limit=1')
+      record('anon lessons select * refused, not narrowed (WC-2C)',
+        `HTTP ${star.status} ${star.code ?? ''} (${classify(star)})`,
+        star.status !== 200 && star.code === '42501')
       continue
     }
     if (t === 'modules') {
@@ -333,11 +345,11 @@ try {
   // what the public may, and nothing more.
   for (const t of CONTENT) {
     if (t === 'lessons') {
-      const seen = await rest('lessons?select=id,is_preview,content,video_object_path&limit=1000',
+      const seen = await rest('lessons?select=id,is_preview,content,video_source&limit=1000',
         { jwt: learnerJwt })
       const lrows = seen.json ?? []
       const nonPreview = lrows.filter(l => !l.is_preview)
-      const leaked = lrows.filter(l => l.content || l.video_object_path)
+      const leaked = lrows.filter(l => l.content)
       const lWithdrawn = lrows.filter(l => withdrawnPreviewIds.has(l.id))
       record('learner lessons == exactly the preview set',
         `${lrows.length} visible / ${previewIds.size} preview` +
@@ -347,8 +359,14 @@ try {
       record('learner lessons from WITHDRAWN courses == 0 (WC-1)',
         `${lWithdrawn.length} of ${withdrawnPreviewIds.size} withdrawn-course preview row(s) visible`,
         lWithdrawn.length === 0)
-      record('learner lessons expose no body or object path',
-        `${leaked.length} row(s)`, leaked.length === 0)
+      record('learner lessons expose no body', `${leaked.length} row(s)`, leaked.length === 0)
+      // WC-2C (055): an authenticated caller has no grant on the locations either.
+      for (const col of ['video_object_path', 'pdf_object_path', 'video_url', 'pdf_url']) {
+        const probe = await rest(`lessons?select=id,${col}&limit=1`, { jwt: learnerJwt })
+        record(`learner lessons.${col} ungranted (WC-2C)`,
+          `HTTP ${probe.status} ${probe.code ?? ''} (${classify(probe)})`,
+          probe.status !== 200 && probe.code === '42501')
+      }
       continue
     }
     if (t === 'modules') {

@@ -75,10 +75,14 @@ function expr(col: string): string {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('WC-2A — migration 054 exists, alone, as one transaction', () => {
-  it('054 is exactly this migration; 055 does not exist; 046 withdrawn; 051 reserved', () => {
+  it('054 is exactly this migration; 055 is the separate restriction; 046 withdrawn; 051 reserved', () => {
     const files = readdirSync(join(ROOT, 'supabase/migrations'))
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
-    expect(files.filter(f => f.startsWith('055')), '055 (the grant restriction) must not ship with 054').toEqual([])
+    // WC-2C authored 055 as its own migration, applied only after the WC-2B
+    // application release: the two must never be combined.
+    expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
+    expect(read('supabase/migrations/055_restrict_lesson_media_columns.sql'), '055 must not add columns')
+      .not.toMatch(/add column/i)
     expect(files.filter(f => f.startsWith('046'))).toEqual([])
     expect(files.filter(f => f.startsWith('051'))).toEqual([])
   })

@@ -280,10 +280,14 @@ describe('WC-2B — trusted server and admin paths keep what they need', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('WC-2B — the gate migration 055 depends on', () => {
-  it('055 is still absent: this release is the application half only', () => {
+  it('the application half shipped before 055 restricted anything', () => {
     const files = readdirSync(join(ROOT, 'supabase/migrations'))
-    expect(files.filter(f => f.startsWith('055'))).toEqual([])
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
+    // WC-2C later authored 055. It carries no application change, and this
+    // release carries no migration — the ordering the whole plan depends on.
+    expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
+    expect(read('supabase/migrations/055_restrict_lesson_media_columns.sql'))
+      .toMatch(/ONLY while the WC-2B application release is live/)
   })
 
   it('no migration, grant or policy changed in this release', () => {

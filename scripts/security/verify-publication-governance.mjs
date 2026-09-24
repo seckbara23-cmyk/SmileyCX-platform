@@ -305,16 +305,30 @@ async function main () {
 
   // Preview status must not be an access grant. A preview lesson is the most
   // exposed row in the schema, so it is the right one to prove nothing leaks.
-  const anonLessons = await rest('lessons?select=id,is_preview,video_object_path&limit=50', ANON)
-  const previewWithMedia = anonLessons.rows.filter(l => l.video_object_path)
+  //
+  // XPA-8 WC-2C (055): the object path is no longer granted to anon at all,
+  // so asking for it is a PRIVILEGE probe now — 42501, like correct_answer
+  // after 038 — not a value check. What anon may read is the derived source.
+  const anonLessons = await rest('lessons?select=id,is_preview,video_source&limit=50', ANON)
   info('lessons visible to anon', String(anonLessons.rows.length))
-  if (previewWithMedia.length > 0) {
+  const anonPath = await rest('lessons?select=id,video_object_path&limit=1', ANON)
+  rec('lesson object paths ungranted to anon (WC-2C)',
+    `HTTP ${anonPath.status} ${anonPath.json?.code ?? ''}`, anonPath.status !== 200)
+  const anonStar = await rest('lessons?select=*&limit=1', ANON)
+  rec('anon select * on lessons refused, not narrowed (WC-2C)',
+    `HTTP ${anonStar.status} ${anonStar.json?.code ?? ''}`, anonStar.status !== 200)
+
+  // The storage reachability check keeps its meaning: resolve a real path
+  // with the service role, then try to fetch it as an anonymous caller.
+  const svcPath = await rest('lessons?select=video_object_path&video_object_path=not.is.null&limit=1')
+  const objectPath = svcPath.rows[0]?.video_object_path
+  if (objectPath) {
     const r = await fetch(
-      `${SB}/storage/v1/object/public/course-content/${previewWithMedia[0].video_object_path}`,
+      `${SB}/storage/v1/object/public/course-content/${objectPath}`,
       { method: 'GET' })
-    rec('preview media NOT anonymously retrievable', `HTTP ${r.status}`, r.status !== 200)
+    rec('protected media NOT anonymously retrievable', `HTTP ${r.status}`, r.status !== 200)
   } else {
-    info('preview media probe', 'no anon-visible lesson carries an object path')
+    info('protected media probe', 'no lesson carries an object path')
   }
 
   report()

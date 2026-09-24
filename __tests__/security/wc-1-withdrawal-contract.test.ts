@@ -276,9 +276,14 @@ describe('WC-1 — verify-xpa-6a is re-based onto published courses', () => {
   })
 
   it('every pre-existing invariant label survives, including object-path disclosure', () => {
+    // XPA-8 WC-2C re-expressed the object-path invariant: the columns are no
+    // longer granted to anon, so the verifier asserts the refusal (42501)
+    // rather than reading them and finding them empty. Same guarantee, stronger.
+    expect(v).toContain('ungranted (WC-2C)')
+    expect(v).toContain('anon lessons select * refused, not narrowed (WC-2C)')
     for (const label of [
       'anon lessons == exactly the preview set', 'anon lessons expose no body',
-      'anon lessons expose no object path', 'anon modules == only those holding a preview lesson',
+      'anon modules == only those holding a preview lesson',
       'learner lessons == exactly the preview set', 'learner modules == only those holding a preview lesson',
       'no course is flagged preview WHOLESALE',
     ]) expect(v).toContain(label)
