@@ -131,8 +131,12 @@ describe('XPA-8 F-1 — verify-xpa-6a re-based', () => {
 
   it('it asserts a preview row leaks no body and no object path', () => {
     expect(V6A).toContain('anon lessons expose no body')
-    expect(V6A).toContain('anon lessons expose no object path')
-    expect(V6A).toContain('learner lessons expose no body or object path')
+    expect(V6A).toContain('learner lessons expose no body')
+    // XPA-8 WC-2C: the object paths are ungranted to both callers, so the
+    // verifier proves the privilege refusal instead of an empty value.
+    expect(V6A).toContain('anon lessons.${col} ungranted (WC-2C)')
+    expect(V6A).toContain('learner lessons.${col} ungranted (WC-2C)')
+    expect(V6A).toContain("'video_object_path', 'pdf_object_path'")
   })
 
   it('it catches a whole course flagged wholesale — the 035 pattern', () => {

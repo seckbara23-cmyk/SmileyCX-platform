@@ -171,6 +171,58 @@ as anonymous, as a signed-in unentitled learner and as an entitled learner; the 
 `select *` are refused with 42501; anonymous callers still see their preview rows with a usable
 media contract; and the service-role media route, admin editor and admin writes are unaffected.
 
+## 0.5c WC-2B — DEPLOYED and verified (24 September 2026)
+
+PR #22 merged as `d52cf67`; Vercel production READY on it; 5/5 CI and Security checks.
+Verified GET-only against production: the learn-player chunk is the only client chunk carrying
+the derived fields and the media route, and no learner-facing chunk carries a lesson location
+(the admin editor chunk does, which Decision 5 accepts, and two certificate chunks carry
+`certificates.pdf_url`, a different table). Anonymous requests to `/api/media/lesson/<id>/video`
+and `/pdf` answer 401 without redirecting to storage; an absent asset and an unknown kind answer
+404. All 381 derived values still agree with `resolveAssetSource()`.
+
+## 0.5d WC-2C — migration 055 (prepared, NOT applied)
+
+**What it does.** One transaction:
+
+```
+revoke select on public.lessons from anon, authenticated;
+grant  select (id, module_id, slug, title, title_fr, content, duration_minutes, order_index,
+               is_preview, created_at, video_source, video_external_url, pdf_source,
+               pdf_external_url, subtitle_source, subtitle_external_url)
+  on public.lessons to anon, authenticated;
+```
+
+The 16 columns are enumerated, never computed: a column added later is unreadable by the browser
+roles until someone grants it deliberately. The six locations are **not dropped** — the service
+role keeps them for signing, upload, replacement and administrative editing.
+
+**What it asserts at apply time**, failing closed on any of them: 054 is live (6 generated
+derived columns) and the raw columns still exist; the migration has not already been applied and
+both roles currently hold table-level SELECT; after the change neither role holds table-level
+SELECT nor any of the six locations, both hold all 16 granted columns, nothing is granted to
+PUBLIC, no non-SELECT privilege moved, and `service_role`/`postgres` are untouched; as each role,
+every location, a mixed select and `select *` are refused with **42501** while the WC-2B player
+query, every content table and both public views still evaluate; policies, derived-column
+definitions, the column set, lesson/module/course data, buckets and counts are unchanged; and
+each role still sees the same number of lesson and module rows as before.
+
+**Proven offline** (PostgreSQL 17, live corpus of 127 lessons, 050 + 054 applied from their
+files): after the real 055 every location, mixed select and `select *` is refused with 42501 as
+anon, as a signed-in unentitled learner and as an entitled learner; the WC-2B player query still
+returns 38 / 38 / 58 rows; anonymous visibility stays at 38 lessons and 22 modules; the service
+role still resolves 125 object paths, reads the admin editor shape and writes lessons; no lesson
+data changes; no snapshot artifact survives. 18 mutants were written and all are caught —
+including a neutered preflight, which only fails in a world where 054 is absent, and an
+over-restriction that would break the player.
+
+**Verifiers re-expressed.** `verify-xpa-6a` and `verify-publication-governance` previously read
+the locations as anon or as a learner; they now assert the refusal (42501) instead, keeping the
+storage-reachability check by resolving a path with the service role first.
+
+**Exposure this closes.** At preparation time anonymous callers received 38 video and 9 PDF
+object paths on the published preview rows. After 055 they receive none.
+
 ## 0.5 Verification plan for the later steps (not yet executed)
 
 - **054 in production:** GET-only. The six fields appear in the API schema, service-role values
@@ -180,8 +232,10 @@ media contract; and the service-role media route, admin editor and admin writes 
   entitled learner (a protected video and PDF play through `/api/media`, and no `*_object_path`
   or legacy `*_url` appears in the browser's REST responses) and on an existing unentitled
   account. These are specified before any run.
-- **055:** each raw column returns 42501 for `anon` and `authenticated`; the permitted list still
-  reads; every content table and view still evaluates (no 42P17); answer keys (038) unchanged.
+- **055 (prepared; see 0.5d):** each raw column returns 42501 for `anon` and `authenticated`; the
+  permitted list still reads; every content table and view still evaluates (no 42P17); answer keys
+  (038) unchanged. After applying: re-run the two re-expressed verifiers, and confirm a protected
+  video and PDF still play for an entitled learner.
 
 ---
 
