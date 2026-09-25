@@ -3,9 +3,15 @@
 ~~Status: RECORDED · PROPOSAL ONLY. No policy, grant, migration, data or application code has
 changed.~~ This is a separate work item from WC-1 (migration 050) and must not be folded into it.
 
-**Status (16 September 2026): REVALIDATED · SEQUENCING CORRECTED · WC-2A (migration 054) PREPARED,
-NOT APPLIED.** No production grant, policy, data, storage or application behaviour has changed.
-Sections 0.1–0.5 below supersede this document wherever they disagree with it.
+~~Status (16 September 2026): REVALIDATED · SEQUENCING CORRECTED · WC-2A (migration 054) PREPARED,
+NOT APPLIED.~~ Sections 0.1–0.5 below supersede this document wherever they disagree with it.
+
+**Status (25 September 2026): ✅ CLOSED — production PASS.** All three steps are live: 054
+(derived fields, applied 17 September), WC-2B (application cutover, merge `d52cf67`) and 055
+(column restriction, merge `bf5975a`, applied and verified 65/65 with zero discrepancies).
+Anonymous callers can no longer read any of the six raw lesson media columns — every attempt,
+including `select *`, a mixed select, a filter and an embed, answers SQLSTATE 42501. Evidence:
+[xpa-8-wc-2-closure.md](xpa-8-wc-2-closure.md).
 **Recorded:** 14 September 2026, from the WC-1 Phase 0 findings.
 **Owner ruling (14 September 2026):**
 
@@ -223,7 +229,18 @@ storage-reachability check by resolving a path with the service role first.
 **Exposure this closes.** At preparation time anonymous callers received 38 video and 9 PDF
 object paths on the published preview rows. After 055 they receive none.
 
-## 0.5 Verification plan for the later steps (not yet executed)
+## 0.5e WC-2C — APPLIED and verified (see the closure record)
+
+Migration 055 was applied in production after the 24 September 2026 20:43 UTC pre-apply baseline
+and verified GET-only: **65/65 PASS, zero discrepancies**. The six locations, `select *`, mixed
+selects, filters and embeds are all refused with 42501 for anonymous callers; the 16 granted
+columns and the WC-2B player query still work (38 lessons); the raw columns remain physically
+present and the service role still resolves 125 video and 9 PDF paths; derived distribution,
+row visibility, publication, preview flags, counts, fingerprints, RLS, governance, RPCs and
+storage buckets are unchanged; no artifact survived. Full record:
+[xpa-8-wc-2-closure.md](xpa-8-wc-2-closure.md).
+
+## 0.5 Verification plan for the later steps ~~(not yet executed)~~ — EXECUTED
 
 - **054 in production:** GET-only. The six fields appear in the API schema, service-role values
   agree with `resolveAssetSource()` on every row, and anonymous reads return the same row count
