@@ -73,7 +73,18 @@ describe('WC-2C — migration 055 exists, alone, as one transaction', () => {
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('046'))).toEqual([])
     expect(files.filter(f => f.startsWith('051'))).toEqual([])
-    expect(files.filter(f => f.startsWith('056'))).toEqual([])
+    // CAT-ARCH-01 authored 056 (catalogue display order). Nothing may sit above
+    // 055 that re-opens what 055 closed, so the rule is not "no migration above
+    // 055" but "no migration above 055 gives a browser role the raw columns".
+    expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
+    const above = files.filter(f => f.endsWith('.sql') && parseInt(f, 10) > 55)
+    expect(above).toEqual(['056_catalogue_display_order.sql'])
+    for (const later of above) {
+      const s = readFileSync(join(ROOT, 'supabase/migrations', later), 'utf8')
+      expect(s, `${later} grants on lessons`).not.toMatch(/grant[\s\S]{0,200}on public\.lessons/i)
+      expect(s, `${later} re-opens a raw media column`)
+        .not.toMatch(/grant[\s\S]{0,200}(video|pdf|subtitle)_(object_path|url)/i)
+    }
   })
 
   it('runs as ONE repeatable-read transaction', () => {

@@ -212,7 +212,14 @@ describe('UAT-ADMIN-LESSON-VISIBILITY-01 — one authority, not three', () => {
 
   it('publication and preview rules are untouched by this fix', () => {
     const migrations = readdirSync(join(ROOT, 'supabase/migrations'))
-    expect(migrations.filter(f => f.startsWith('056'))).toEqual([])
+    // 056 (CAT-ARCH-01) came after this fix. It READS `courses.is_published`
+    // to decide what the catalogue projects; it never writes it, and it never
+    // touches a preview flag — so publication authority is still one authority.
+    expect(migrations.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
+    const m056 = read('supabase/migrations/056_catalogue_display_order.sql').replace(/--[^\n]*/g, '')
+    expect(m056, '056 writes a publication flag')
+      .not.toMatch(/set[\s\S]{0,120}\bis_(published|preview)\s*=/i)
+    expect(m056, '056 must not flip a preview flag').not.toMatch(/\bis_preview\b/)
     const src = stripTs(read(PLAYER))
     expect(src).not.toMatch(/is_preview\s*=/)
   })
@@ -285,8 +292,19 @@ describe('UAT-ADMIN-LESSON-VISIBILITY-01 — WC-2 is not weakened', () => {
 
   it('no migration was added by this fix', () => {
     const files = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(files).toHaveLength(53)
-    expect(files.filter(f => f.startsWith('056'))).toEqual([])
+    // This fix was application-only. CAT-ARCH-01 later authored 056 (catalogue
+    // display order); excluding it, the set this fix shipped against is
+    // unchanged — and 056 hands no raw media column back to a browser role,
+    // which is the thing this suite exists to keep true.
+    const LATER = ['056_catalogue_display_order.sql']
+    expect(files.filter(f => !LATER.includes(f))).toHaveLength(53)
+    expect(files.filter(f => f.startsWith('056'))).toEqual(LATER)
+    const m056 = read('supabase/migrations/056_catalogue_display_order.sql')
+    expect(m056, '056 must not grant anything on lessons')
+      .not.toMatch(/grant[\s\S]{0,200}on public\.lessons/i)
+    // 056 mentions `video_object_path` in exactly one place, and for the
+    // opposite reason: it ABORTS if anon can still read it.
+    expect(m056).toMatch(/has_column_privilege\([\s\S]{0,60}video_object_path[\s\S]{0,200}raise exception/)
   })
 
   it('no caller-role lesson query names a raw media column', () => {
