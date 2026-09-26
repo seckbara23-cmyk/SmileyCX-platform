@@ -89,7 +89,13 @@ describe('XPA-3 — internal registry stays private', () => {
     }
     const tables = [...READER.matchAll(/\.from\('(\w+)'\)/g)].map(m => m[1])
     for (const t of tables) {
-      expect(['public_catalogues', 'public_learning_paths', 'public_path_courses', 'courses']).toContain(t)
+      // `public_catalogue_courses` (056, CAT-ARCH-01) is a fourth projection of
+      // the same kind: published courses only, positions re-ranked 1..N so a
+      // gap cannot betray an unproduced code. It is not a registry table — the
+      // registry itself stays revoked from anon, which is why the reader needs
+      // a view to learn the display order at all.
+      expect(['public_catalogues', 'public_learning_paths', 'public_path_courses',
+              'public_catalogue_courses', 'courses']).toContain(t)
     }
   })
 

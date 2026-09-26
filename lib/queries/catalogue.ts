@@ -138,23 +138,54 @@ export async function getPublicPathCourses(pathCode: string): Promise<PublicCour
     .filter((c): c is PublicCourse => c !== null)
 }
 
-/** Published courses grouped by catalogue, for /courses browsing. */
+/**
+ * Published courses grouped by catalogue, in LEARNER DISPLAY ORDER.
+ *
+ * ── CAT-ARCH-01: why two reads instead of one ─────────────────────────────
+ *
+ * This used to select courses and `.order('code')`, which made the academic
+ * identity double as the display position. V8 separates them: the code is
+ * permanent (C1-F1 is always C1-F1) while the order a learner sees is editable
+ * — Fondations is to open on C1-F4, not on C1-F1.
+ *
+ * The order lives in `course_codes.position`, and that table is deliberately
+ * closed to `anon` (D-Q5: publishing the registry would publish the roadmap —
+ * every unproduced code and the whole path composition). So the order arrives
+ * through `public_catalogue_courses` (056): published courses only, positions
+ * re-ranked 1..N so a gap cannot betray an unproduced code.
+ *
+ * Same two-read shape as `getPublicPathCourses` above, for the same reason:
+ * the view supplies the RELATIONSHIP and the order, `courses` supplies the
+ * content and applies its own RLS. A course the view lists but RLS withholds
+ * is silently dropped rather than rendered as a hole.
+ */
 export async function getPublishedCoursesByCatalogue(): Promise<Map<string, PublicCourse[]>> {
   const supabase = publicClient()
-  const { data } = await supabase
+
+  const { data: links } = await supabase
+    .from('public_catalogue_courses')
+    .select('catalogue_code, course_code, position')
+    .order('catalogue_code')
+    .order('position')
+
+  const rows = (links ?? []) as { catalogue_code: string; course_code: string; position: number }[]
+  if (rows.length === 0) return new Map()
+
+  const { data: courses } = await supabase
     .from('courses')
     .select('id, code, slug, title, description, level, duration_hours, cover_url')
+    .in('code', rows.map(r => r.course_code))
     .eq('is_published', true)
-    .not('code', 'is', null)
-    .order('code')
+
+  const byCode = new Map(((courses ?? []) as PublicCourse[]).map(c => [c.code as string, c]))
 
   const grouped = new Map<string, PublicCourse[]>()
-  for (const c of (data ?? []) as PublicCourse[]) {
-    const catalogue = (c.code ?? '').split('-')[0]
-    if (!catalogue) continue
-    const arr = grouped.get(catalogue) ?? []
-    arr.push(c)
-    grouped.set(catalogue, arr)
+  for (const r of rows) {
+    const course = byCode.get(r.course_code)
+    if (!course) continue
+    const arr = grouped.get(r.catalogue_code) ?? []
+    arr.push(course)
+    grouped.set(r.catalogue_code, arr)
   }
   return grouped
 }

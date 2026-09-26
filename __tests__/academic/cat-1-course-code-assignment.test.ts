@@ -288,9 +288,26 @@ describe('CAT-1 — the database remains the final authority', () => {
 
   it('9/10. the public catalogue projection is NOT relaxed to paper over the defect', () => {
     const s = stripJs(read(CATALOGUE))
-    // Deleting this filter would surface null-code courses with no catalogue
-    // tier to land in — hiding the authoring defect instead of fixing it.
-    expect(s, 'the null-code exclusion must remain').toMatch(/\.not\('code', 'is', null\)/)
+    // CAT-1 shipped when the catalogue was ONE read of `courses` that excluded
+    // null-code rows with `.not('code','is',null)`. CAT-ARCH-01 replaced that
+    // with two reads: `public_catalogue_courses` (056) supplies the membership
+    // and the display order, `courses` supplies the content. The exclusion did
+    // not move into the application — it moved into the database, and got
+    // STRICTER: the view is projected FROM `course_codes`, so a course with no
+    // code has no row to appear in at all, and cannot be re-admitted by editing
+    // this file. What CAT-1 guarded is therefore still guarded.
+    expect(s, 'the catalogue must be keyed on the code registry projection')
+      .toMatch(/\.from\('public_catalogue_courses'\)/)
+    expect(s, 'courses may only be fetched BY code — never unfiltered')
+      .toMatch(/\.in\('code', rows\.map\(r => r\.course_code\)\)/)
+    expect(s, 'the one-read code filter must not quietly return')
+      .not.toMatch(/\.from\('courses'\)[\s\S]{0,400}?\.order\('code'\)/)
+    // The database side of the same guarantee: the view exists, it is built on
+    // the registry, and it admits published courses only.
+    const view = read('supabase/migrations/056_catalogue_display_order.sql')
+    expect(view).toMatch(/create view public\.public_catalogue_courses as/)
+    expect(view).toMatch(/from public\.course_codes cc/)
+    expect(view).toMatch(/join public\.courses c\s+on c\.code = cc\.code\s+and c\.is_published = true/)
     expect(s).toMatch(/\.eq\('is_published', true\)/)
     // Once a code exists the existing projection surfaces the course with no
     // further change — that is why CAT-1 needs no catalogue edit at all.
@@ -322,14 +339,20 @@ describe('CAT-1 — the database remains the final authority', () => {
     const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(f => f.endsWith('.sql'))
     // CAT-1 shipped against 50 migrations. XPA-8 later authored the reserved 050
     // (withdrawal contract), 054 (derived media fields) and 055 (their column
-    // restriction); excluding those three, the set CAT-1 saw is unchanged.
+    // restriction), and CAT-ARCH-01 authored 056 (catalogue display order);
+    // excluding those four, the set CAT-1 saw is unchanged.
     const LATER = ['050_withdrawal_contract.sql', '054_lesson_media_derived_source.sql',
-                   '055_restrict_lesson_media_columns.sql']
+                   '055_restrict_lesson_media_columns.sql', '056_catalogue_display_order.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(55)
+    expect(Math.max(...nums)).toBe(56)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
-    expect(files.filter(f => f.startsWith('056'))).toEqual([])
+    expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
+    // CAT-1's own subject — `courses.code` assignment — is untouched by 056:
+    // it adds a read projection and an ordering constraint, and writes nothing.
+    const m056 = read('supabase/migrations/056_catalogue_display_order.sql')
+      .replace(/--[^\n]*/g, '')
+    expect(m056, '056 must not write course identity').not.toMatch(/\b(insert into|update|delete from)\b/i)
   })
 })
