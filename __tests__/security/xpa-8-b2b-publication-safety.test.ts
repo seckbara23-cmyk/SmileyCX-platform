@@ -173,7 +173,9 @@ describe('XPA-8 B-2B stayed in its lane', () => {
   it('no lesson, assessment, completion or voice logic was touched', () => {
     const player = stripTs(read('app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx'))
     expect(player).toContain('markComplete')
-    expect(player).toContain('my_course_access')
+    // UAT-ADMIN-LESSON-VISIBILITY-01 moved the player onto the shared access
+    // seam; the access decision is still there, still outside B-2B scope.
+    expect(player).toContain('canOpenCourse')
     const m043 = has('supabase/migrations/043_clear_unintended_preview_flags.sql')
       ? read('supabase/migrations/043_clear_unintended_preview_flags.sql') : ''
     expect(stripSql(m043)).not.toMatch(/is_published/)

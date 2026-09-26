@@ -5,6 +5,7 @@ import { List, Loader2, Captions, FileText } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
 import { useParams, useRouter } from 'next/navigation'
 import { ensureAcademicEnrollment } from '@/app/actions/enrollment'
+import { canOpenCourse } from '@/app/actions/course-access'
 // UAT-ACCESS-01: FREE_ACCESS_MODE is deliberately no longer imported here.
 // It was an access authority in this file and must never be one again.
 import { PILOT_MODE } from '@/lib/pilot'
@@ -176,16 +177,22 @@ export default function LessonPlayerPage() {
     // entitlement was bounced out of a player the layout had already admitted
     // them to — two gates disagreeing, with the wrong one winning.
     //
-    // `my_course_access` is the learner-safe projection of the same seam the
-    // layout enforces server-side and `has_course_access()` enforces in SQL.
-    // It is the browser-readable half, and it is what the dashboard already uses.
-    const { data: access } = await supabase
-      .from('my_course_access')
-      .select('has_access')
-      .eq('course_id', course.id)
-      .maybeSingle()
+    // ── UAT-ADMIN-LESSON-VISIBILITY-01: ask the seam, do not re-derive it ──
+    //
+    // It then happened again, to the platform admin. This read
+    // `my_course_access` directly — the learner-safe projection of
+    // ENTITLEMENTS, which has no platform-admin arm, unlike
+    // `resolveCourseAccessById` (the layout) and `has_course_access()` (RLS).
+    // So the layout admitted the admin who authors the course and the player
+    // redirected her back out of it, every course, every time.
+    //
+    // `canOpenCourse` delegates to that one seam instead of re-deriving the
+    // decision here, so a third definition cannot drift away from the other
+    // two. Entitlement semantics are untouched: an ordinary caller without a
+    // valid entitlement is refused exactly as before.
+    const access = await canOpenCourse(course.id)
 
-    if (!access?.has_access) { router.push(`/courses/${courseSlug}`); return }
+    if (!access.allowed) { router.push(`/courses/${courseSlug}`); return }
 
     // Authorized. NOW give them somewhere to accumulate progress. This runs
     // after the decision, never as part of it, and its failure cannot deny
