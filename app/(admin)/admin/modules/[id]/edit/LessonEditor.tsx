@@ -7,6 +7,7 @@ import {
   Loader2, CheckCircle2, Upload,
 } from 'lucide-react'
 import { createLesson, updateLesson, deleteLesson } from './actions'
+import type { LessonMediaSource } from '@/lib/media/paths'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -22,6 +23,12 @@ interface Lesson {
   video_object_path: string | null
   pdf_object_path: string | null
   subtitle_object_path: string | null
+  // XPA-8 WC-2 (054): what KIND of asset each kind is, derived by the
+  // database. The list badges read these — a lesson whose media is a
+  // protected object path has no legacy URL to key a badge on.
+  video_source: LessonMediaSource
+  pdf_source: LessonMediaSource
+  subtitle_source: LessonMediaSource
   duration_minutes: number | null
   order_index: number
   is_preview: boolean
@@ -428,12 +435,16 @@ function LessonRow({
           {lesson.duration_minutes && (
             <span className="text-xs text-gray-400">{lesson.duration_minutes} min</span>
           )}
-          {lesson.video_url && (
+          {/* UAT-ADMIN-LESSON-VISIBILITY-01: the badge asks the derived
+              contract, not the legacy URL. Protected media has no URL to
+              show, so 61 videos and 12 PDFs were silently unbadged and a
+              correctly authored lesson looked empty. Null shows nothing. */}
+          {lesson.video_source && (
             <span className="inline-flex items-center gap-1 text-[10px] text-violet-600 font-semibold">
               <Video className="w-3 h-3" /> Vidéo
             </span>
           )}
-          {lesson.pdf_url && (
+          {lesson.pdf_source && (
             <span className="inline-flex items-center gap-1 text-[10px] text-orange-600 font-semibold">
               <FileText className="w-3 h-3" /> PDF
             </span>

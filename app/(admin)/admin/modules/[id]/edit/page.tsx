@@ -31,9 +31,13 @@ export default async function AdminEditModulePage({
     .select('id, title')
     .order('title')
 
+  // UAT-ADMIN-LESSON-VISIBILITY-01: the derived fields (054) come along so the
+  // list can say whether a lesson HAS media — protected media has no legacy URL
+  // to key a badge on. The raw columns stay for the editor itself: this page
+  // runs on the service role, which WC-2C deliberately kept.
   const { data: lessons } = await supabase
     .from('lessons')
-    .select('id, title, slug, content, video_url, pdf_url, subtitle_url, video_object_path, pdf_object_path, subtitle_object_path, duration_minutes, order_index, is_preview')
+    .select('id, title, slug, content, video_url, pdf_url, subtitle_url, video_object_path, pdf_object_path, subtitle_object_path, video_source, pdf_source, subtitle_source, duration_minutes, order_index, is_preview')
     .eq('module_id', params.id)
     .order('order_index')
 

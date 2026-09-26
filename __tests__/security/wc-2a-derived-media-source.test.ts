@@ -346,6 +346,11 @@ describe('WC-2A — application boundary', () => {
       'app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx',
       'components/lms/LessonSidebar.tsx',
       'types/index.ts',
+      // UAT-ADMIN-LESSON-VISIBILITY-01: the admin lesson list reads the same
+      // derived fields so a protected asset is not shown as "no media". It runs
+      // on the service role and still holds the raw columns it writes back.
+      'app/(admin)/admin/modules/[id]/edit/page.tsx',
+      'app/(admin)/admin/modules/[id]/edit/LessonEditor.tsx',
     ]
     const offenders: string[] = []
     const walk = (dir: string) => {

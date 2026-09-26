@@ -39,6 +39,8 @@ const CERTIFICATE = 'app/(platform)/certificate/[courseSlug]/page.tsx'
 const LAYOUT      = 'app/(learn)/learn/[courseSlug]/layout.tsx'
 const ACTIONS     = 'app/actions/enrollment.ts'
 const DASHBOARD   = 'app/(platform)/dashboard/page.tsx'
+const ACTION      = 'app/actions/course-access.ts'
+const ACCESS_SEAM = 'lib/auth/course-access.ts'
 
 // ═══════════════════════════════════════════════════════════════════════════
 // THE NAMED REGRESSION
@@ -54,10 +56,15 @@ describe('UAT-ACCESS-01 — a missing enrollment must not override a valid entit
 
   it('UAT-ACCESS-01: the player decides entry on the entitlement seam', () => {
     const src = stripTs(read(PLAYER))
-    expect(src).toContain('my_course_access')
-    expect(src).toMatch(/has_access/)
+    // UAT-ADMIN-LESSON-VISIBILITY-01 moved the seam, not the rule: the player
+    // asks `canOpenCourse`, which delegates to `resolveCourseAccessById`, which
+    // reads `my_course_access` for an ordinary learner. One authority, asked —
+    // no longer re-derived in the browser.
+    expect(src).toMatch(/const access = await canOpenCourse\(course\.id\)/)
+    expect(stripTs(read(ACTION))).toMatch(/resolveCourseAccessById\(parsed\.data\.courseId\)/)
+    expect(stripTs(read(ACCESS_SEAM))).toContain('my_course_access')
     // The redirect must be driven by access, not by an enrollment lookup.
-    expect(src).toMatch(/!access\?\.has_access/)
+    expect(src).toMatch(/!access\.allowed/)
   })
 
   it('UAT-ACCESS-01: the player never calls enrollForFree', () => {
@@ -110,7 +117,7 @@ describe('UAT-ACCESS-01 academic enrollment initialisation', () => {
 
   it('runs only after the access decision, and its failure cannot deny entry', () => {
     const player = stripTs(read(PLAYER))
-    const accessAt = player.search(/!access\?\.has_access/)
+    const accessAt = player.search(/!access\.allowed/)
     // The CALL SITE, not the import at the top of the file.
     const ensureAt = player.search(/void ensureAcademicEnrollment/)
     expect(accessAt).toBeGreaterThan(-1)
