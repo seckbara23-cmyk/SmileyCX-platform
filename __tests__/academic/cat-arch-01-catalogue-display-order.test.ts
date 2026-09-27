@@ -63,11 +63,17 @@ const count = (h: string, n: string) => h.split(n).length - 1
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () => {
-  it('056 is exactly this migration; no 057; the WC-2 pair is untouched', () => {
+  it('056 is exactly this migration; 057 is the V8 data slice; WC-2 untouched', () => {
     const files = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
-    expect(files.filter(f => f.startsWith('057'))).toEqual([])
-    expect(files).toHaveLength(54)
+    // CAT-ARCH-02 added 057. It is DATA ONLY: it must not redefine the view or
+    // the constraint this slice created, which is what 056 owns.
+    expect(files.filter(f => f.startsWith('057'))).toEqual(['057_v8_registry_reorder.sql'])
+    expect(files).toHaveLength(55)
+    const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
+    expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
+    expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
+    expect(m057, '057 moves a grant').not.toMatch(/^\s*(grant|revoke)\b/im)
   })
 
   it('runs as ONE repeatable-read transaction', () => {

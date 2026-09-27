@@ -342,10 +342,11 @@ describe('CAT-1 — the database remains the final authority', () => {
     // restriction), and CAT-ARCH-01 authored 056 (catalogue display order);
     // excluding those four, the set CAT-1 saw is unchanged.
     const LATER = ['050_withdrawal_contract.sql', '054_lesson_media_derived_source.sql',
-                   '055_restrict_lesson_media_columns.sql', '056_catalogue_display_order.sql']
+                   '055_restrict_lesson_media_columns.sql', '056_catalogue_display_order.sql',
+                   '057_v8_registry_reorder.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(56)
+    expect(Math.max(...nums)).toBe(57)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
@@ -354,5 +355,14 @@ describe('CAT-1 — the database remains the final authority', () => {
     const m056 = read('supabase/migrations/056_catalogue_display_order.sql')
       .replace(/--[^\n]*/g, '')
     expect(m056, '056 must not write course identity').not.toMatch(/\b(insert into|update|delete from)\b/i)
+    // 057 (CAT-ARCH-02) DOES write — but only the code REGISTRY, never a
+    // course's own identity. CAT-1's subject is `courses.code`, and that column
+    // is still assigned in exactly one place: the Admin form.
+    const m057 = read('supabase/migrations/057_v8_registry_reorder.sql')
+      .replace(/--[^\n]*/g, '')
+    for (const t of ['courses', 'modules', 'lessons'])
+      expect(m057, `057 writes public.${t}`)
+        .not.toMatch(new RegExp(`(insert into|update|delete from)\\s+public\\.${t}\\b`, 'i'))
+    expect(m057, '057 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
   })
 })
