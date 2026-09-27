@@ -3,24 +3,11 @@
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createLogger } from '@/lib/logger'
+import { parseExercisePayload } from '@/lib/admin/exercise-payload'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
 const log = createLogger('admin/exercise-new')
-
-interface CategoryPayload {
-  id:          string
-  name:        string
-  color:       string
-  order_index: number
-}
-
-interface ItemPayload {
-  id:                  string
-  label:               string
-  correctCategoryId:   string
-  order_index:         number
-}
 
 export async function createExercise(formData: FormData) {
   await requirePlatformAdmin()
@@ -35,20 +22,12 @@ export async function createExercise(formData: FormData) {
   if (!title)    return { error: 'Le titre est obligatoire.' }
   if (!lessonId) return { error: 'Sélectionnez une leçon.' }
 
-  let categories: CategoryPayload[]
-  let items:      ItemPayload[]
-  try {
-    categories = JSON.parse(catJson)
-    items      = JSON.parse(itemJson)
-  } catch {
-    return { error: 'Données invalides.' }
-  }
-
-  if (categories.length < 2) return { error: 'Au moins 2 catégories sont requises.' }
-  if (categories.some(c => !c.name.trim())) return { error: 'Tous les noms de catégories sont obligatoires.' }
-  if (items.length < 2) return { error: 'Au moins 2 éléments sont requis.' }
-  if (items.some(i => !i.label.trim())) return { error: 'Tous les labels d\'éléments sont obligatoires.' }
-  if (items.some(i => !i.correctCategoryId)) return { error: 'Chaque élément doit avoir une catégorie correcte.' }
+  // UAT-EXERCISE-CATEGORY-FK-01: every item must reference a category this
+  // payload is actually inserting. Validated BEFORE the first write, so a
+  // mismatch is a French sentence rather than a raw foreign-key violation.
+  const parsed = parseExercisePayload(catJson, itemJson)
+  if (!parsed.ok) return { error: parsed.error }
+  const { categories, items } = parsed
 
   const supabase = createAdminClient()
 

@@ -95,21 +95,29 @@ export default function EditExerciseForm({
   function handleCourseChange(id: string) { setCourseId(id); setModuleId(''); setLessonId('') }
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
 
-  function updateCategory(idx: number, patch: Partial<CategoryDraft>) {
-    setCategories(prev => prev.map((c, i) => i === idx ? { ...c, ...patch } : c))
+  // UAT-EXERCISE-CATEGORY-FK-01 — every mutation addresses a row BY ID.
+  //
+  // Index-based removal read `categories[idx]` from the render-time array while
+  // `setCategories(prev => prev.filter((_, i) => i !== idx))` filtered the
+  // RUNNING one. Two trash clicks landing in a single React batch could then
+  // clear one category's references while removing a different category,
+  // leaving an item pointing at a category that no longer exists — and the
+  // edit action DELETES before it re-inserts, so that payload would destroy a
+  // working exercise and fail to rebuild it.
+  function updateCategory(id: string, patch: Partial<CategoryDraft>) {
+    setCategories(prev => prev.map(c => c.id === id ? { ...c, ...patch } : c))
   }
-  function removeCategory(idx: number) {
-    const catId = categories[idx].id
-    setCategories(prev => prev.filter((_, i) => i !== idx))
+  function removeCategory(id: string) {
+    setCategories(prev => prev.filter(c => c.id !== id))
     setItems(prev => prev.map(item =>
-      item.correctCategoryId === catId ? { ...item, correctCategoryId: '' } : item
+      item.correctCategoryId === id ? { ...item, correctCategoryId: '' } : item
     ))
   }
 
-  function updateItem(idx: number, patch: Partial<ItemDraft>) {
-    setItems(prev => prev.map((item, i) => i === idx ? { ...item, ...patch } : item))
+  function updateItem(id: string, patch: Partial<ItemDraft>) {
+    setItems(prev => prev.map(item => item.id === id ? { ...item, ...patch } : item))
   }
-  function removeItem(idx: number) { setItems(prev => prev.filter((_, i) => i !== idx)) }
+  function removeItem(id: string) { setItems(prev => prev.filter(item => item.id !== id)) }
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
@@ -204,10 +212,10 @@ export default function EditExerciseForm({
           {categories.map((cat, ci) => (
             <div key={cat._id} className="flex items-center gap-2">
               <GripVertical className="w-4 h-4 text-gray-300 shrink-0" />
-              <input type="text" value={cat.name} onChange={e => updateCategory(ci, { name: e.target.value })}
+              <input type="text" value={cat.name} onChange={e => updateCategory(cat.id, { name: e.target.value })}
                 placeholder={`Catégorie ${ci + 1}`}
                 className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all" />
-              <select value={cat.color} onChange={e => updateCategory(ci, { color: e.target.value })}
+              <select value={cat.color} onChange={e => updateCategory(cat.id, { color: e.target.value })}
                 className="w-28 px-2 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:border-primary outline-none transition-all"
                 aria-label="Couleur de la catégorie">
                 {CATEGORY_COLORS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
@@ -216,7 +224,7 @@ export default function EditExerciseForm({
                 <span className="w-4 h-4 rounded-full shrink-0 border border-gray-200" style={{ backgroundColor: cat.color }} />
               )}
               {categories.length > 2 && (
-                <button type="button" onClick={() => removeCategory(ci)}
+                <button type="button" onClick={() => removeCategory(cat.id)}
                   className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -239,10 +247,10 @@ export default function EditExerciseForm({
           {items.map((item, ii) => (
             <div key={item._id} className="flex items-center gap-2">
               <GripVertical className="w-4 h-4 text-gray-300 shrink-0" />
-              <input type="text" value={item.label} onChange={e => updateItem(ii, { label: e.target.value })}
+              <input type="text" value={item.label} onChange={e => updateItem(item.id, { label: e.target.value })}
                 placeholder={`Élément ${ii + 1}`}
                 className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all" />
-              <select value={item.correctCategoryId} onChange={e => updateItem(ii, { correctCategoryId: e.target.value })}
+              <select value={item.correctCategoryId} onChange={e => updateItem(item.id, { correctCategoryId: e.target.value })}
                 className="w-44 px-2 py-2 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                 aria-label="Catégorie correcte">
                 <option value="">— Catégorie —</option>
@@ -251,7 +259,7 @@ export default function EditExerciseForm({
                 ))}
               </select>
               {items.length > 2 && (
-                <button type="button" onClick={() => removeItem(ii)}
+                <button type="button" onClick={() => removeItem(item.id)}
                   className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
