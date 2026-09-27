@@ -517,6 +517,52 @@ describe('F-5.2 — the runtime proof lives outside vitest', () => {
     }
   })
 
+  it('37. CAT-ARCH-03: the ruling governs the full 8-course catalogue', () => {
+    const m = JSON.parse(read(MANIFEST))
+    // R4b closed the codeless-eighth-course gap that had held this verifier red
+    // for three weeks. The ruling must now cover every coded course, or the
+    // control is back to reporting a difference nobody has approved.
+    const EXPECTED: Record<string, string> = {
+      'les-fondamentaux-de-l-experience-client': 'C1-F1',
+      'les-fondamentaux-du-service-client': 'C1-F2',
+      'communiquer-avec-les-clients-sur-les-canaux-digitaux': 'C1-F3',
+      'donnez-envie-a-vos-clients-de-revenir': 'C1-F4',
+      'manager-une-equipe-orientee-client': 'C2-F1',
+      'mesurer-l-experience-client': 'C2-F2',
+      'gerer-les-reclamations-et-transformer-l-insatisfaction-en-opportunite': 'C2-F4',
+      'developper-une-culture-client': 'C2-F5',
+    }
+    const bySlug = Object.fromEntries(
+      m.approved_state.map((c: { slug: string; code: string | null }) => [c.slug, c.code]))
+    expect(Object.keys(bySlug).sort()).toEqual(Object.keys(EXPECTED).sort())
+    // Every entry carries its academic code — the `code: null` drift that sat
+    // on developper-une-culture-client for weeks must not come back.
+    for (const [slug, code] of Object.entries(EXPECTED)) {
+      expect(bySlug[slug], `${slug} must be ruled as ${code}`).toBe(code)
+    }
+    // A ruling with no author or date is not a ruling.
+    expect(m.approved_by).toMatch(/\S/)
+    expect(m.approved_at).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+    expect(m.ruling).toMatch(/\S/)
+  })
+
+  it('38. CAT-ARCH-03 ruled on publication, NOT on the free/paid split', () => {
+    // The owner ratified the catalogue while explicitly reserving C1-F4's
+    // preview configuration for a separate decision with Marième. The manifest
+    // must keep preview flags informational, and must not be readable as an
+    // approval that the whole course stays free.
+    const raw = read(MANIFEST)
+    const m = JSON.parse(raw)
+    expect(m.strictness.preview_lessons).toMatch(/INFORMATIONAL/)
+    expect(m.strictness.preview_lessons).toMatch(/never failed/)
+    expect(m.ruling, 'the ruling must say preview flags are not ruled on here')
+      .toMatch(/[Pp]review flags/)
+    expect(raw).toMatch(/NOT an approval|NOT approved as permanent/)
+    // And the slice that wrote this ruling changed no flag: the verifier reads
+    // preview counts, nothing in the repository sets them.
+    expect(raw).not.toMatch(/update[\s\S]{0,60}is_preview/i)
+  })
+
   it('36. this suite does not claim any trigger fires', () => {
     // A deliberate, load-bearing absence. Every 053 assertion above reads TEXT.
     // If a later test here promises runtime behaviour, that is the moment to

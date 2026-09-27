@@ -225,12 +225,18 @@ describe('CAT-ARCH-02 — the rulings, exactly as approved', () => {
     expect(RAW).toMatch(/R4b/)
   })
 
-  it('R4c is NOT performed: the publication manifest is untouched', () => {
+  it('R4c is NOT performed BY 057: the migration never touches the manifest', () => {
+    // The original form of this pin asserted the manifest still held 7 entries,
+    // which was true while R4c was pending. CAT-ARCH-03 has since delivered R4c
+    // (8 approved courses), so the length is no longer the evidence — and it was
+    // never the point. What must stay true is that MIGRATION 057 is not the
+    // change that updates the manifest: the manifest is a ruling in a JSON file,
+    // 057 is SQL, and neither may reach into the other.
     expect(SQL).not.toMatch(/manifest/i)
-    // The manifest still records 7 approved courses; 057 is not the change that
-    // updates it (separate PR, per the ruling).
-    const manifest = JSON.parse(read('scripts/security/publication-manifest.json'))
-    expect(manifest.approved_state).toHaveLength(7)
+    expect(SQL).not.toMatch(/publication-manifest/i)
+    expect(SQL).not.toMatch(/approved_state/i)
+    // 057 must also not write the publication state the manifest governs.
+    expect(SQL).not.toMatch(/set[^;]*\bis_published\s*=/i)
   })
 
   it('no launch status is invented and nothing is retired', () => {

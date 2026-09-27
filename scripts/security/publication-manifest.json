@@ -9,27 +9,53 @@
     "the control working: a publication that nobody wrote down is exactly what",
     "F-5.2 exists to surface.",
     "",
-    "WHY THIS ENCODES 7 PUBLISHED AND NOT 5.",
-    "Migration 049 restored 5-published/2-withdrawn. On 2026-09-05 the content",
-    "owner published `mesurer-l-experience-client` (C2-F2) and",
-    "`developper-une-culture-client`, then authored five new lessons on the",
-    "latter. The forensic audit could not attribute that change because no audit",
-    "row existed — the defect F-5.2 corrects. Bara has since ruled the change",
-    "LEGITIMATE owner evolution of the catalogue. So the approved state is what",
-    "production holds TODAY, not the historical 049 state.",
+    "WHY THIS NOW ENCODES 8 COURSES (CAT-ARCH-03, R4b + R4c).",
+    "The eighth course, `donnez-envie-a-vos-clients-de-revenir`, has been",
+    "published since before the 2026-09-06 ruling but carried no academic code,",
+    "so it appeared in no catalogue and was deliberately left out of the approved",
+    "state pending an owner decision (R4b). It was the single failing check on",
+    "this verifier for three weeks.",
+    "",
+    "On 2026-09-27 at 22:06:34Z the owner assigned it C1-F4 through the Admin",
+    "form — the CAT-1 assignment path, after migration 057 had registered C1-F4",
+    "at Fondations position 1. That assignment is IRREVERSIBLE: migration 028's",
+    "`courses_code_immutable` trigger permits NULL -> code exactly once. The",
+    "course therefore now opens the Fondations catalogue, which is what V8",
+    "requires, and the public projection carries 8 courses instead of 7.",
+    "",
+    "Bara ratified that state on 2026-09-27 and approved this file being brought",
+    "into line with it. Nothing in the database was changed to produce this",
+    "update: the numbers below were read from production, GET-only.",
+    "",
+    "TWO CORRECTIONS CARRIED AT THE SAME TIME, both long-standing:",
+    "  * `developper-une-culture-client` has carried C2-F5 in production for",
+    "    weeks while this file still said `code: null`. The verifier keys on slug,",
+    "    so it never caught the drift.",
+    "  * C1-F1 and C2-F1 each grew from 17 to 18 lessons through ordinary owner",
+    "    authoring, previously reported as growth notices.",
+    "",
+    "PREVIEW FLAGS ARE NOT A COMMERCIAL RULING.",
+    "`preview_lessons` is observational and informational only, per the",
+    "2026-09-06 ruling — the verifier reports it and never fails on it. C1-F4 is",
+    "recorded below with 8 of 8 lessons flagged `is_preview`, which means the",
+    "whole course is currently readable by an anonymous visitor and it is the",
+    "first card in Fondations. Recording that number is NOT an approval that it",
+    "must stay that way: the owner has explicitly reserved the free/paid split on",
+    "C1-F4 as a separate content and commercial decision to review with Marième.",
+    "CAT-ARCH-03 changed no preview flag.",
     "",
     "TO UPDATE: change `approved_state`, bump `approved_at`, and say who ruled.",
     "Updating this file is the act of approving what production already shows —",
     "do it deliberately, not to make a red verifier go green."
   ],
-  "approved_by": "Bara Seck (platform owner) — ruling relayed 2026-09-06",
-  "approved_at": "2026-09-06",
-  "ruling": "Publication state as of 2026-09-06 is legitimate owner evolution of the catalogue. Migration 049's 5-published/2-withdrawn state is superseded and must NOT be restored. Preview flags are owner-managed content configuration and are not cleared by F-5.2.",
+  "approved_by": "Bara Seck (platform owner) — ruling relayed 2026-09-27 (CAT-ARCH-03)",
+  "approved_at": "2026-09-27",
+  "ruling": "The production catalogue of 8 published, coded courses is approved. `donnez-envie-a-vos-clients-de-revenir` is approved as C1-F4 and as the first formation in Fondations; its assignment on 2026-09-27 at 22:06:34Z is ratified as intentional and authorised, and R4b is closed. Supersedes the 2026-09-06 ruling, which approved 7 courses while the eighth was uncoded. Migration 049's 5-published/2-withdrawn state remains superseded and must NOT be restored. Preview flags remain owner-managed content configuration and are NOT ruled on here: the free/paid split of C1-F4 is reserved for separate review with Marième.",
   "strictness": {
     "is_published": "EXACT — any difference is reported as drift and must be explained or approved.",
     "course_set": "EXACT — a course appearing or disappearing is drift.",
     "lessons": "GROWTH ALLOWED — the owner authors content continuously. Growth is reported as informational; SHRINKAGE is reported as drift, because lessons should not vanish.",
-    "preview_lessons": "INFORMATIONAL — owner-managed content configuration per the 2026-09-06 ruling. Reported, never failed."
+    "preview_lessons": "INFORMATIONAL — owner-managed content configuration per the 2026-09-06 ruling, reaffirmed 2026-09-27. Reported, never failed, and never an approval of the free/paid split."
   },
   "approved_state": [
     {
@@ -37,50 +63,60 @@
       "code": "C1-F3",
       "is_published": true,
       "lessons": 17,
-      "preview_lessons": 0
+      "preview_lessons": 3
     },
     {
       "slug": "developper-une-culture-client",
-      "code": null,
+      "code": "C2-F5",
       "is_published": true,
       "lessons": 15,
       "preview_lessons": 5,
-      "note": "Published 2026-09-05 by the content owner; five lessons authored the same afternoon. Ruled legitimate 2026-09-06."
+      "note": "Published 2026-09-05 by the content owner; five lessons authored the same afternoon. Ruled legitimate 2026-09-06. Code corrected from null to C2-F5 on 2026-09-27 — production has carried C2-F5 for weeks."
+    },
+    {
+      "slug": "donnez-envie-a-vos-clients-de-revenir",
+      "code": "C1-F4",
+      "is_published": true,
+      "lessons": 8,
+      "preview_lessons": 8,
+      "note": "The eighth course. Published before the 2026-09-06 ruling but uncoded, so held out of the approved state pending R4b. Assigned C1-F4 on 2026-09-27 at 22:06:34Z via the Admin form — irreversible under 028's courses_code_immutable — and now first in Fondations. All 8 lessons are currently flagged is_preview, so the whole course is anonymously readable; that is recorded, NOT approved as permanent, and is reserved for review with Marième."
     },
     {
       "slug": "gerer-les-reclamations-et-transformer-l-insatisfaction-en-opportunite",
       "code": "C2-F4",
       "is_published": true,
       "lessons": 13,
-      "preview_lessons": 0
+      "preview_lessons": 7
     },
     {
       "slug": "les-fondamentaux-de-l-experience-client",
       "code": "C1-F1",
       "is_published": true,
-      "lessons": 17,
-      "preview_lessons": 0
+      "lessons": 18,
+      "preview_lessons": 6,
+      "note": "Lesson count refreshed 17 -> 18 on 2026-09-27; ordinary owner authoring, previously reported as a growth notice."
     },
     {
       "slug": "les-fondamentaux-du-service-client",
       "code": "C1-F2",
       "is_published": true,
       "lessons": 18,
-      "preview_lessons": 0
+      "preview_lessons": 8
     },
     {
       "slug": "manager-une-equipe-orientee-client",
       "code": "C2-F1",
       "is_published": true,
-      "lessons": 17,
-      "preview_lessons": 0
+      "lessons": 18,
+      "preview_lessons": 4,
+      "note": "Lesson count refreshed 17 -> 18 on 2026-09-27; ordinary owner authoring, previously reported as a growth notice."
     },
     {
       "slug": "mesurer-l-experience-client",
       "code": "C2-F2",
       "is_published": true,
       "lessons": 21,
-      "preview_lessons": 1,
+      "preview_lessons": 7,
       "note": "Published 2026-09-05 by the content owner. Ruled legitimate 2026-09-06."
     }
   ]
