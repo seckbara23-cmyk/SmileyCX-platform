@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useRef } from 'react'
+import { useState, useTransition, useRef, useId } from 'react'
 import Link from 'next/link'
 import { Plus, Trash2, Loader2, GripVertical } from 'lucide-react'
 import { createExercise } from './actions'
@@ -9,16 +9,35 @@ interface Lesson  { id: string; title: string; order_index: number }
 interface Module  { id: string; title: string; order_index: number; lessons: Lesson[] }
 interface Course  { id: string; title: string; modules: Module[] }
 
+/**
+ * UAT-EXERCISE-CATEGORY-FK-01 — why these carry a `key`, not an `id`.
+ *
+ * This builder used to mint a `crypto.randomUUID()` per category DURING RENDER,
+ * through a non-lazy `useState([newCat(), newCat()])`. That expression is
+ * evaluated on every render pass, and SSR and hydration are two passes, so the
+ * server sent `<option value="A">` while the hydrated state held `B`. Selecting
+ * a category stored the DOM's value — the SSR uuid — and the submitted items
+ * then referenced a category that was never inserted. PostgreSQL refused them
+ * with `exercise_items_correct_category_id_fkey`, which is exactly what
+ * Marième saw.
+ *
+ * The drafts below therefore carry a LOCAL KEY that is stable across SSR and
+ * hydration (`useId()` is guaranteed identical on both, and the counter runs in
+ * a lazy initialiser, once per mount). No database identity exists while the
+ * author is typing. The real UUIDs are minted once, in the submit handler —
+ * never during render — and the items are mapped onto them there.
+ */
 interface CategoryDraft {
-  _id:   string
+  key:   string
   name:  string
   color: string
 }
 
 interface ItemDraft {
-  _id:               string
-  label:             string
-  correctCategoryId: string
+  key:                string
+  label:              string
+  /** A CategoryDraft.key — deliberately not an id, so the two cannot be confused. */
+  correctCategoryKey: string
 }
 
 interface Props { courses: Course[] }
@@ -33,21 +52,27 @@ const CATEGORY_COLORS = [
   { label: 'Cyan',    value: '#06b6d4' },
 ]
 
-function newCat(): CategoryDraft { return { _id: crypto.randomUUID(), name: '', color: '' } }
-function newItem(): ItemDraft    { return { _id: crypto.randomUUID(), label: '', correctCategoryId: '' } }
-
 export default function NewExerciseForm({ courses }: Props) {
   const [isPending, startTransition] = useTransition()
   const [error,     setError]        = useState<string | null>(null)
   const titleRef                     = useRef<HTMLInputElement>(null)
   const instrRef                     = useRef<HTMLTextAreaElement>(null)
 
+  // Stable across SSR and hydration: React guarantees useId() matches, and the
+  // counter only advances inside the lazy initialisers below and in event
+  // handlers — never in the render body.
+  const uid = useId()
+  const seq = useRef(0)
+  const nextKey = () => `${uid}-${seq.current++}`
+  const newCat  = (): CategoryDraft => ({ key: nextKey(), name: '', color: '' })
+  const newItem = (): ItemDraft     => ({ key: nextKey(), label: '', correctCategoryKey: '' })
+
   const [courseId,    setCourseId]    = useState('')
   const [moduleId,    setModuleId]    = useState('')
   const [lessonId,    setLessonId]    = useState('')
   const [isPublished, setIsPublished] = useState(false)
-  const [categories,  setCategories]  = useState<CategoryDraft[]>([newCat(), newCat()])
-  const [items,       setItems]       = useState<ItemDraft[]>([newItem(), newItem()])
+  const [categories,  setCategories]  = useState<CategoryDraft[]>(() => [newCat(), newCat()])
+  const [items,       setItems]       = useState<ItemDraft[]>(() => [newItem(), newItem()])
 
   const selectedCourse = courses.find(c => c.id === courseId)
   const modules        = (selectedCourse?.modules ?? []).slice().sort((a, b) => a.order_index - b.order_index)
@@ -57,37 +82,56 @@ export default function NewExerciseForm({ courses }: Props) {
   function handleCourseChange(id: string) { setCourseId(id); setModuleId(''); setLessonId('') }
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
 
-  function updateCategory(idx: number, patch: Partial<CategoryDraft>) {
-    setCategories(prev => prev.map((c, i) => i === idx ? { ...c, ...patch } : c))
+  // ── Every mutation below addresses a row BY KEY, never by index ──────────
+  //
+  // Index-based removal read `categories[idx]` from the render-time array while
+  // `setCategories(prev => prev.filter((_, i) => i !== idx))` filtered the
+  // RUNNING one. Two trash clicks landing in a single React batch could then
+  // clear one category's references while removing a different category —
+  // leaving an item pointing at something that no longer exists.
+  function updateCategory(key: string, patch: Partial<CategoryDraft>) {
+    setCategories(prev => prev.map(c => c.key === key ? { ...c, ...patch } : c))
   }
-  function removeCategory(idx: number) {
-    const catId = categories[idx]._id
-    setCategories(prev => prev.filter((_, i) => i !== idx))
-    setItems(prev => prev.map(item => item.correctCategoryId === catId
-      ? { ...item, correctCategoryId: '' }
-      : item
+  function removeCategory(key: string) {
+    setCategories(prev => prev.filter(c => c.key !== key))
+    setItems(prev => prev.map(item =>
+      item.correctCategoryKey === key ? { ...item, correctCategoryKey: '' } : item
     ))
   }
 
-  function updateItem(idx: number, patch: Partial<ItemDraft>) {
-    setItems(prev => prev.map((item, i) => i === idx ? { ...item, ...patch } : item))
+  function updateItem(key: string, patch: Partial<ItemDraft>) {
+    setItems(prev => prev.map(item => item.key === key ? { ...item, ...patch } : item))
   }
-  function removeItem(idx: number) { setItems(prev => prev.filter((_, i) => i !== idx)) }
+  function removeItem(key: string) {
+    setItems(prev => prev.filter(item => item.key !== key))
+  }
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError(null)
+
+    // The ONLY place a database identity is created, and it runs in an event
+    // handler, so it can never diverge between a server and a client render.
+    const dbId = new Map<string, string>()
+    for (const c of categories) dbId.set(c.key, crypto.randomUUID())
+
     const fd = new FormData()
     fd.set('title',        titleRef.current?.value.trim() ?? '')
     fd.set('instructions', instrRef.current?.value.trim() ?? '')
     fd.set('lesson_id',    lessonId)
     fd.set('is_published', String(isPublished))
     fd.set('categories_json', JSON.stringify(categories.map((c, i) => ({
-      id: c._id, name: c.name, color: c.color, order_index: i,
+      id: dbId.get(c.key)!, name: c.name, color: c.color, order_index: i,
     }))))
     fd.set('items_json', JSON.stringify(items.map((item, i) => ({
-      id: item._id, label: item.label, correctCategoryId: item.correctCategoryId, order_index: i,
+      id:    crypto.randomUUID(),
+      label: item.label,
+      // An unset or stale key resolves to '' and the server answers with the
+      // "chaque élément doit avoir une catégorie" message, never a FK error.
+      correctCategoryId: dbId.get(item.correctCategoryKey) ?? '',
+      order_index: i,
     }))))
+
     startTransition(async () => {
       const result = await createExercise(fd)
       if (result?.error) setError(result.error)
@@ -174,16 +218,16 @@ export default function NewExerciseForm({ courses }: Props) {
 
         <div className="space-y-2">
           {categories.map((cat, ci) => (
-            <div key={cat._id} className="flex items-center gap-2">
+            <div key={cat.key} className="flex items-center gap-2">
               <GripVertical className="w-4 h-4 text-gray-300 shrink-0" />
               <input
-                type="text" value={cat.name} onChange={e => updateCategory(ci, { name: e.target.value })}
+                type="text" value={cat.name} onChange={e => updateCategory(cat.key, { name: e.target.value })}
                 placeholder={`Catégorie ${ci + 1}`}
                 className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
               <select
                 value={cat.color}
-                onChange={e => updateCategory(ci, { color: e.target.value })}
+                onChange={e => updateCategory(cat.key, { color: e.target.value })}
                 className="w-28 px-2 py-2 rounded-xl border border-gray-200 text-xs bg-white focus:border-primary outline-none transition-all"
                 aria-label="Couleur de la catégorie"
               >
@@ -195,7 +239,7 @@ export default function NewExerciseForm({ courses }: Props) {
                 <span className="w-4 h-4 rounded-full shrink-0 border border-gray-200" style={{ backgroundColor: cat.color }} />
               )}
               {categories.length > 2 && (
-                <button type="button" onClick={() => removeCategory(ci)}
+                <button type="button" onClick={() => removeCategory(cat.key)}
                   className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
@@ -217,26 +261,26 @@ export default function NewExerciseForm({ courses }: Props) {
 
         <div className="space-y-2">
           {items.map((item, ii) => (
-            <div key={item._id} className="flex items-center gap-2">
+            <div key={item.key} className="flex items-center gap-2">
               <GripVertical className="w-4 h-4 text-gray-300 shrink-0" />
               <input
-                type="text" value={item.label} onChange={e => updateItem(ii, { label: e.target.value })}
+                type="text" value={item.label} onChange={e => updateItem(item.key, { label: e.target.value })}
                 placeholder={`Élément ${ii + 1}`}
                 className="flex-1 px-3 py-2 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
               />
               <select
-                value={item.correctCategoryId}
-                onChange={e => updateItem(ii, { correctCategoryId: e.target.value })}
+                value={item.correctCategoryKey}
+                onChange={e => updateItem(item.key, { correctCategoryKey: e.target.value })}
                 className="w-44 px-2 py-2 rounded-xl border border-gray-200 text-sm bg-white focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
                 aria-label="Catégorie correcte"
               >
                 <option value="">— Catégorie —</option>
                 {categories.map(cat => (
-                  <option key={cat._id} value={cat._id}>{cat.name || `Catégorie (sans titre)`}</option>
+                  <option key={cat.key} value={cat.key}>{cat.name || `Catégorie (sans titre)`}</option>
                 ))}
               </select>
               {items.length > 2 && (
-                <button type="button" onClick={() => removeItem(ii)}
+                <button type="button" onClick={() => removeItem(item.key)}
                   className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 transition-colors">
                   <Trash2 className="w-4 h-4" />
                 </button>
