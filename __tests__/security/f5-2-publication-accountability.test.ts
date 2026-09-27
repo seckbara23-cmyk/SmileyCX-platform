@@ -456,8 +456,8 @@ describe('F-5.2 — migration numbering governance holds', () => {
     // CAT-ARCH-01 authored 056 (catalogue display order).
     expect(f.filter(x => parseInt(x, 10) > 53).sort())
       .toEqual(['054_lesson_media_derived_source.sql', '055_restrict_lesson_media_columns.sql',
-                '056_catalogue_display_order.sql'])
-    expect(Math.max(...nums)).toBe(56)
+                '056_catalogue_display_order.sql', '057_v8_registry_reorder.sql'])
+    expect(Math.max(...nums)).toBe(57)
     // F-5.2's subject is publication accountability. None of the three later
     // migrations may publish, unpublish, or re-flag a course behind its back.
     for (const later of f.filter(x => parseInt(x, 10) > 53)) {
