@@ -110,13 +110,12 @@ export default function EditQuizForm({
   }
 
   function changeQuestionType(i: number, type: QuestionType) {
+    // Built outside the updater: blankForType mints identifiers for a
+    // drag_match draft, and a state updater may run more than once.
+    const draft = blankForType(type, questions[i]?.order_index ?? i)
     setQuestions(prev => prev.map((q, idx) => {
       if (idx !== i) return q
-      const draft = blankForType(type, q.order_index ?? i)
-      draft.id          = q.id
-      draft.question    = q.question
-      draft.explanation = q.explanation
-      return draft
+      return { ...draft, id: q.id, question: q.question, explanation: q.explanation }
     }))
   }
 
@@ -139,9 +138,13 @@ export default function EditQuizForm({
   }
 
   function addDMCategory(qi: number) {
+    // UAT-FINAL-EXAM-SUBMIT-01: minted OUTSIDE the updater. React may invoke a
+    // state updater more than once, so generating an identifier in there makes
+    // the call impure for no benefit.
+    const newId = crypto.randomUUID()
     setQuestions(prev => prev.map((q, idx) => {
       if (idx !== qi) return q
-      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: crypto.randomUUID(), label: '' }] }
+      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: newId, label: '' }] }
     }))
   }
 
@@ -161,10 +164,11 @@ export default function EditQuizForm({
   }
 
   function addDMItem(qi: number) {
+    const newId = crypto.randomUUID()
     setQuestions(prev => prev.map((q, idx) => {
       if (idx !== qi) return q
       const firstCatId = (q.dm_categories ?? [])[0]?.id ?? ''
-      return { ...q, dm_items: [...(q.dm_items ?? []), { id: crypto.randomUUID(), label: '', correctCategoryId: firstCatId }] }
+      return { ...q, dm_items: [...(q.dm_items ?? []), { id: newId, label: '', correctCategoryId: firstCatId }] }
     }))
   }
 
@@ -406,7 +410,7 @@ export default function EditQuizForm({
 
         <div className="flex flex-wrap gap-2">
           {(Object.keys(TYPE_LABELS) as QuestionType[]).map(type => (
-            <button key={type} type="button" onClick={() => setQuestions(prev => [...prev, blankForType(type, prev.length)])}
+            <button key={type} type="button" onClick={() => { const draft = blankForType(type, questions.length); setQuestions(prev => [...prev, draft]) }}
               className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-dashed border-gray-200 text-xs font-semibold text-gray-500 hover:border-primary hover:text-primary transition-colors">
               <Plus className="w-3.5 h-3.5" /> {TYPE_LABELS[type]}
             </button>

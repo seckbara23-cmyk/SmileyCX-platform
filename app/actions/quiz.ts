@@ -15,7 +15,38 @@ const log = createLogger('actions/quiz')
 
 const MCAnswerSchema = z.number().int().min(0).max(10)
 const MAAnswerSchema = z.array(z.number().int().min(0).max(10))
-const DMAnswerSchema = z.record(z.string().uuid(), z.string().uuid())
+
+/**
+ * UAT-FINAL-EXAM-SUBMIT-01 — a drag_match correlation id, NOT a database key.
+ *
+ * This used to be `z.string().uuid()`, which rejected every final exam in
+ * production. The item and category ids inside a drag_match question are minted
+ * by the admin builder and stored INSIDE `quiz_questions.options` — they are not
+ * foreign keys, they index nothing, and they are compared only by equality
+ * against `quiz_questions.drag_match_answers`, which the server loads itself.
+ *
+ * The two builders disagreed on their format: `NewQuizForm` used
+ * `Math.random().toString(36)` ("8o0moanogal") while `EditQuizForm` used
+ * `crypto.randomUUID()`. All 20 drag_match questions in production were authored
+ * through the former, so the UUID constraint rejected the whole submission —
+ * Zod validates the entire object, so one such id failed an otherwise perfect
+ * 20-question exam, and the learner saw only "Données invalides.".
+ *
+ * Both builders now mint uuids, but historical ids must keep working: rewriting
+ * them in production would be a far riskier change than accepting them here.
+ *
+ * This is NOT a relaxation of anything that protects the attempt. The charset
+ * and length stay bounded, and an id the server does not recognise simply fails
+ * to match the answer key, so it scores as incorrect — scoring iterates the
+ * server-side key and looks the learner's placement up, never the reverse.
+ */
+const DmIdSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/)
+
+const DMAnswerSchema = z.record(DmIdSchema, DmIdSchema)
 
 const SubmitSchema = z.object({
   quizId:   UuidSchema,
