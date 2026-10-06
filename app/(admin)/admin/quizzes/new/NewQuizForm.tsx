@@ -27,7 +27,23 @@ interface QuestionDraft {
   dm_items?:           DragMatchItem[]
 }
 
-function genId() { return Math.random().toString(36).slice(2) }
+/**
+ * UAT-FINAL-EXAM-SUBMIT-01 — one identifier format across both quiz builders.
+ *
+ * This returned `Math.random().toString(36).slice(2)` ("8o0moanogal") while
+ * `EditQuizForm` used `crypto.randomUUID()`. The submission validator was
+ * written against the uuid form, so every final exam authored here was
+ * unsubmittable. `EditQuizForm` is the format that already matched, so this
+ * follows it rather than the other way round.
+ *
+ * Only ever called from event handlers — never from the render body, and never
+ * from a `useState` initialiser. The first question's `_id` comes from
+ * `useId()` for exactly that reason (see below): a value minted during render
+ * differs between the server pass and the hydration pass, which is how the
+ * exercise builder shipped a comparable defect in
+ * UAT-EXERCISE-CATEGORY-FK-01.
+ */
+function genId() { return crypto.randomUUID() }
 
 const TYPE_LABELS: Record<QuestionType, string> = {
   multiple_choice: 'Choix multiple',
@@ -110,12 +126,11 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   function handleModuleChange(id: string) { setModuleId(id); setLessonId('') }
 
   function addQuestion(type: QuestionType) {
-    console.log('[NewQuizForm] addQuestion called:', type)
-    setQuestions(prev => {
-      const next = [...prev, blankForType(type)]
-      console.log('[NewQuizForm] questions after add:', next.length)
-      return next
-    })
+    // The blank is built BEFORE the updater, not inside it: a state updater may
+    // be invoked more than once (React StrictMode), and minting identifiers in
+    // there makes the call impure for no benefit.
+    const blank = blankForType(type)
+    setQuestions(prev => [...prev, blank])
   }
 
   function removeQuestion(id: string) {
@@ -127,13 +142,12 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   }
 
   function changeQuestionType(id: string, type: QuestionType) {
+    // Built outside the updater for the same reason as addQuestion: no
+    // identifier is minted inside a function React may call twice.
+    const draft = blankForType(type)
     setQuestions(prev => prev.map(q => {
       if (q._id !== id) return q
-      const draft = blankForType(type)
-      draft._id         = q._id
-      draft.question    = q.question
-      draft.explanation = q.explanation
-      return draft
+      return { ...draft, _id: q._id, question: q.question, explanation: q.explanation }
     }))
   }
 
@@ -156,9 +170,10 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   }
 
   function addDMCategory(id: string) {
+    const newId = genId()
     setQuestions(prev => prev.map(q => {
       if (q._id !== id) return q
-      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: genId(), label: '' }] }
+      return { ...q, dm_categories: [...(q.dm_categories ?? []), { id: newId, label: '' }] }
     }))
   }
 
@@ -178,10 +193,11 @@ export default function NewQuizForm({ courses }: { courses: Course[] }) {
   }
 
   function addDMItem(id: string) {
+    const newId = genId()
     setQuestions(prev => prev.map(q => {
       if (q._id !== id) return q
       const firstCatId = (q.dm_categories ?? [])[0]?.id ?? ''
-      return { ...q, dm_items: [...(q.dm_items ?? []), { id: genId(), label: '', correctCategoryId: firstCatId }] }
+      return { ...q, dm_items: [...(q.dm_items ?? []), { id: newId, label: '', correctCategoryId: firstCatId }] }
     }))
   }
 
