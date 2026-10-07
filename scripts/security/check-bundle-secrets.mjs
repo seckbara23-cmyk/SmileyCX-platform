@@ -27,6 +27,10 @@ const FORBIDDEN = [
   { name: 'RESEND_API_KEY',            re: /RESEND_API_KEY/ },
   { name: 'ADMIN_EMAIL / ADMIN_USERNAME', re: /ADMIN_(EMAIL|USERNAME)/ },
   { name: 'STRIPE_SECRET_KEY',         re: /STRIPE_SECRET_KEY/ },
+  // PAY-LAUNCH-02A: every PayDunya variable is server-only. The mode flag is
+  // matched too — if the client bundle knows the mode, the resolver has been
+  // imported somewhere it must never reach.
+  { name: 'PAYDUNYA_* env var name',   re: /PAYDUNYA_(MODE|TEST_|LIVE_)/ },
 
   // ── Live credential shapes (a real key, not just its name) ────────────────
   { name: 'Anthropic key value',   re: /sk-ant-[A-Za-z0-9_-]{20,}/ },
