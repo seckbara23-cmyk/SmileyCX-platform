@@ -53,6 +53,98 @@ if (existsSync('.env.local')) {
   }
 }
 
+// ══ PayDunya configuration gate (PAY-LAUNCH-02A) ═══════════════════════════
+//
+// Deliberately placed BEFORE the Supabase placeholder short-circuit below. That
+// check exits 0 when no real project is configured, which is right for an
+// outbound probe but would silently skip these invariants on CI and local
+// builds — exactly the environments where a stray LIVE credential is most
+// likely to be introduced. These checks read only variable names and presence,
+// never a value, so they are always safe to run and never depend on a network.
+//
+// INVARIANT FOR THE CURRENT TEST PHASE: LIVE PayDunya credentials must not be
+// present at all. Absence is the control; a mode flag alone is not, because a
+// flag can be flipped by one dashboard edit while the keys sit there waiting.
+{
+  const MODES = ['test', 'live']
+  const SUFFIXES = ['MASTER_KEY', 'PRIVATE_KEY', 'TOKEN']
+  const nameFor = (mode, suffix) => `PAYDUNYA_${mode.toUpperCase()}_${suffix}`
+  const present = name => {
+    const v = process.env[name]
+    return typeof v === 'string' && v.trim().length > 0
+  }
+  const names = mode => SUFFIXES.map(s => nameFor(mode, s))
+  const countPresent = mode => names(mode).filter(present).length
+
+  const failures = []
+  const rawMode = process.env.PAYDUNYA_MODE
+  const mode = typeof rawMode === 'string' ? rawMode.trim() : undefined
+  const configured = mode !== undefined && mode.length > 0
+
+  // 1. A PayDunya credential must never be exposed to the browser.
+  const publicLeaks = Object.keys(process.env).filter(
+    k => k.startsWith('NEXT_PUBLIC_') && /PAYDUNYA/i.test(k),
+  )
+  if (publicLeaks.length > 0) {
+    failures.push(
+      `PayDunya variables exposed to the browser: ${publicLeaks.join(', ')}.\n` +
+      '    A NEXT_PUBLIC_ variable is inlined into the client bundle. Rename to a\n' +
+      '    server-only name and rotate the credential — treat it as compromised.',
+    )
+  }
+
+  // 2. Invalid mode. Not configured at all is fine: payments are not live yet.
+  if (configured && !MODES.includes(mode)) {
+    failures.push(
+      `PAYDUNYA_MODE must be exactly 'test' or 'live'.\n` +
+      '    Refusing to interpret the configured value. There is no default.',
+    )
+  }
+
+  // 3. The selected mode needs all three of ITS credentials.
+  if (configured && MODES.includes(mode)) {
+    const missing = names(mode).filter(n => !present(n))
+    if (missing.length > 0) {
+      failures.push(
+        `PAYDUNYA_MODE='${mode}' but ${missing.length} of 3 credentials for that mode\n` +
+        `    are missing: ${missing.join(', ')}.\n` +
+        '    A partial credential set is never usable.',
+      )
+    }
+  }
+
+  // 4. THE TEST-PHASE INVARIANT: a LIVE credential may exist ONLY when the mode
+  //    is explicitly 'live'. That covers PAYDUNYA_MODE='test' and an unset mode
+  //    alike — a live key sitting in the environment is one dashboard edit away
+  //    from charging real money, whatever the flag currently says, so its mere
+  //    PRESENCE is refused rather than its use.
+  const liveCount = countPresent('live')
+  if (mode !== 'live' && liveCount > 0) {
+    failures.push(
+      `LIVE PayDunya credentials are present while PAYDUNYA_MODE is ` +
+      `${configured ? `'${mode}'` : 'unset'}: ${names('live').filter(present).join(', ')}.\n` +
+      '    CX Academy is in the PayDunya TEST phase. Remove them until LIVE\n' +
+      '    activation is approved — presence alone is the risk, not use.',
+    )
+  }
+
+  if (failures.length > 0) {
+    console.error('\n✗ [PAYDUNYA_CONFIG] DEPLOYMENT BLOCKED\n')
+    for (const f of failures) console.error(`  • ${f}\n`)
+    console.error(
+      '  Reference: PAY-LAUNCH-01 architecture audit (TEST → LIVE separation).\n' +
+      '  No PayDunya value is ever printed by this gate.\n',
+    )
+    process.exit(1)
+  }
+
+  if (!configured) {
+    console.log('• PayDunya not configured (PAYDUNYA_MODE unset) — payments inactive, nothing to verify.')
+  } else {
+    console.log(`✓ PayDunya configuration verified: mode='${mode}', ${countPresent(mode)}/3 credentials for that mode, 0 live credentials present.`)
+  }
+}
+
 const url     = process.env.NEXT_PUBLIC_SUPABASE_URL
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
