@@ -78,8 +78,12 @@ describe('WC-2C — migration 055 exists, alone, as one transaction', () => {
     // 055" but "no migration above 055 gives a browser role the raw columns".
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
     expect(files.filter(f => f.startsWith('057'))).toEqual(['057_v8_registry_reorder.sql'])
+    // PAY-1 later authored 058. It revokes and re-grants — on public.payments
+    // only — so the same rule applies to it as to 056 and 057.
+    expect(files.filter(f => f.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
     const above = files.filter(f => f.endsWith('.sql') && parseInt(f, 10) > 55)
-    expect(above).toEqual(['056_catalogue_display_order.sql', '057_v8_registry_reorder.sql'])
+    expect(above).toEqual(['056_catalogue_display_order.sql', '057_v8_registry_reorder.sql',
+                           '058_payment_provider_foundation.sql'])
     for (const later of above) {
       const s = readFileSync(join(ROOT, 'supabase/migrations', later), 'utf8')
       expect(s, `${later} grants on lessons`).not.toMatch(/grant[\s\S]{0,200}on public\.lessons/i)

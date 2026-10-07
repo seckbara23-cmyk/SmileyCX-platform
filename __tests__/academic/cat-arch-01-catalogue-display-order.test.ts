@@ -69,11 +69,25 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     // CAT-ARCH-02 added 057. It is DATA ONLY: it must not redefine the view or
     // the constraint this slice created, which is what 056 owns.
     expect(files.filter(f => f.startsWith('057'))).toEqual(['057_v8_registry_reorder.sql'])
-    expect(files).toHaveLength(55)
+    // PAY-1 later authored 058 (payment provider foundation).
+    expect(files.filter(f => f.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
+    expect(files).toHaveLength(56)
     const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
     expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
     expect(m057, '057 moves a grant').not.toMatch(/^\s*(grant|revoke)\b/im)
+    // 058 grants and revokes — but only on public.payments. What 056 owns is
+    // the projection, the position constraint and the closed registry, and
+    // 058 must leave all three exactly as it found them.
+    const m058 = read('supabase/migrations/058_payment_provider_foundation.sql').replace(/--[^\n]*/g, '')
+    expect(m058, '058 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
+    expect(m058, '058 touches the position constraint')
+      .not.toMatch(/course_codes_catalogue_position_unique/i)
+    expect(m058, '058 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
+    for (const stmt of m058.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '058 grants or revokes on something other than payments')
+        .toMatch(/on public\.payments\b/i)
+    }
   })
 
   it('runs as ONE repeatable-read transaction', () => {

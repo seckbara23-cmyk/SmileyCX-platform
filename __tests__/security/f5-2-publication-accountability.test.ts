@@ -452,13 +452,15 @@ describe('F-5.2 — migration numbering governance holds', () => {
     expect(f.filter(x => x.startsWith('053'))).toHaveLength(1)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
     // 053 was the highest when F-5.2 shipped; XPA-8 WC-2 later authored 054
-    // (derived fields) and 055 (their column restriction), in that order, and
-    // CAT-ARCH-01 authored 056 (catalogue display order).
+    // (derived fields) and 055 (their column restriction), in that order,
+    // CAT-ARCH-01 authored 056 (catalogue display order), CAT-ARCH-02 057 (the
+    // V8 registry) and PAY-1 058 (the payment provider foundation).
     expect(f.filter(x => parseInt(x, 10) > 53).sort())
       .toEqual(['054_lesson_media_derived_source.sql', '055_restrict_lesson_media_columns.sql',
-                '056_catalogue_display_order.sql', '057_v8_registry_reorder.sql'])
-    expect(Math.max(...nums)).toBe(57)
-    // F-5.2's subject is publication accountability. None of the three later
+                '056_catalogue_display_order.sql', '057_v8_registry_reorder.sql',
+                '058_payment_provider_foundation.sql'])
+    expect(Math.max(...nums)).toBe(58)
+    // F-5.2's subject is publication accountability. None of the later
     // migrations may publish, unpublish, or re-flag a course behind its back.
     for (const later of f.filter(x => parseInt(x, 10) > 53)) {
       const s = stripSql(read(join(MIGRATIONS, later)))

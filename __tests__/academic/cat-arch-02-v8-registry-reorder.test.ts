@@ -67,9 +67,16 @@ describe('CAT-ARCH-02 — 057 exists, alone, as one transaction', () => {
     expect(f.filter(x => x.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(f.filter(x => x.startsWith('046'))).toEqual([])
     expect(f.filter(x => x.startsWith('051'))).toEqual([])
-    expect(f.filter(x => parseInt(x, 10) > 57)).toEqual([])
+    // PAY-1 later authored 058. 057 owns the registry; the rule is not "nothing
+    // above 057" but "nothing above 057 writes the registry behind its back".
+    expect(f.filter(x => parseInt(x, 10) > 57)).toEqual(['058_payment_provider_foundation.sql'])
+    const m058 = read('supabase/migrations/058_payment_provider_foundation.sql').replace(/--[^\n]*/g, '')
+    for (const t of ['course_codes', 'catalogues', 'courses', 'modules', 'lessons']) {
+      expect(m058, `058 writes public.${t}`)
+        .not.toMatch(new RegExp(`(insert into|update|delete from|truncate)\\s+(table\\s+)?public\\.${t}\\b`, 'i'))
+    }
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(57)
+    expect(Math.max(...nums)).toBe(58)
     expect(new Set(nums).size).toBe(nums.length)
   })
 

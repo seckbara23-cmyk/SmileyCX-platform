@@ -235,11 +235,26 @@ describe('UAT-EXERCISE-CATEGORY-FK-01 — the database contract is untouched', (
     }
   })
 
-  it('13. this fix added no migration at all', () => {
-    const { readdirSync } = require('fs') as typeof import('fs')
-    const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(n => n.endsWith('.sql'))
+  it('13. this fix added no migration; 058 came later and leaves the exercise tables alone', () => {
+    const { readdirSync, readFileSync } = require('fs') as typeof import('fs')
+    const DIR = join(ROOT, 'supabase', 'migrations')
+    const files = readdirSync(DIR).filter(n => n.endsWith('.sql'))
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums), 'a migration was added by an application-only fix').toBe(57)
-    expect(files.filter(f => f.startsWith('058'))).toEqual([])
+    // This fix was application-only. PAY-1 later authored 058 (payment provider
+    // foundation); excluding it, the set this fix shipped against is unchanged.
+    // The invariant that matters is not "no migration above 057" but that
+    // nothing above it weakens the FK this suite exists to protect.
+    const LATER = ['058_payment_provider_foundation.sql']
+    expect(files.filter(f => parseInt(f, 10) > 57)).toEqual(LATER)
+    expect(Math.max(...nums)).toBe(58)
+    for (const later of LATER) {
+      const s = readFileSync(join(DIR, later), 'utf8').replace(/--[^\n]*/g, '')
+      for (const t of ['exercises', 'exercise_categories', 'exercise_items',
+                       'exercise_submissions', 'exercise_answers']) {
+        expect(s, `${later} touches public.${t}`).not.toContain(t)
+      }
+      expect(s, `${later} alters a correct_category_id constraint`)
+        .not.toMatch(/correct_category_id/i)
+    }
   })
 })

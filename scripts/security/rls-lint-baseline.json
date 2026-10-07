@@ -33,13 +33,13 @@
       "proposed_fix": "Add WITH CHECK (user_id = auth.uid() AND status IS NOT DISTINCT FROM <current>), or drop the learner UPDATE policy entirely — enrollment writes go through service-role server actions."
     },
     "001_phase_a_rls_fix.sql::payments_update_own": {
-      "status": "LIVE — migration 011 redefines only the INSERT policies, not this one.",
-      "risk": "A learner may run UPDATE payments SET status='completed' WHERE user_id = auth.uid(). payments.status is CHECK-constrained to a value list that includes 'completed', so the write is accepted.",
-      "impact_today": "Low — payments are inactive during the pilot (FREE_ACCESS_MODE).",
-      "impact_later": "HIGH — a direct payment bypass once payment gateways are activated.",
-      "severity": "high (latent)",
-      "must_fix_before": "Activating payments / leaving pilot mode.",
-      "proposed_fix": "Drop the learner UPDATE policy — all payment mutations already run through service-role server actions (app/actions/payment.ts, lib/payments/index.ts) which bypass RLS."
+      "status": "REMEDIATED by migration 058 (PAY-LAUNCH-02B / PAY-1) — T1.",
+      "why_still_listed": "The linter analyses each migration in isolation and cannot know that a later migration drops the policy. This entry documents that limitation, exactly as profiles_update_own does for 027; do not remove it while 001 remains in history.",
+      "risk": "WAS: a learner could run UPDATE payments SET status='completed' WHERE user_id = auth.uid(). payments.status is CHECK-constrained to a value list that includes 'completed', so the write was accepted.",
+      "fix_applied": "058 closes BOTH layers, because dropping the policy alone would have left the privilege. (a) It drops payments_update_own AND the FOR ALL payments_admin_all, and adds RESTRICTIVE deny policies for UPDATE and DELETE so no permissive policy added later can re-open them. (b) It revokes every privilege except SELECT from anon and authenticated — Supabase's default grants had given both roles table-wide INSERT/UPDATE/DELETE/TRUNCATE, which no policy change removes. Learner and admin READ are preserved through payments_own; service_role keeps everything, which is what both admin surfaces and the PAY-2 webhook act through.",
+      "severity": "none (remediated, pending the 058 apply)",
+      "apply_state": "058 is NOT YET APPLIED to production. Until it is, the risk above is still live in the database — but payments remain inactive (PLATFORM_MODE=pilot, NEXT_PUBLIC_PAYMENTS_ENABLED unset) and production holds ZERO payment rows.",
+      "regression_tests": "__tests__/payments/pay-launch-02b-payment-foundation.test.ts (source invariants) plus the offline PGlite harness (behaviour, three corpora, 22 mutants)."
     },
     "018_certificates_pdf_bucket.sql::cert_service_update": {
       "status": "LIVE.",
