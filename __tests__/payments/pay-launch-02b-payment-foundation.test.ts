@@ -660,9 +660,23 @@ describe('PAY-1 · the gates recorded for after this slice', () => {
     // The reason the order is forced: under column grants `select *` fails.
     expect(GATES).toMatch(/42501/)
     expect(GATES).toMatch(/rather than narrowing/)
-    // ...and the reader it would break still reads `*`, which is why.
+
+    // PAY-1B(a) HAS NOW LANDED (PAY-LAUNCH-02C). This assertion used to read
+    // "the reader still uses select('*'), which is why the gate exists". The
+    // invariant it was protecting is the ORDERING — the application must name
+    // its columns before 059 withdraws the table-wide grant — so now that the
+    // projection has shipped, that is what it checks: the reader is explicit,
+    // it withholds both columns 059 withholds, and 059 itself is still to come.
     const confirm = read('app/(platform)/checkout/confirm/page.tsx')
-    expect(confirm).toMatch(/\.select\('\*, courses\(title, slug\)'\)/)
+    expect(confirm, 'the broad SELECT came back').not.toMatch(/\.select\('\*/)
+    expect(confirm).toMatch(/\.select\('id, reference, amount, currency, status, courses\(title\)'\)/)
+    for (const withheld of ['provider_token', 'metadata']) {
+      expect(confirm.match(/\.select\('([^']*)'\)/)?.[1], `${withheld} is still projected`)
+        .not.toContain(withheld)
+    }
+    const migrations = readdirSync(MIGRATIONS).filter(f => f.endsWith('.sql'))
+    expect(migrations.filter(f => f.startsWith('059')),
+      'the application step must precede migration 059').toEqual([])
   })
 
   it('PAY-1B(b) — migration 059 carries all seven requirements', () => {
