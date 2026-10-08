@@ -23,13 +23,41 @@ export default async function ConfirmPage({ searchParams }: Props) {
   let courseName = 'Votre formation XP Client'
 
   if (paymentId) {
+    // PAY-1B(a) — EXPLICIT PROJECTION, not `select('*')`.
+    //
+    // This is the only browser-role reader of public.payments: it runs on the
+    // USER's client, so RLS (`payments_own`: user_id = auth.uid()) is what
+    // confines it to the caller's own rows. RLS decides ROWS, not COLUMNS —
+    // `select('*')` therefore returned every column of that row, which from
+    // PAY-2 onward would include `provider_token`, and already includes the
+    // free-form `metadata` jsonb that PAY-2 will fill with provider payloads.
+    //
+    // Migration 059 converts the browser roles' table-wide SELECT into an
+    // explicit column allowlist that excludes both. Under column-level grants
+    // `select('*')` FAILS with 42501 rather than narrowing (055 §1), so this
+    // projection must land FIRST or 059 breaks this page. Hence PAY-1B(a).
+    //
+    // Exactly the five fields rendered below, plus the course title: `status`
+    // (the three presentation branches and the Statut line), `reference` and
+    // `amount`/`currency` (the receipt block), and `id` — the row's identity,
+    // which the caller already supplied as the `payment` query parameter, so
+    // it discloses nothing new. `courses.slug` was selected and never read.
     const { data } = await supabase
       .from('payments')
-      .select('*, courses(title, slug)')
+      .select('id, reference, amount, currency, status, courses(title)')
       .eq('id', paymentId)
       .single()
     payment = data
-    if (data?.courses) courseName = (data.courses as { title: string }).title
+    // `courses` is a MANY-TO-ONE embed (payments.course_id -> courses.id), so
+    // PostgREST returns a single object — verified GET-only against the live
+    // database, where the analogous enrollments embed yields
+    // `{"title":"…"}`, not an array. supabase-js types it as an array because
+    // this project has no generated `Database` types and so cannot infer
+    // cardinality from the select string; with `select('*')` it inferred
+    // nothing at all, which is why the narrower cast compiled before. The
+    // `unknown` hop closes that static gap and changes no runtime shape. If it
+    // were ever wrong, `courseName` simply keeps its default.
+    if (data?.courses) courseName = (data.courses as unknown as { title: string }).title
   }
 
   const status = payment?.status
