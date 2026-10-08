@@ -339,14 +339,15 @@ describe('CAT-1 — the database remains the final authority', () => {
     const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(f => f.endsWith('.sql'))
     // CAT-1 shipped against 50 migrations. XPA-8 later authored the reserved 050
     // (withdrawal contract), 054 (derived media fields) and 055 (their column
-    // restriction), and CAT-ARCH-01 authored 056 (catalogue display order);
-    // excluding those four, the set CAT-1 saw is unchanged.
+    // restriction), CAT-ARCH-01 authored 056 (catalogue display order),
+    // CAT-ARCH-02 057 (the V8 registry) and PAY-1 058 (the payment provider
+    // foundation); excluding those six, the set CAT-1 saw is unchanged.
     const LATER = ['050_withdrawal_contract.sql', '054_lesson_media_derived_source.sql',
                    '055_restrict_lesson_media_columns.sql', '056_catalogue_display_order.sql',
-                   '057_v8_registry_reorder.sql']
+                   '057_v8_registry_reorder.sql', '058_payment_provider_foundation.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(57)
+    expect(Math.max(...nums)).toBe(58)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
@@ -364,5 +365,20 @@ describe('CAT-1 — the database remains the final authority', () => {
       expect(m057, `057 writes public.${t}`)
         .not.toMatch(new RegExp(`(insert into|update|delete from)\\s+public\\.${t}\\b`, 'i'))
     expect(m057, '057 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
+    // 058 writes NO table at all — it is schema and authority only — so
+    // `courses.code` is still assigned in exactly one place, the Admin form.
+    //
+    // String literals and quoted identifiers are blanked as well as comments,
+    // and the DML patterns are anchored to syntax rather than to bare keywords:
+    // 058 legitimately contains the WORD "update" six times — as the privilege
+    // name 'UPDATE', as the policy `payments_no_browser_update`, and in
+    // `as restrictive for update` — none of which writes anything.
+    const m058 = read('supabase/migrations/058_payment_provider_foundation.sql')
+      .replace(/--[^\n]*/g, '')
+      .replace(/'(?:[^']|'')*'/g, "''")
+      .replace(/"[^"]*"/g, '""')
+    expect(m058, '058 must not write any table')
+      .not.toMatch(/\binsert\s+into\b|\bupdate\s+[\w.]+\s+set\b|\bdelete\s+from\b|\btruncate\b/i)
+    expect(m058, '058 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
   })
 })
