@@ -354,26 +354,32 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     // 058, so the rule is not "no migration above 057" but "the only migration
     // above 057 is PAY-1's, and it does not do 02A's job or 02's".
     expect(files.filter(f => parseInt(f, 10) > 57))
-      .toEqual(['058_payment_provider_foundation.sql'])
-    expect(Math.max(...nums)).toBe(58)
-    expect(files.filter(f => f.startsWith('059'))).toEqual([])
+      .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql'])
+    expect(Math.max(...nums)).toBe(59)
+    expect(files.filter(f => f.startsWith('060'))).toEqual([])
 
-    // 058 is schema and authority only. The TEST/LIVE boundary stays in the
-    // application module this slice owns: no credential, no endpoint, no key
-    // may appear in SQL, where it would be committed in clear text.
-    const m058 = read('supabase/migrations/058_payment_provider_foundation.sql')
-    for (const forbidden of [
+    // NEITHER payment migration may carry PayDunya API material. The TEST/LIVE
+    // boundary stays in the application module this slice owns: no credential,
+    // no endpoint and no key may appear in SQL, where it would be committed in
+    // clear text and live in history for good.
+    const FORBIDDEN = [
       /PAYDUNYA_(MODE|TEST_|LIVE_)/,        // an environment variable name
       /MASTER_KEY|PRIVATE_KEY/i,            // a credential of any kind
       /https?:\/\//,                        // an endpoint
       /paydunya\.com/i,
-    ]) {
-      expect(m058, `058 contains PayDunya API material: ${forbidden}`).not.toMatch(forbidden)
+      /NEXT_PUBLIC_PAYMENTS_ENABLED/,       // nor may SQL flip the feature flag
+    ]
+    for (const name of ['058_payment_provider_foundation.sql',
+                        '059_payment_column_select_security.sql']) {
+      const sql = read(`supabase/migrations/${name}`)
+      for (const forbidden of FORBIDDEN) {
+        expect(sql, `${name} contains PayDunya API material: ${forbidden}`).not.toMatch(forbidden)
+      }
     }
-    // Nor may it flip the feature flag or reach for the configuration module.
-    expect(m058).not.toMatch(/NEXT_PUBLIC_PAYMENTS_ENABLED/)
-    // It may NAME the resolver in prose, but the mode vocabulary it enforces
+
+    // 058 may NAME the resolver in prose, but the mode vocabulary it enforces
     // must be exactly the one PAYDUNYA_MODES declares — the two layers agree.
+    const m058 = read('supabase/migrations/058_payment_provider_foundation.sql')
     expect(m058).toMatch(/provider_mode in \('test', 'live'\)/)
     expect([...PAYDUNYA_MODES]).toEqual(['test', 'live'])
   })

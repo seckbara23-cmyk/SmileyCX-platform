@@ -103,11 +103,17 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
   it('058 is exactly this migration, and nothing sits above it', () => {
     const f = files()
     expect(f.filter(x => x.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
-    expect(f.filter(x => parseInt(x, 10) > 58)).toEqual([])
+    // PAY-1B(b) later authored 059 — a privilege slice that must not alter
+    // the schema or the policy set 058 established.
+    expect(f.filter(x => parseInt(x, 10) > 58)).toEqual(['059_payment_column_select_security.sql'])
+    const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
+      .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
+    expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
+    expect(m059, '059 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(58)
+    expect(Math.max(...nums)).toBe(59)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -674,9 +680,21 @@ describe('PAY-1 · the gates recorded for after this slice', () => {
       expect(confirm.match(/\.select\('([^']*)'\)/)?.[1], `${withheld} is still projected`)
         .not.toContain(withheld)
     }
+    // THE ORDERING IS NOW COMPLETE. This used to assert 059 did not exist
+    // yet — the application step had to come first. It has, and PAY-1B(b) has
+    // since authored 059, so what remains to assert is that 059 withholds
+    // exactly the two columns and that the remaining ordering constraint
+    // (narrow the read before PAY-2 writes a token) is enforced by 059 itself.
     const migrations = readdirSync(MIGRATIONS).filter(f => f.endsWith('.sql'))
-    expect(migrations.filter(f => f.startsWith('059')),
-      'the application step must precede migration 059').toEqual([])
+    expect(migrations.filter(f => f.startsWith('059'))).toEqual(['059_payment_column_select_security.sql'])
+    const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
+    const granted = /grant select \(([\s\S]*?)\) on public\.payments to authenticated;/i
+      .exec(m059.replace(/--[^\n]*/g, ''))?.[1].split(',').map(s => s.trim()).filter(Boolean) ?? []
+    expect(granted.sort()).toEqual(['amount', 'course_id', 'currency', 'id', 'reference', 'status'])
+    for (const withheld of ['provider_token', 'metadata']) {
+      expect(granted, `059 still grants ${withheld}`).not.toContain(withheld)
+    }
+    expect(m059, '059 must refuse once a token exists').toMatch(/already carry a provider_token/)
   })
 
   it('PAY-1B(b) — migration 059 carries all seven requirements', () => {

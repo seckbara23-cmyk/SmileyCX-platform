@@ -244,9 +244,9 @@ describe('UAT-EXERCISE-CATEGORY-FK-01 — the database contract is untouched', (
     // foundation); excluding it, the set this fix shipped against is unchanged.
     // The invariant that matters is not "no migration above 057" but that
     // nothing above it weakens the FK this suite exists to protect.
-    const LATER = ['058_payment_provider_foundation.sql']
+    const LATER = ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql']
     expect(files.filter(f => parseInt(f, 10) > 57)).toEqual(LATER)
-    expect(Math.max(...nums)).toBe(58)
+    expect(Math.max(...nums)).toBe(59)
     for (const later of LATER) {
       const s = readFileSync(join(DIR, later), 'utf8').replace(/--[^\n]*/g, '')
       for (const t of ['exercises', 'exercise_categories', 'exercise_items',

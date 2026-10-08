@@ -340,14 +340,16 @@ describe('CAT-1 — the database remains the final authority', () => {
     // CAT-1 shipped against 50 migrations. XPA-8 later authored the reserved 050
     // (withdrawal contract), 054 (derived media fields) and 055 (their column
     // restriction), CAT-ARCH-01 authored 056 (catalogue display order),
-    // CAT-ARCH-02 057 (the V8 registry) and PAY-1 058 (the payment provider
-    // foundation); excluding those six, the set CAT-1 saw is unchanged.
+    // CAT-ARCH-02 057 (the V8 registry), PAY-1 058 (the payment provider
+    // foundation) and PAY-1B(b) 059 (payment column SELECT security);
+    // excluding those seven, the set CAT-1 saw is unchanged.
     const LATER = ['050_withdrawal_contract.sql', '054_lesson_media_derived_source.sql',
                    '055_restrict_lesson_media_columns.sql', '056_catalogue_display_order.sql',
-                   '057_v8_registry_reorder.sql', '058_payment_provider_foundation.sql']
+                   '057_v8_registry_reorder.sql', '058_payment_provider_foundation.sql',
+                   '059_payment_column_select_security.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(58)
+    expect(Math.max(...nums)).toBe(59)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
@@ -380,5 +382,13 @@ describe('CAT-1 — the database remains the final authority', () => {
     expect(m058, '058 must not write any table')
       .not.toMatch(/\binsert\s+into\b|\bupdate\s+[\w.]+\s+set\b|\bdelete\s+from\b|\btruncate\b/i)
     expect(m058, '058 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
+    // 059 moves SELECT privileges on public.payments and nothing else: no DML,
+    // and no statement that could reach a course at all.
+    const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
+      .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
+    expect(m059, '059 must not write any table')
+      .not.toMatch(/\binsert\s+into\b|\bupdate\s+[\w.]+\s+set\b|\bdelete\s+from\b|\btruncate\b/i)
+    expect(m059, '059 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
+    expect(m059, '059 must not touch public.courses').not.toMatch(/on public\.courses\b/i)
   })
 })

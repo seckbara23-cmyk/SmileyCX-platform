@@ -71,7 +71,9 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(files.filter(f => f.startsWith('057'))).toEqual(['057_v8_registry_reorder.sql'])
     // PAY-1 later authored 058 (payment provider foundation).
     expect(files.filter(f => f.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
-    expect(files).toHaveLength(56)
+    // PAY-1B(b) later authored 059 (payment column SELECT security).
+    expect(files.filter(f => f.startsWith('059'))).toEqual(['059_payment_column_select_security.sql'])
+    expect(files).toHaveLength(57)
     const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
     expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
@@ -86,6 +88,17 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(m058, '058 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
     for (const stmt of m058.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
       expect(stmt, '058 grants or revokes on something other than payments')
+        .toMatch(/on public\.payments\b/i)
+    }
+    // 059 is a privilege slice, so the same rule applies to it: the projection,
+    // the position constraint and the closed registry are 056's, not its.
+    const m059 = read('supabase/migrations/059_payment_column_select_security.sql').replace(/--[^\n]*/g, '')
+    expect(m059, '059 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
+    expect(m059, '059 touches the position constraint')
+      .not.toMatch(/course_codes_catalogue_position_unique/i)
+    expect(m059, '059 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
+    for (const stmt of m059.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '059 grants or revokes on something other than payments')
         .toMatch(/on public\.payments\b/i)
     }
   })

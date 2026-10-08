@@ -267,13 +267,38 @@ describe('PAY-1B(a) · 9-10. compatibility with 058 today and 059 next', () => {
     expect(note).toMatch(/ONLY AFTER PAY-1B MAY PAY-2 WRITE provider_token/)
   })
 
-  it('this slice changed no migration: 058 is intact and 059 does not exist', () => {
+  it('PAY-1B(a) itself added no migration; 059 came later, and FITS this projection', () => {
     const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(f => f.endsWith('.sql'))
-    expect(files.filter(f => f.startsWith('059'))).toEqual([])
-    expect(files.filter(f => parseInt(f, 10) > 58)).toEqual([])
     expect(files.filter(f => f.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
+    // This assertion used to read "059 does not exist", which encoded the
+    // ORDERING: the application had to name its columns before the grant was
+    // narrowed. It did, and PAY-1B(b) has since authored 059 — so what is worth
+    // asserting now is the thing that ordering was protecting, namely that the
+    // allowlist 059 grants actually covers what this page asks for. If the two
+    // ever drift, this fails here instead of as a 42501 in production.
+    expect(files.filter(f => parseInt(f, 10) > 58))
+      .toEqual(['059_payment_column_select_security.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(58)
+    expect(Math.max(...nums)).toBe(59)
+
+    const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    const granted = /grant select \(([\s\S]*?)\) on public\.payments to authenticated;/i
+      .exec(m059)?.[1].split(',').map(s => s.trim()).filter(Boolean) ?? []
+    expect(granted.length).toBeGreaterThan(0)
+    // Every plain column this page projects must be granted...
+    for (const c of COLUMNS) {
+      expect(granted, `this page selects ${c}, which 059 would withhold → 42501`).toContain(c)
+    }
+    // ...and the FK the `courses(title)` embed joins through, which the page
+    // never names and PostgREST cannot resolve without.
+    expect(granted, 'courses(title) joins through course_id').toContain('course_id')
+    // The two columns 059 exists to withhold stay withheld, and this page
+    // asks for neither.
+    for (const withheld of EXCLUDED_BY_059) {
+      expect(granted, `059 grants ${withheld}`).not.toContain(withheld)
+      expect(COLUMNS).not.toContain(withheld)
+    }
   })
 })
 
