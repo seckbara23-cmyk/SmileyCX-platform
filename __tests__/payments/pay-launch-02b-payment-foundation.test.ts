@@ -514,17 +514,30 @@ describe('PAY-1 · 6/7/8. T1: no browser role may mutate a payment', () => {
       .not.toMatch(/revoke[\s\S]{0,80}service_role/i)
   })
 
-  it('the admin surfaces that write payments use the service-role client', () => {
+  it('the admin surfaces that touch payments use the service-role client', () => {
     // The reason withdrawing browser-role writes is safe: nothing used them.
+    //
+    // PAY-2C-0 RE-EXPRESSED this. It used to require that the admin payments
+    // ACTION construct the service-role client, because that action wrote
+    // `payments.status = 'completed'`. It no longer writes anything: the write
+    // created an ENROLLMENT and no entitlement, so the learner paid and got
+    // nothing (XPA-6B: `has_course_access()` reads entitlements alone). The
+    // claim is therefore STRENGTHENED — the action must now construct NO client
+    // at all, which is a stricter statement than "it uses the admin client".
     const action = read('app/(admin)/admin/payments/actions.ts')
-    expect(action).toMatch(/createAdminClient/)
     expect(action).toMatch(/requirePlatformAdmin/)
+    expect(action, 'the disabled action must construct no Supabase client')
+      .not.toMatch(/createAdminClient|createClient/)
     expect(action, 'the admin action must not use the user-scoped client')
       .not.toMatch(/from '@\/lib\/supabase\/server'/)
+    // The listing page still reads payments, and still only with the admin client.
     expect(read('app/(admin)/admin/payments/page.tsx')).toMatch(/createAdminClient/)
+    // Payment CREATION is untouched by PAY-2C-0 and still on the admin client.
     const create = read('app/actions/payment.ts')
     expect(create, 'payment creation must stay on the admin client').toMatch(/createAdminClient/)
     expect(create).toMatch(/\.from\('payments'\)\s*\n?\s*\.insert/)
+    // ...and it remains the ONLY payments mutation in the codebase.
+    expect(create).not.toMatch(/status:\s*'completed'/)
   })
 
   it('the RLS lint baseline records 058 as the supersession, and still tracks 001', () => {
