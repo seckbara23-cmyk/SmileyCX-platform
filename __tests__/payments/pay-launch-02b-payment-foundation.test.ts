@@ -104,16 +104,23 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     const f = files()
     expect(f.filter(x => x.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
     // PAY-1B(b) later authored 059 — a privilege slice that must not alter
-    // the schema or the policy set 058 established.
-    expect(f.filter(x => parseInt(x, 10) > 58)).toEqual(['059_payment_column_select_security.sql'])
+    // the schema or the policy set 058 established — and PAY-2B 060, a schema
+    // slice that MAY add columns but must leave that policy set alone.
+    expect(f.filter(x => parseInt(x, 10) > 58))
+      .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql'])
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
     expect(m059, '059 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
+      .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
+    expect(m060, '060 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    expect(m060, '060 must not drop an index 058 created').not.toMatch(/drop\s+index/i)
+    expect(m060, '060 must not re-grant a payment privilege').not.toMatch(/^\s*(grant|revoke)\b/im)
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(59)
+    expect(Math.max(...nums)).toBe(60)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -687,6 +694,14 @@ describe('PAY-1 · the gates recorded for after this slice', () => {
     // (narrow the read before PAY-2 writes a token) is enforced by 059 itself.
     const migrations = readdirSync(MIGRATIONS).filter(f => f.endsWith('.sql'))
     expect(migrations.filter(f => f.startsWith('059'))).toEqual(['059_payment_column_select_security.sql'])
+    // PAY-2B's 060 inherits that remaining ordering constraint and restates it:
+    // the zero-token contract is now enforced by TWO migrations, so a token
+    // written before PAY-2C stops the apply rather than slipping through.
+    const m060z = read('supabase/migrations/060_payment_completion_contract.sql')
+    expect(m060z, '060 must also refuse once a token exists')
+      .toMatch(/already carry a provider_token/)
+    expect(m060z, '060 must state the zero-token rollout contract')
+      .toMatch(/zero tokens before PAY-2C/)
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
     const granted = /grant select \(([\s\S]*?)\) on public\.payments to authenticated;/i
       .exec(m059.replace(/--[^\n]*/g, ''))?.[1].split(',').map(s => s.trim()).filter(Boolean) ?? []

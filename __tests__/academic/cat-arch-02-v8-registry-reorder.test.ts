@@ -67,11 +67,14 @@ describe('CAT-ARCH-02 — 057 exists, alone, as one transaction', () => {
     expect(f.filter(x => x.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(f.filter(x => x.startsWith('046'))).toEqual([])
     expect(f.filter(x => x.startsWith('051'))).toEqual([])
-    // PAY-1 later authored 058. 057 owns the registry; the rule is not "nothing
-    // above 057" but "nothing above 057 writes the registry behind its back".
+    // PAY-1 later authored 058, PAY-1B(b) 059 and PAY-2B 060. 057 owns the
+    // registry; the rule is not "nothing above 057" but "nothing above 057
+    // writes the registry behind its back".
     expect(f.filter(x => parseInt(x, 10) > 57))
-      .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql'])
-    for (const later of ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql']) {
+      .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
+                '060_payment_completion_contract.sql'])
+    for (const later of ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
+                         '060_payment_completion_contract.sql']) {
       const m = read('supabase/migrations/' + later).replace(/--[^\n]*/g, '')
       for (const t of ['course_codes', 'catalogues', 'courses', 'modules', 'lessons']) {
         expect(m, `${later} writes public.${t}`)
@@ -79,7 +82,7 @@ describe('CAT-ARCH-02 — 057 exists, alone, as one transaction', () => {
       }
     }
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(59)
+    expect(Math.max(...nums)).toBe(60)
     expect(new Set(nums).size).toBe(nums.length)
   })
 

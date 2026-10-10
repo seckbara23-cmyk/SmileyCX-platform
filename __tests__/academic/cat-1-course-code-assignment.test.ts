@@ -341,15 +341,17 @@ describe('CAT-1 — the database remains the final authority', () => {
     // (withdrawal contract), 054 (derived media fields) and 055 (their column
     // restriction), CAT-ARCH-01 authored 056 (catalogue display order),
     // CAT-ARCH-02 057 (the V8 registry), PAY-1 058 (the payment provider
-    // foundation) and PAY-1B(b) 059 (payment column SELECT security);
-    // excluding those seven, the set CAT-1 saw is unchanged.
+    // foundation), PAY-1B(b) 059 (payment column SELECT security) and PAY-2B
+    // 060 (the payment completion contract); excluding those eight, the set
+    // CAT-1 saw is unchanged.
     const LATER = ['050_withdrawal_contract.sql', '054_lesson_media_derived_source.sql',
                    '055_restrict_lesson_media_columns.sql', '056_catalogue_display_order.sql',
                    '057_v8_registry_reorder.sql', '058_payment_provider_foundation.sql',
-                   '059_payment_column_select_security.sql']
+                   '059_payment_column_select_security.sql',
+                   '060_payment_completion_contract.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(59)
+    expect(Math.max(...nums)).toBe(60)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
@@ -390,5 +392,14 @@ describe('CAT-1 — the database remains the final authority', () => {
       .not.toMatch(/\binsert\s+into\b|\bupdate\s+[\w.]+\s+set\b|\bdelete\s+from\b|\btruncate\b/i)
     expect(m059, '059 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
     expect(m059, '059 must not touch public.courses').not.toMatch(/on public\.courses\b/i)
+    // 060 adds payment columns, a status vocabulary and an index. It writes no
+    // table at all, so it cannot assign a course code either — and it names
+    // public.courses only as an FK target it asserts is still present.
+    const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
+      .replace(/--[^\n]*/g, '')
+    expect(m060, '060 must not write any table')
+      .not.toMatch(/(insert into|update|delete from|truncate)\s+(table\s+)?public\./i)
+    expect(m060, '060 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
+    expect(m060, '060 must not alter public.courses').not.toMatch(/alter table (public\.)?courses\b/i)
   })
 })

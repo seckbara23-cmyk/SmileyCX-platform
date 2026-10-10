@@ -351,14 +351,16 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(f => f.endsWith('.sql'))
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
     // 02A itself shipped against 57 and authored nothing. PAY-1 later authored
-    // 058, so the rule is not "no migration above 057" but "the only migration
-    // above 057 is PAY-1's, and it does not do 02A's job or 02's".
+    // 058, PAY-1B(b) 059 and PAY-2B 060, so the rule is not "no migration above
+    // 057" but "every migration above 057 is a payment slice that does not do
+    // 02A's job or 02's". 061 is PAY-2C's and does not exist yet.
     expect(files.filter(f => parseInt(f, 10) > 57))
-      .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql'])
-    expect(Math.max(...nums)).toBe(59)
-    expect(files.filter(f => f.startsWith('060'))).toEqual([])
+      .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
+                '060_payment_completion_contract.sql'])
+    expect(Math.max(...nums)).toBe(60)
+    expect(files.filter(f => f.startsWith('061')), '061 is PAY-2C, not this slice').toEqual([])
 
-    // NEITHER payment migration may carry PayDunya API material. The TEST/LIVE
+    // NO payment migration may carry PayDunya API material. The TEST/LIVE
     // boundary stays in the application module this slice owns: no credential,
     // no endpoint and no key may appear in SQL, where it would be committed in
     // clear text and live in history for good.
@@ -370,7 +372,8 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
       /NEXT_PUBLIC_PAYMENTS_ENABLED/,       // nor may SQL flip the feature flag
     ]
     for (const name of ['058_payment_provider_foundation.sql',
-                        '059_payment_column_select_security.sql']) {
+                        '059_payment_column_select_security.sql',
+                        '060_payment_completion_contract.sql']) {
       const sql = read(`supabase/migrations/${name}`)
       for (const forbidden of FORBIDDEN) {
         expect(sql, `${name} contains PayDunya API material: ${forbidden}`).not.toMatch(forbidden)

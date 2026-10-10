@@ -73,7 +73,9 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(files.filter(f => f.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
     // PAY-1B(b) later authored 059 (payment column SELECT security).
     expect(files.filter(f => f.startsWith('059'))).toEqual(['059_payment_column_select_security.sql'])
-    expect(files).toHaveLength(57)
+    // PAY-2B later authored 060 (the payment completion contract).
+    expect(files.filter(f => f.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
+    expect(files).toHaveLength(58)
     const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
     expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
@@ -101,6 +103,16 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
       expect(stmt, '059 grants or revokes on something other than payments')
         .toMatch(/on public\.payments\b/i)
     }
+    // 060 is a schema slice on public.payments. The same rule applies: the
+    // projection, the position constraint and the catalogue view are 056's.
+    const m060 = read('supabase/migrations/060_payment_completion_contract.sql').replace(/--[^\n]*/g, '')
+    expect(m060, '060 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
+    expect(m060, '060 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
+    expect(m060, '060 alters a table other than payments')
+      .not.toMatch(/alter table (?!public\.payments\b)/i)
+    // 060 issues no privilege statement at all, which this asserts rather than
+    // assumes: a grant here would be outside its mandate as well as 056's.
+    expect(m060.match(/^\s*(grant|revoke)\b/gim) ?? [], '060 issues a privilege statement').toEqual([])
   })
 
   it('runs as ONE repeatable-read transaction', () => {

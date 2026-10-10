@@ -78,11 +78,22 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
   it('059 is exactly this migration, and nothing sits above it', () => {
     const f = readdirSync(MIGRATIONS).filter(x => x.endsWith('.sql'))
     expect(f.filter(x => x.startsWith('059'))).toEqual(['059_payment_column_select_security.sql'])
-    expect(f.filter(x => parseInt(x, 10) > 59)).toEqual([])
+    // PAY-2B later authored 060. It adds two columns and must NOT grant them:
+    // that a column-level grant does not extend to a column added after it is
+    // precisely 059's fail-closed claim, and 060 is its first real test.
+    expect(f.filter(x => parseInt(x, 10) > 59)).toEqual(['060_payment_completion_contract.sql'])
+    const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    expect(m060.match(/^\s*(grant|revoke)\b/gim) ?? [],
+      '060 issues a privilege statement, so 059 no longer owns this allowlist').toEqual([])
+    for (const withheld of DENY) {
+      expect(m060, `060 grants the withheld column ${withheld}`)
+        .not.toMatch(new RegExp(`grant select[^;]*\\b${withheld}\\b`, 'i'))
+    }
     expect(f.filter(x => x.startsWith('046'))).toEqual([])
     expect(f.filter(x => x.startsWith('051'))).toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(59)
+    expect(Math.max(...nums)).toBe(60)
     expect(new Set(nums).size).toBe(nums.length)
   })
 
