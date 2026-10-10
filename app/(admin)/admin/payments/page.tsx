@@ -1,7 +1,12 @@
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { activateEnrollment } from './actions'
 import type { Metadata } from 'next'
+
+// PAY-2C-0. `activateEnrollment` is deliberately NOT imported any more. It used
+// to mark a payment completed and create an ENROLLMENT, which since XPA-6B
+// authorizes nothing — the learner paid, the payment read "Confirmé", and the
+// course stayed shut. This page now reads payments and nothing else; the action
+// itself refuses, so a stale page cannot complete a payment either.
 
 export const metadata: Metadata = { title: 'Admin — Paiements' }
 
@@ -49,6 +54,28 @@ export default async function AdminPaymentsPage() {
         </div>
       </div>
 
+      {/* PAY-2C-0. Stated on the page, not only in the code, because the person
+          who used to press "Activer" needs to know why it is gone and what to
+          do instead. */}
+      <div
+        role="status"
+        className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900"
+      >
+        <p className="font-semibold">Activation manuelle des paiements indisponible</p>
+        <p className="mt-1 text-amber-800">
+          Le bouton « Activer » a été retiré : il marquait le paiement comme confirmé
+          et créait une inscription, sans accorder le droit d&apos;accès à la formation.
+          L&apos;apprenant payait et n&apos;obtenait rien. L&apos;activation sera rétablie avec
+          l&apos;intégration sécurisée PayDunya, qui confirmera chaque paiement auprès du
+          prestataire avant d&apos;accorder l&apos;accès.
+        </p>
+        <p className="mt-1 text-amber-800">
+          Pour accorder un accès dès maintenant, utilisez{' '}
+          <span className="font-semibold">Admin → Accès</span> : la demande y est
+          vérifiée, tracée et limitée en débit.
+        </p>
+      </div>
+
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
         {!payments?.length ? (
           <p className="text-sm text-gray-400 text-center py-16">Aucun paiement pour l&apos;instant.</p>
@@ -83,16 +110,12 @@ export default async function AdminPaymentsPage() {
                     <span className="text-xs text-gray-400">{new Date(p.created_at).toLocaleDateString('fr-FR')}</span>
                     <div className="flex gap-1">
                       {p.status === 'pending' && (
-                        <form action={activateEnrollment}>
-                          <input type="hidden" name="paymentId" value={p.id} />
-                          <button
-                            type="submit"
-                            className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors"
-                            title="Activer l'inscription"
-                          >
-                            Activer
-                          </button>
-                        </form>
+                        <span
+                          className="text-xs px-2 py-1 bg-gray-100 text-gray-400 rounded"
+                          title="Indisponible : l'activation manuelle accordait une inscription sans droit d'accès. En attente de l'intégration sécurisée PayDunya."
+                        >
+                          Indisponible
+                        </span>
                       )}
                     </div>
                   </div>
@@ -110,16 +133,9 @@ export default async function AdminPaymentsPage() {
                           {p.status}
                         </span>
                         {p.status === 'pending' && (
-                          <form action={activateEnrollment} className="mt-1">
-                            <input type="hidden" name="paymentId" value={p.id} />
-                            <button
-                              type="submit"
-                              className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded hover:bg-green-200 transition-colors"
-                              title="Activer l'inscription"
-                            >
-                              Activer
-                            </button>
-                          </form>
+                          <span className="mt-1 inline-block text-xs px-2 py-1 bg-gray-100 text-gray-400 rounded">
+                            Indisponible
+                          </span>
                         )}
                       </div>
                     </div>
