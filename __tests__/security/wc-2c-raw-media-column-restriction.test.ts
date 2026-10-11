@@ -88,10 +88,14 @@ describe('WC-2C — migration 055 exists, alone, as one transaction', () => {
     // PAY-2B authored 060. It issues no privilege statement at all, so the
     // rule holds trivially — which the loop below verifies rather than assumes.
     expect(files.filter(f => f.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
+    // AUDIT-SEC-01 authored 061. It DOES issue privilege statements, which is
+    // precisely what this suite guards against — so the loop below checks it
+    // hands no raw media column back, and it names audit_log only.
+    expect(files.filter(f => f.startsWith('061'))).toEqual(['061_audit_log_privilege_hardening.sql'])
     const above = files.filter(f => f.endsWith('.sql') && parseInt(f, 10) > 55)
     expect(above).toEqual(['056_catalogue_display_order.sql', '057_v8_registry_reorder.sql',
                            '058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
-                           '060_payment_completion_contract.sql'])
+                           '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql'])
     for (const later of above) {
       const s = readFileSync(join(ROOT, 'supabase/migrations', later), 'utf8')
       expect(s, `${later} grants on lessons`).not.toMatch(/grant[\s\S]{0,200}on public\.lessons/i)

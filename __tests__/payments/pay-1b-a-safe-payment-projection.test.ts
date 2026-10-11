@@ -277,9 +277,10 @@ describe('PAY-1B(a) · 9-10. compatibility with 058 today and 059 next', () => {
     // allowlist 059 grants actually covers what this page asks for. If the two
     // ever drift, this fails here instead of as a 42501 in production.
     expect(files.filter(f => parseInt(f, 10) > 58))
-      .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql'])
+      .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
+                '061_audit_log_privilege_hardening.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(60)
+    expect(Math.max(...nums)).toBe(61)
     // PAY-2B's 060 adds two payment columns. It issues NO privilege statement,
     // so the allowlist this page depends on is unchanged — and this page must
     // not start reading either new column, which would be a 42501.
@@ -289,6 +290,14 @@ describe('PAY-1B(a) · 9-10. compatibility with 058 today and 059 next', () => {
       '060 changes a payment privilege, so this allowlist check is stale').toEqual([])
     for (const added of ['failure_reason', 'last_ipn_at']) {
       expect(COLUMNS, `this page now selects ${added}, which no role grants`).not.toContain(added)
+    }
+    // AUDIT-SEC-01's 061 issues privilege statements, but on audit_log only —
+    // so the payment allowlist this page depends on is still 059's.
+    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '061 changes a privilege on a table other than audit_log')
+        .toMatch(/on public\.audit_log\b/i)
     }
 
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')

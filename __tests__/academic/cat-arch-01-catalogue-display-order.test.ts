@@ -75,7 +75,9 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(files.filter(f => f.startsWith('059'))).toEqual(['059_payment_column_select_security.sql'])
     // PAY-2B later authored 060 (the payment completion contract).
     expect(files.filter(f => f.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
-    expect(files).toHaveLength(58)
+    // AUDIT-SEC-01 later authored 061 (audit_log privilege hardening).
+    expect(files.filter(f => f.startsWith('061'))).toEqual(['061_audit_log_privilege_hardening.sql'])
+    expect(files).toHaveLength(59)
     const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
     expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
@@ -113,6 +115,15 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     // 060 issues no privilege statement at all, which this asserts rather than
     // assumes: a grant here would be outside its mandate as well as 056's.
     expect(m060.match(/^\s*(grant|revoke)\b/gim) ?? [], '060 issues a privilege statement').toEqual([])
+    // 061 DOES issue privilege statements — two — but only on audit_log. The
+    // rule for this suite is that the catalogue projection stays 056's.
+    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql').replace(/--[^\n]*/g, '')
+    expect(m061, '061 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
+    expect(m061, '061 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
+    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '061 grants or revokes on something other than audit_log')
+        .toMatch(/on public\.audit_log\b/i)
+    }
   })
 
   it('runs as ONE repeatable-read transaction', () => {

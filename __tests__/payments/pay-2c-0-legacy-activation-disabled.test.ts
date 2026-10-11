@@ -250,12 +250,19 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     }
   })
 
-  it('this fix added NO migration; 060 remains the highest', () => {
+  it('this fix added NO migration; 061 is AUDIT-SEC-01 and adds no completion path', () => {
     const f = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(x => x.endsWith('.sql'))
     expect(f.filter(x => x.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
-    expect(f.filter(x => parseInt(x, 10) > 60), 'a migration above 060 appeared').toEqual([])
+    // PAY-2C-0 itself authored nothing. AUDIT-SEC-01 later authored 061 — a
+    // privilege slice on audit_log, which must not become a completion path.
+    expect(f.filter(x => parseInt(x, 10) > 60)).toEqual(['061_audit_log_privilege_hardening.sql'])
+    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    expect(m061, '061 writes a payment').not.toMatch(/public\.payments[\s\S]{0,120}completed/i)
+    expect(m061, '061 creates a completion function')
+      .not.toMatch(/create\s+(or replace\s+)?function/i)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(60)
+    expect(Math.max(...nums)).toBe(61)
   })
 })
 
