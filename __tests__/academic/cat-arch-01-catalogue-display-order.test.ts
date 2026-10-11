@@ -77,11 +77,13 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(files.filter(f => f.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
     // AUDIT-SEC-01 later authored 061 (audit_log privilege hardening).
     expect(files.filter(f => f.startsWith('061'))).toEqual(['061_audit_log_privilege_hardening.sql'])
-    expect(files).toHaveLength(59)
+    // PAY-2C later authored 062 (the payment completion authority).
+    expect(files.filter(f => f.startsWith('062'))).toEqual(['062_atomic_payment_completion.sql'])
+    expect(files).toHaveLength(60)
     const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
     expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
-    expect(m057, '057 moves a grant').not.toMatch(/^\s*(grant|revoke)\b/im)
+    expect(m057, '057 moves a grant').not.toMatch(/^\s*(grant|revoke)\s/im)
     // 058 grants and revokes — but only on public.payments. What 056 owns is
     // the projection, the position constraint and the closed registry, and
     // 058 must leave all three exactly as it found them.
@@ -90,7 +92,7 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(m058, '058 touches the position constraint')
       .not.toMatch(/course_codes_catalogue_position_unique/i)
     expect(m058, '058 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
-    for (const stmt of m058.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+    for (const stmt of m058.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
       expect(stmt, '058 grants or revokes on something other than payments')
         .toMatch(/on public\.payments\b/i)
     }
@@ -101,7 +103,7 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(m059, '059 touches the position constraint')
       .not.toMatch(/course_codes_catalogue_position_unique/i)
     expect(m059, '059 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
-    for (const stmt of m059.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+    for (const stmt of m059.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
       expect(stmt, '059 grants or revokes on something other than payments')
         .toMatch(/on public\.payments\b/i)
     }
@@ -114,16 +116,28 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
       .not.toMatch(/alter table (?!public\.payments\b)/i)
     // 060 issues no privilege statement at all, which this asserts rather than
     // assumes: a grant here would be outside its mandate as well as 056's.
-    expect(m060.match(/^\s*(grant|revoke)\b/gim) ?? [], '060 issues a privilege statement').toEqual([])
+    expect(m060.match(/^\s*(grant|revoke)\s/gim) ?? [], '060 issues a privilege statement').toEqual([])
     // 061 DOES issue privilege statements — two — but only on audit_log. The
     // rule for this suite is that the catalogue projection stays 056's.
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql').replace(/--[^\n]*/g, '')
     expect(m061, '061 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m061, '061 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
-    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+    for (const stmt of m061.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
       expect(stmt, '061 grants or revokes on something other than audit_log')
         .toMatch(/on public\.audit_log\b/i)
     }
+    // PAY-2C's 062 creates the payment-completion function. It issues two
+    // privilege statements, both ON FUNCTION, and alters no table.
+    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    expect(m062, '062 alters a table').not.toMatch(/alter table/i)
+    expect(m062, '062 touches a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '062 moves a privilege on something other than its own function')
+        .toMatch(/on function public\.complete_payment/i)
+    }
+    expect(m062, '062 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
+    expect(m062, '062 touches public_catalogue_courses').not.toMatch(/public_catalogue_courses/i)
   })
 
   it('runs as ONE repeatable-read transaction', () => {

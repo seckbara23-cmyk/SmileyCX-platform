@@ -82,10 +82,11 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
     // that a column-level grant does not extend to a column added after it is
     // precisely 059's fail-closed claim, and 060 is its first real test.
     expect(f.filter(x => parseInt(x, 10) > 59))
-      .toEqual(['060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql'])
+      .toEqual(['060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
+                '062_atomic_payment_completion.sql'])
     const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
-    expect(m060.match(/^\s*(grant|revoke)\b/gim) ?? [],
+    expect(m060.match(/^\s*(grant|revoke)\s/gim) ?? [],
       '060 issues a privilege statement, so 059 no longer owns this allowlist').toEqual([])
     for (const withheld of DENY) {
       expect(m060, `060 grants the withheld column ${withheld}`)
@@ -95,15 +96,27 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
     // undo 059 by accident. It must name audit_log and nothing else.
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
-    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+    for (const stmt of m061.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
       expect(stmt, '061 moves a privilege on a table other than audit_log')
         .toMatch(/on public\.audit_log\b/i)
     }
     expect(m061, '061 must not re-grant payments').not.toMatch(/on public\.payments\s+to/i)
+    // 062 creates the completion function. It must not re-grant payments —
+    // its privilege statements are ON FUNCTION only — and it must not hand a
+    // withheld column to a browser role.
+    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '062 moves a TABLE privilege').toMatch(/on function/i)
+    }
+    for (const withheld of DENY) {
+      expect(m062, `062 grants the withheld column ${withheld}`)
+        .not.toMatch(new RegExp(`grant select[^;]*\\b${withheld}\\b`, 'i'))
+    }
     expect(f.filter(x => x.startsWith('046'))).toEqual([])
     expect(f.filter(x => x.startsWith('051'))).toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(61)
+    expect(Math.max(...nums)).toBe(62)
     expect(new Set(nums).size).toBe(nums.length)
   })
 
@@ -152,7 +165,7 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
     // Exactly two: one `revoke all` (which clears both layers) and one
     // column-scoped grant. The redundant per-column revoke the first draft
     // carried is gone — see the breadth test below.
-    const stmts = CODE.match(/^[ \t]*(grant|revoke)[\s\S]*?;/gim) ?? []
+    const stmts = CODE.match(/^[ \t]*(grant|revoke)\s[\s\S]*?;/gim) ?? []
     expect(stmts).toHaveLength(2)
     for (const s of stmts) {
       expect(s, `not scoped to payments: ${s.slice(0, 60)}`).toMatch(/on public\.payments\b/i)

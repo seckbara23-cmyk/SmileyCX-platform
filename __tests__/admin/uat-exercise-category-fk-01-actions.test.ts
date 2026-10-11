@@ -235,7 +235,7 @@ describe('UAT-EXERCISE-CATEGORY-FK-01 — the database contract is untouched', (
     }
   })
 
-  it('13. this fix added no migration; 058-061 came later and leave the exercise tables alone', () => {
+  it('13. this fix added no migration; 058-062 came later and leave the exercise tables alone', () => {
     const { readdirSync, readFileSync } = require('fs') as typeof import('fs')
     const DIR = join(ROOT, 'supabase', 'migrations')
     const files = readdirSync(DIR).filter(n => n.endsWith('.sql'))
@@ -247,9 +247,10 @@ describe('UAT-EXERCISE-CATEGORY-FK-01 — the database contract is untouched', (
     // not "no migration above 057" but that nothing above it weakens the FK
     // this suite exists to protect.
     const LATER = ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
-                   '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql']
+                   '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
+                   '062_atomic_payment_completion.sql']
     expect(files.filter(f => parseInt(f, 10) > 57)).toEqual(LATER)
-    expect(Math.max(...nums)).toBe(61)
+    expect(Math.max(...nums)).toBe(62)
     for (const later of LATER) {
       const s = readFileSync(join(DIR, later), 'utf8').replace(/--[^\n]*/g, '')
       for (const t of ['exercises', 'exercise_categories', 'exercise_items',

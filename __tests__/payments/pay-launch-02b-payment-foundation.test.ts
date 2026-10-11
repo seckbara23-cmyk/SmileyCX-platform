@@ -108,7 +108,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     // slice that MAY add columns but must leave that policy set alone.
     expect(f.filter(x => parseInt(x, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
-                '061_audit_log_privilege_hardening.sql'])
+                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
@@ -117,21 +117,31 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m060, '060 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
     expect(m060, '060 must not drop an index 058 created').not.toMatch(/drop\s+index/i)
-    expect(m060, '060 must not re-grant a payment privilege').not.toMatch(/^\s*(grant|revoke)\b/im)
+    expect(m060, '060 must not re-grant a payment privilege').not.toMatch(/^\s*(grant|revoke)\s/im)
     // 061 is a privilege migration — the one kind that could undo 058's write
     // withdrawal by accident. Every statement it issues must name audit_log.
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m061, '061 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
     expect(m061, '061 must not alter public.payments').not.toMatch(/alter table public\.payments/i)
-    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+    for (const stmt of m061.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
       expect(stmt, '061 moves a privilege on a table other than audit_log')
         .toMatch(/on public\.audit_log\b/i)
+    }
+    // 062 is the first migration that WRITES payments — inside a function. It
+    // must not alter the table, touch a policy, or move a table privilege.
+    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
+      .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
+    expect(m062, '062 must not alter public.payments').not.toMatch(/alter table/i)
+    expect(m062, '062 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    expect(m062, '062 must not drop an index').not.toMatch(/drop\s+index/i)
+    for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '062 moves a TABLE privilege').toMatch(/on function/i)
     }
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(61)
+    expect(Math.max(...nums)).toBe(62)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -165,7 +175,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
   })
 
   it('every grant and revoke is on public.payments, and there are exactly two', () => {
-    const stmts = CODE.match(/^[ \t]*(grant|revoke)[\s\S]*?;/gim) ?? []
+    const stmts = CODE.match(/^[ \t]*(grant|revoke)\s[\s\S]*?;/gim) ?? []
     expect(stmts).toHaveLength(2)
     for (const s of stmts) expect(s, `not scoped to payments: ${s}`).toMatch(/on public\.payments\b/i)
     // Order matters: revoke everything, then hand SELECT back. The reverse
