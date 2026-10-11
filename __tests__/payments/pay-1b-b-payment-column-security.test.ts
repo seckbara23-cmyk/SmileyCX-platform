@@ -81,7 +81,8 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
     // PAY-2B later authored 060. It adds two columns and must NOT grant them:
     // that a column-level grant does not extend to a column added after it is
     // precisely 059's fail-closed claim, and 060 is its first real test.
-    expect(f.filter(x => parseInt(x, 10) > 59)).toEqual(['060_payment_completion_contract.sql'])
+    expect(f.filter(x => parseInt(x, 10) > 59))
+      .toEqual(['060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql'])
     const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     expect(m060.match(/^\s*(grant|revoke)\b/gim) ?? [],
@@ -90,10 +91,19 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
       expect(m060, `060 grants the withheld column ${withheld}`)
         .not.toMatch(new RegExp(`grant select[^;]*\\b${withheld}\\b`, 'i'))
     }
+    // 061 is a privilege migration, which is exactly the kind that could
+    // undo 059 by accident. It must name audit_log and nothing else.
+    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '061 moves a privilege on a table other than audit_log')
+        .toMatch(/on public\.audit_log\b/i)
+    }
+    expect(m061, '061 must not re-grant payments').not.toMatch(/on public\.payments\s+to/i)
     expect(f.filter(x => x.startsWith('046'))).toEqual([])
     expect(f.filter(x => x.startsWith('051'))).toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(60)
+    expect(Math.max(...nums)).toBe(61)
     expect(new Set(nums).size).toBe(nums.length)
   })
 

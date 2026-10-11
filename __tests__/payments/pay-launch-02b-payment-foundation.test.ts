@@ -107,7 +107,8 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     // the schema or the policy set 058 established — and PAY-2B 060, a schema
     // slice that MAY add columns but must leave that policy set alone.
     expect(f.filter(x => parseInt(x, 10) > 58))
-      .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql'])
+      .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
+                '061_audit_log_privilege_hardening.sql'])
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
@@ -117,10 +118,20 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     expect(m060, '060 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
     expect(m060, '060 must not drop an index 058 created').not.toMatch(/drop\s+index/i)
     expect(m060, '060 must not re-grant a payment privilege').not.toMatch(/^\s*(grant|revoke)\b/im)
+    // 061 is a privilege migration — the one kind that could undo 058's write
+    // withdrawal by accident. Every statement it issues must name audit_log.
+    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
+      .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
+    expect(m061, '061 must not touch a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    expect(m061, '061 must not alter public.payments').not.toMatch(/alter table public\.payments/i)
+    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '061 moves a privilege on a table other than audit_log')
+        .toMatch(/on public\.audit_log\b/i)
+    }
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(60)
+    expect(Math.max(...nums)).toBe(61)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 

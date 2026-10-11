@@ -89,8 +89,21 @@ describe('PAY-2B — 060 exists, alone, as one transaction', () => {
   it('060 is exactly this migration, and nothing sits above it', () => {
     const f = readdirSync(MIGRATIONS).filter(x => x.endsWith('.sql'))
     expect(f.filter(x => x.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
-    const above = f.filter(x => /^0*(0[6-9][1-9]|0[7-9]\d|1\d\d)_/.test(x))
-    expect(above, `migrations above 060 exist: ${above.join(', ')}`).toEqual([])
+    // AUDIT-SEC-01 later authored 061, taking the number PAY-2C had reserved.
+    // The rule is not "nothing above 060" but "nothing above 060 disturbs the
+    // payment contract 060 established".
+    const above = f.filter(x => parseInt(x, 10) > 60)
+    expect(above).toEqual(['061_audit_log_privilege_hardening.sql'])
+    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    expect(m061, '061 must not alter public.payments').not.toMatch(/alter table public\.payments/i)
+    expect(m061, '061 must not touch a payment policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    expect(m061, '061 must not create a completion function')
+      .not.toMatch(/create\s+(or replace\s+)?function/i)
+    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '061 moves a privilege on a table other than audit_log')
+        .toMatch(/on public\.audit_log\b/i)
+    }
   })
 
   it('058 and 059 are unchanged by this slice', () => {
