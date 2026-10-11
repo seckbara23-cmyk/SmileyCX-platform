@@ -349,10 +349,11 @@ describe('CAT-1 — the database remains the final authority', () => {
                    '057_v8_registry_reorder.sql', '058_payment_provider_foundation.sql',
                    '059_payment_column_select_security.sql',
                    '060_payment_completion_contract.sql',
-                   '061_audit_log_privilege_hardening.sql']
+                   '061_audit_log_privilege_hardening.sql',
+                   '062_atomic_payment_completion.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(61)
+    expect(Math.max(...nums)).toBe(62)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])
@@ -410,5 +411,16 @@ describe('CAT-1 — the database remains the final authority', () => {
       .not.toMatch(/(insert into|update|delete from|truncate)\s+(table\s+)?public\.(?!audit_log)/i)
     expect(m061, '061 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
     expect(m061, '061 must not touch public.courses').not.toMatch(/on public\.courses\b/i)
+    // PAY-2C's 062 creates the payment-completion function. It issues two
+    // privilege statements, both ON FUNCTION, and alters no table.
+    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    expect(m062, '062 alters a table').not.toMatch(/alter table/i)
+    expect(m062, '062 touches a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '062 moves a privilege on something other than its own function')
+        .toMatch(/on function public\.complete_payment/i)
+    }
+    expect(m062, '062 must not assign a course code').not.toMatch(/set\s+code\s*=/i)
   })
 })

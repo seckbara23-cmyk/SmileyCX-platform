@@ -217,11 +217,14 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     expect(pay).toContain('course.price')
   })
 
-  it('no completion authority exists yet — in SQL or in application code', () => {
-    // PAY-2C creates it. Until then, nothing may call or define it.
+  it('the completion authority is 062 alone, and no application code calls it', () => {
+    // RE-EXPRESSED by PAY-2C. This used to assert that NO completion authority
+    // existed anywhere. 062 now creates it — in the DATABASE, which is the
+    // point of the slice. What must still hold is the half that protects this
+    // fix: no APPLICATION code calls it, because no trusted caller exists yet.
     for (const f of sourceFiles()) {
-      expect(strip(read(f)), `${f} references complete_payment`)
-        .not.toContain('complete_payment')
+      expect(strip(read(f)), `${f} calls complete_payment`)
+        .not.toMatch(/\.rpc\(\s*['"]complete_payment['"]/)
     }
 
     // ── migration 003 is the ONE known exception, and must stay the only one ──
@@ -243,26 +246,35 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
       const sql = read(`supabase/migrations/${m}`).replace(/--[^\n]*/g, '')
       if (/create\s+(or replace\s+)?function\s+\S*complete\S*payment/i.test(sql)) defines.push(m)
     }
-    expect(defines, 'a completion function appeared outside withdrawn 003').toEqual([WITHDRAWN])
+    // 062 is the authority that REPLACES withdrawn 003. Exactly these two
+    // files may define a completion function, and 003 remains unapplied.
+    expect(defines.sort()).toEqual([WITHDRAWN, '062_atomic_payment_completion.sql'])
     // 003 stays withdrawn: nothing in the repository re-applies or references it.
     for (const f of sourceFiles()) {
       expect(read(f), `${f} references withdrawn migration 003`).not.toContain(WITHDRAWN)
     }
   })
 
-  it('this fix added NO migration; 061 is AUDIT-SEC-01 and adds no completion path', () => {
+  it('this fix added NO migration; 061 and 062 came later', () => {
     const f = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(x => x.endsWith('.sql'))
     expect(f.filter(x => x.startsWith('060'))).toEqual(['060_payment_completion_contract.sql'])
     // PAY-2C-0 itself authored nothing. AUDIT-SEC-01 later authored 061 — a
     // privilege slice on audit_log, which must not become a completion path.
-    expect(f.filter(x => parseInt(x, 10) > 60)).toEqual(['061_audit_log_privilege_hardening.sql'])
+    expect(f.filter(x => parseInt(x, 10) > 60))
+      .toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     expect(m061, '061 writes a payment').not.toMatch(/public\.payments[\s\S]{0,120}completed/i)
     expect(m061, '061 creates a completion function')
       .not.toMatch(/create\s+(or replace\s+)?function/i)
+    // 062 DOES complete payments — that is its purpose — but only inside a
+    // function whose EXECUTE is service_role-only, never from a browser role.
+    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
+    expect(m062).toMatch(/security invoker/)
+    expect(m062).toMatch(/revoke all on function public\.complete_payment/)
+    expect(m062).toMatch(/to service_role;/)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(61)
+    expect(Math.max(...nums)).toBe(62)
   })
 })
 

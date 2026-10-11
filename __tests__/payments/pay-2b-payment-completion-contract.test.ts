@@ -93,14 +93,24 @@ describe('PAY-2B — 060 exists, alone, as one transaction', () => {
     // The rule is not "nothing above 060" but "nothing above 060 disturbs the
     // payment contract 060 established".
     const above = f.filter(x => parseInt(x, 10) > 60)
-    expect(above).toEqual(['061_audit_log_privilege_hardening.sql'])
+    expect(above).toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
+    // 062 is the completion authority 060 was the contract FOR. It consumes
+    // 060's columns and indexes; it must not redefine them.
+    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
+      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    expect(m062, '062 alters public.payments').not.toMatch(/alter table public\.payments/i)
+    expect(m062, '062 recreates an index').not.toMatch(/create\s+(unique\s+)?index/i)
+    expect(m062, '062 touches a policy').not.toMatch(/(create|drop|alter)\s+policy/i)
+    // ...and it USES what 060 built.
+    expect(m062).toContain('payments_provider_token_unique')
+    expect(m062).toContain('payments_status_valid')
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     expect(m061, '061 must not alter public.payments').not.toMatch(/alter table public\.payments/i)
     expect(m061, '061 must not touch a payment policy').not.toMatch(/(create|drop|alter)\s+policy/i)
     expect(m061, '061 must not create a completion function')
       .not.toMatch(/create\s+(or replace\s+)?function/i)
-    for (const stmt of m061.match(/^\s*(grant|revoke)[\s\S]*?;/gim) ?? []) {
+    for (const stmt of m061.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
       expect(stmt, '061 moves a privilege on a table other than audit_log')
         .toMatch(/on public\.audit_log\b/i)
     }

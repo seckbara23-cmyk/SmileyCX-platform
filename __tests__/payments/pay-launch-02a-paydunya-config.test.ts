@@ -356,11 +356,12 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     // 02A's job or 02's". 061 is PAY-2C's and does not exist yet.
     expect(files.filter(f => parseInt(f, 10) > 57))
       .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
-                '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql'])
-    expect(Math.max(...nums)).toBe(61)
+                '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
+                '062_atomic_payment_completion.sql'])
+    expect(Math.max(...nums)).toBe(62)
     // 061 went to AUDIT-SEC-01, not PAY-2C: the audit_log TRUNCATE exposure was
-    // found during the PAY-2C preflight and fixed first. PAY-2C lands as 062.
-    expect(files.filter(f => f.startsWith('062')), '062 is PAY-2C, not this slice').toEqual([])
+    // found during the PAY-2C preflight and fixed first. PAY-2C landed as 062.
+    expect(files.filter(f => f.startsWith('063')), '063 is not this slice').toEqual([])
 
     // NO payment migration may carry PayDunya API material. The TEST/LIVE
     // boundary stays in the application module this slice owns: no credential,
@@ -376,7 +377,8 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     for (const name of ['058_payment_provider_foundation.sql',
                         '059_payment_column_select_security.sql',
                         '060_payment_completion_contract.sql',
-                        '061_audit_log_privilege_hardening.sql']) {
+                        '061_audit_log_privilege_hardening.sql',
+                        '062_atomic_payment_completion.sql']) {
       const sql = read(`supabase/migrations/${name}`)
       for (const forbidden of FORBIDDEN) {
         expect(sql, `${name} contains PayDunya API material: ${forbidden}`).not.toMatch(forbidden)

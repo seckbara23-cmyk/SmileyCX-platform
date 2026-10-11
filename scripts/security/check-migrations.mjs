@@ -163,16 +163,38 @@ function countPlaceholders (s) {
   return n
 }
 
-/** Split the argument list following the format string, up to the closing ';'. */
+/**
+ * Split the argument list following the format string.
+ *
+ * PostgreSQL's grammar is
+ *
+ *   RAISE level 'format' [, expression [, ...]] [ USING option = expression [, ...] ];
+ *
+ * so the ARGUMENT list ends at a top-level `USING` as well as at the closing
+ * ';'. Reading only to ';' counted the USING options as arguments, and every
+ * `RAISE ... USING errcode = ..., detail = ...` reported a false arity
+ * mismatch. Migration 062 is the first in this repository to use RAISE ...
+ * USING; verified against PostgreSQL 17, which accepts
+ *
+ *   raise exception 'mismatch on payment %', v_pay.id
+ *     using errcode = 'P0001', detail = '{"reason":"..."}';
+ *
+ * and still rejects a GENUINE mismatch at CREATE time (42601, both "too many"
+ * and "too few parameters specified for RAISE").
+ */
 function readRaiseArgs (sql, i) {
   let depth = 0, cur = '', args = []
+  const flush = () => { if (cur.trim()) args.push(cur.trim()); cur = '' }
   while (i < sql.length) {
     const c = sql[i]
     if (c === "'") { const r = readLiteral(sql, i); cur += 'x'; i = r.end; continue }
     if (c === '(') depth++
     if (c === ')') depth--
-    if (c === ';' && depth === 0) { if (cur.trim()) args.push(cur.trim()); return args }
-    if (c === ',' && depth === 0) { if (cur.trim()) args.push(cur.trim()); cur = ''; i++; continue }
+    if (depth === 0 && (c === 'u' || c === 'U') &&
+        /^using\b/i.test(sql.slice(i, i + 6)) &&
+        (i === 0 || /[\s,)]/.test(sql[i - 1]))) { flush(); return args }
+    if (c === ';' && depth === 0) { flush(); return args }
+    if (c === ',' && depth === 0) { flush(); i++; continue }
     cur += c
     i++
   }

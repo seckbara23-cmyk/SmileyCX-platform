@@ -307,7 +307,8 @@ describe('UAT-ADMIN-LESSON-VISIBILITY-01 — WC-2 is not weakened', () => {
     // which is the thing this suite exists to keep true.
     const LATER = ['056_catalogue_display_order.sql', '057_v8_registry_reorder.sql',
                    '058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
-                   '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql']
+                   '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
+                   '062_atomic_payment_completion.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(53)
     expect(files.filter(f => f.startsWith('056'))).toEqual([LATER[0]])
     expect(files.filter(f => f.startsWith('057'))).toEqual([LATER[1]])
@@ -315,6 +316,7 @@ describe('UAT-ADMIN-LESSON-VISIBILITY-01 — WC-2 is not weakened', () => {
     expect(files.filter(f => f.startsWith('059'))).toEqual([LATER[3]])
     expect(files.filter(f => f.startsWith('060'))).toEqual([LATER[4]])
     expect(files.filter(f => f.startsWith('061'))).toEqual([LATER[5]])
+    expect(files.filter(f => f.startsWith('062'))).toEqual([LATER[6]])
     for (const later of LATER) {
       const m = read(`supabase/migrations/${later}`)
       expect(m, `${later} must not grant anything on lessons`)
