@@ -235,12 +235,23 @@ describe('PAY-LAUNCH-02A — a secret cannot leave by accident', () => {
   it('the resolver is server-only by the repository mechanism', () => {
     const src = read('lib/payments/paydunya-config.ts')
     expect(src.startsWith("import 'server-only'")).toBe(true)
-    // No PayDunya client, no network call in this slice.
+    // The CONFIG module itself still makes no network call. PAY-2D-1 put the
+    // HTTP transport in a separate module precisely so this stays true: the
+    // file that holds credentials does not also talk to the provider.
     expect(src).not.toMatch(/\bfetch\s*\(/)
     expect(src).not.toMatch(/paydunya\.com|https?:\/\//i)
-    // The module must be the ONLY place a PayDunya variable is named.
-    // `git grep` searches TRACKED files only and this module is new, so walk
-    // the filesystem instead — otherwise the assertion passes vacuously.
+    // The module must be the ONLY place a PayDunya ENVIRONMENT VARIABLE is
+    // named. `git grep` searches TRACKED files only and this module was new, so
+    // walk the filesystem instead — otherwise the assertion passes vacuously.
+    //
+    // PAY-2D-1 NARROWED the pattern from `PAYDUNYA_[A-Z]` to the actual
+    // variable names. The old pattern matched any identifier with that prefix,
+    // so the transport module's own constants (PAYDUNYA_HOST,
+    // PAYDUNYA_TIMEOUT_MS, PAYDUNYA_STATUSES) tripped it — a false positive
+    // that said nothing about credential handling. The property worth guarding
+    // is unchanged and still enforced: no module other than this one may name
+    // PAYDUNYA_MODE or a PAYDUNYA_TEST_*/PAYDUNYA_LIVE_* credential.
+    const ENV_VAR_RE = /\bPAYDUNYA_(MODE|TEST_[A-Z_]+|LIVE_[A-Z_]+)\b/
     const { readdirSync, statSync } = require('fs') as typeof import('fs')
     const readers: string[] = []
     const walk = (dir: string) => {
@@ -249,7 +260,7 @@ describe('PAY-LAUNCH-02A — a secret cannot leave by accident', () => {
         const rel = `${dir}/${name}`
         if (statSync(join(ROOT, rel)).isDirectory()) { walk(rel); continue }
         if (!/\.(ts|tsx)$/.test(name)) continue
-        if (/PAYDUNYA_[A-Z]/.test(read(rel))) readers.push(rel)
+        if (ENV_VAR_RE.test(read(rel))) readers.push(rel)
       }
     }
     for (const d of ['app', 'components', 'lib', 'types']) walk(d)
@@ -393,9 +404,14 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
   })
 
   it('payment behaviour, schema and completion are untouched', () => {
-    // PAY-1 and PAY-2 remain unstarted: no PayDunya client, route or IPN handler.
+    // No route and no IPN handler. PAY-2D-1 authorised a TRANSPORT module
+    // (lib/payments/paydunya-client.ts), so its existence is no longer the
+    // signal — a notification handler or a completion module would be, and
+    // neither exists. The client's own suite proves it has no caller, imports
+    // no Supabase client and cannot reach the completion authority.
     expect(existsSync(join(ROOT, 'app/api/webhooks/paydunya'))).toBe(false)
-    expect(existsSync(join(ROOT, 'lib/payments/paydunya-client.ts'))).toBe(false)
+    expect(existsSync(join(ROOT, 'app/api/webhooks'))).toBe(false)
+    expect(existsSync(join(ROOT, 'lib/payments/completion.ts'))).toBe(false)
     // The existing action still creates only a pending record, server-priced.
     const action = read('app/actions/payment.ts')
     expect(action).toMatch(/if \(!PAYMENTS_ENABLED\)/)
