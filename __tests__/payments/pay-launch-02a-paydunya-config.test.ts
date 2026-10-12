@@ -29,7 +29,7 @@
  * feature flag stays off, and the final describe pins that.
  */
 import { describe, it, expect, vi } from 'vitest'
-import { readFileSync, existsSync } from 'fs'
+import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
 
@@ -406,21 +406,41 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     expect(confirm).not.toMatch(/\.insert\(|\.update\(|complete_payment|entitlement/i)
   })
 
-  it('the pre-existing Stripe/Wave/Orange variables are recorded as debt, not removed', () => {
+  it('the pre-existing Stripe/Wave/Orange variables are read by NO code anywhere', () => {
     // Deliberate: unrelated environment cleanup must not ride along in a
-    // payment-configuration gate. They remain unreferenced by any code.
-    // They survive only as prose inside `lib/payments/index.ts`, a stub module
-    // that is imported nowhere and reads no environment variable at all. The
-    // invariant that matters is that no CODE reads them.
-    const stub = read('lib/payments/index.ts')
-    expect(stub).toMatch(/PILOT MODE: No real payment gateways are wired yet/)
-    expect(stub.match(/process\.env/g), 'the stub started reading the environment').toBeNull()
-    for (const name of ['STRIPE_SECRET_KEY', 'WAVE_API_KEY', 'ORANGE_MONEY_CLIENT_SECRET']) {
-      expect(stub, `${name} is read as code, not documented`)
-        .not.toMatch(new RegExp(`process\.env\.${name}|process\.env\[['\"]${name}`))
+    // payment-configuration gate. The invariant that matters is that no CODE
+    // reads them.
+    //
+    // PAY-2D-0 STRENGTHENED this. It used to be asserted against the contents
+    // of `lib/payments/index.ts` alone — the stub module that was the only
+    // place naming those variables. That stub is now DELETED, so the assertion
+    // is re-aimed at the whole source tree: the question was never "does one
+    // file avoid reading them", it was "does anything read them". Sweeping
+    // every file answers the real question and cannot be satisfied by deleting
+    // a file, which is exactly the failure mode a single-file read invited.
+    const LEGACY = ['STRIPE_SECRET_KEY', 'WAVE_API_KEY', 'ORANGE_MONEY_CLIENT_SECRET',
+                    'ORANGE_MONEY_CLIENT_ID', 'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY'] as const
+    const readers: string[] = []
+    const walk = (d: string) => {
+      let entries
+      try { entries = readdirSync(join(ROOT, d), { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const p = `${d}/${e.name}`
+        if (e.isDirectory()) { walk(p); continue }
+        if (!/\.(ts|tsx)$/.test(e.name)) continue
+        const src = read(p)
+        for (const name of LEGACY) {
+          if (new RegExp(`process\\.env\\.${name}\\b|process\\.env\\[\\s*['"\`]${name}`).test(src)) {
+            readers.push(`${p}:${name}`)
+          }
+        }
+      }
     }
-    // And the stub must not have gained a grant path: it still only TODOs an
-    // enrollment, which under XPA-6B authorizes nothing anyway.
-    expect(stub).not.toMatch(/\.from\(['\"]entitlements['\"]\)/)
+    ;['app', 'components', 'lib', 'types'].forEach(walk)
+    expect(readers, `legacy gateway credentials are now read by: ${readers.join(', ')}`).toEqual([])
+
+    // And the deleted stub has not returned with its wrong-authority grant path.
+    expect(existsSync(join(ROOT, 'lib/payments/index.ts')),
+      'the deleted payment stub is back').toBe(false)
   })
 })

@@ -673,8 +673,12 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
                      'lib/payments/paydunya.ts']) {
       expect(existsSync(join(ROOT, p)), `${p} exists — PAY-2 has not been authorised`).toBe(false)
     }
+    // PAY-2D-0 deleted the obsolete index.ts stub, so the credential boundary
+    // is now the ONLY module in lib/payments. That is a stronger statement than
+    // before, not a weaker one: nothing is left in the directory that could be
+    // mistaken for a gateway client.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort())
-      .toEqual(['index.ts', 'paydunya-config.ts'])
+      .toEqual(['paydunya-config.ts'])
   })
 
   it('payment creation, the feature flag and the stub are all untouched', () => {
@@ -687,11 +691,34 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     if (existsSync(join(ROOT, '.env.local'))) {
       expect(read('.env.local')).not.toMatch(/^NEXT_PUBLIC_PAYMENTS_ENABLED\s*=\s*true/m)
     }
-    const stub = read('lib/payments/index.ts')
-    expect(stub).toMatch(/PILOT MODE: No real payment gateways are wired yet/)
-    expect(stub.match(/process\.env/g), 'the stub started reading the environment').toBeNull()
-    expect(stub, 'the stub must not have gained a grant path')
-      .not.toMatch(/\.from\(['"]entitlements['"]\)/)
+    // PAY-2D-0: the legacy stub that used to be inspected here is DELETED. The
+    // property it was standing in for — that no unauthorized module grants an
+    // entitlement off the back of a payment — is now asserted against the whole
+    // source tree instead of that one file. Deleting a file can no longer
+    // satisfy it.
+    expect(existsSync(join(ROOT, 'lib/payments/index.ts')),
+      'the deleted payment stub is back').toBe(false)
+    const granters: string[] = []
+    const walk = (d: string) => {
+      let entries
+      try { entries = readdirSync(join(ROOT, d), { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const p = `${d}/${e.name}`
+        if (e.isDirectory()) { walk(p); continue }
+        if (!/\.(ts|tsx)$/.test(e.name)) continue
+        const src = read(p)
+        for (const m of src.matchAll(/from\(\s*['"]entitlements['"]\s*\)/g)) {
+          if (/\.(insert|upsert|update|delete)\(/.test(src.slice(m.index!, m.index! + 300))) {
+            granters.push(p)
+          }
+        }
+      }
+    }
+    ;['app', 'components', 'lib'].forEach(walk)
+    // Exactly one module may write entitlements: the audited admin grant path.
+    expect([...new Set(granters)].sort(),
+      `entitlement writers are now: ${[...new Set(granters)].join(', ')}`)
+      .toEqual(['app/actions/entitlements.ts'])
   })
 })
 

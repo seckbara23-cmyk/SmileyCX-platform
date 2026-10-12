@@ -31,7 +31,7 @@
  * below rather than asserted of itself.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'fs'
+import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 
 const ROOT = process.cwd()
@@ -329,14 +329,22 @@ describe('PAY-2C-0 — learner access authority is untouched', () => {
     expect(set).not.toContain(ACTION)
   })
 
-  it('the legacy unimported payment stub is still unimported', () => {
-    // N1. lib/payments/index.ts still exports unlockEnrollment, which grants the
-    // wrong authority. Deleting it is a separate slice; it must not become live.
+  it('no module imports the deleted payment stub', () => {
+    // N1, CLOSED by PAY-2D-0. lib/payments/index.ts exported unlockEnrollment,
+    // which granted enrollments — the wrong authority since XPA-6B — and it was
+    // imported by nothing. It is now DELETED, so the exclusion this guard used
+    // to carry (`if (f === 'lib/payments/index.ts') continue`) is gone with it
+    // and the sweep now covers the whole source surface with no carve-out.
+    //
+    // The assertion is unchanged in strength: a bare `@/lib/payments` import
+    // would now also fail to resolve, but this keeps failing loudly at the
+    // guard rather than only in the build.
+    expect(existsSync(join(ROOT, 'lib/payments/index.ts')),
+      'the deleted payment stub is back').toBe(false)
     const importers: string[] = []
     for (const f of sourceFiles()) {
-      if (f === 'lib/payments/index.ts') continue
       if (/from\s+['"](@\/lib\/payments|[^'"]*\/lib\/payments)['"]/.test(read(f))) importers.push(f)
     }
-    expect(importers, `lib/payments is now imported by: ${importers.join(', ')}`).toEqual([])
+    expect(importers, `lib/payments is imported by: ${importers.join(', ')}`).toEqual([])
   })
 })
