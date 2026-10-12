@@ -1,14 +1,37 @@
 'use server'
 /**
- * Payment server action.
+ * Payment server action — creates a payment INTENT, and nothing more.
  *
  * Creates a pending payment record with the price fetched server-side — the
  * client never supplies the amount. Disabled during pilot (PAYMENTS_ENABLED).
  *
- * When payments are live:
- *   1. Set NEXT_PUBLIC_PAYMENTS_ENABLED=true
- *   2. Implement gateway redirect in the route handler that calls this action
- *   3. Add /api/webhooks/[provider] handlers that call complete_payment() SQL fn
+ * ── THIS ACTION CANNOT COMPLETE A PAYMENT ──────────────────────────────────
+ *
+ * It writes exactly one row, with status 'pending'. It grants no access right
+ * of any kind, creates no academic record, writes no audit row, and marks
+ * nothing as paid. There is no code path from here to course access.
+ *
+ * Completion is the exclusive business of ONE privileged database function
+ * installed by migration 062, which performs all four of its writes in a
+ * single transaction or none of them. That function is SECURITY INVOKER with
+ * EXECUTE granted to service_role alone — browser roles are refused — and it
+ * is a PERSISTENCE authority, not a verification mechanism: it may only be
+ * called after a trusted server-side caller has itself confirmed the payment
+ * with the provider, server to server. A browser redirect, an admin button and
+ * a provider notification are each, on their own, worth nothing.
+ *
+ * The previous version of this comment pointed at a completion function from
+ * migration 003. That migration was PERMANENTLY WITHDRAWN and never applied:
+ * no such function has ever existed in this database. Migration 062 is the
+ * sole completion authority, and it REPLACES 003 rather than amending it.
+ *
+ * ── WHAT IS STILL MISSING BEFORE A PAYMENT CAN SUCCEED ─────────────────────
+ *
+ * No gateway client, no redirect to a gateway, and no notification handler
+ * exist anywhere in this repository. Until a trusted caller is built, there is
+ * no correct way to complete a payment, so there is nothing here that pretends
+ * otherwise. See the PAY-2D design for the slice order; enabling
+ * NEXT_PUBLIC_PAYMENTS_ENABLED is the LAST step, not the first.
  */
 
 import { PAYMENTS_ENABLED } from '@/lib/pilot'

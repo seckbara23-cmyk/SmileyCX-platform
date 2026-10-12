@@ -1,9 +1,33 @@
+import 'server-only'
 import { createClient } from '@supabase/supabase-js'
 
 /**
  * Supabase client that uses the service role key.
  * ONLY use this in Server Actions and Server Components — never on the client.
  * Requires SUPABASE_SERVICE_ROLE_KEY to be set in .env.local.
+ *
+ * ── PAY-2D-0: the comment above is now MECHANICALLY ENFORCED ───────────────
+ *
+ * `import 'server-only'` makes importing this module from a client component a
+ * BUILD error rather than a code-review question. It matters more here than
+ * anywhere else in the repository: this is the one client that holds
+ * SUPABASE_SERVICE_ROLE_KEY, a credential with BYPASSRLS and — since migration
+ * 062 — EXECUTE on public.complete_payment(), the sole authority that can grant
+ * a paid entitlement. A single careless import from a 'use client' file would
+ * put that key in a browser bundle.
+ *
+ * `check-bundle-secrets.mjs` already scans the built output for the variable
+ * name, but that is a post-build net. This fails at compile time instead, which
+ * is the earlier and cheaper place to fail.
+ *
+ * This does NOT restrict the legitimate callers. All 62 of them are server-side
+ * — Server Components, route handlers, and 'use server' actions. A 'use server'
+ * module is itself a server boundary: a client component importing one receives
+ * an RPC reference, never the module's code, so the admin client never reaches
+ * a client bundle through it. The same pattern is already proven in production
+ * by lib/learn/assessment.ts and lib/learn/completion.ts, both of which are
+ * 'server-only' and both of which are reached through Server Actions that
+ * client components import.
  */
 export function createAdminClient() {
   const url  = process.env.NEXT_PUBLIC_SUPABASE_URL

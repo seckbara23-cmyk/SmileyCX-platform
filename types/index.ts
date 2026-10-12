@@ -170,9 +170,50 @@ export interface Enrollment {
 
 // ── Payment ───────────────────────────────────────────────────────────────────
 
+/**
+ * The payment instrument. Deliberately NOT the aggregator: 'paydunya' is a
+ * value of `Payment.provider`, never of `method`. The database CHECK on
+ * public.payments.method admits exactly these three.
+ */
 export type PaymentMethod = 'orange_money' | 'wave' | 'card'
-export type PaymentStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'refunded'
 
+/**
+ * The seven states migration 060 installed as `payments_status_valid`.
+ *
+ * 'cancelled' is the provider's (its confirm endpoint returns
+ * pending/completed/cancelled/failed); 'expired' is ours, for an abandoned
+ * intent no notification will ever resolve. Both are TERMINAL and therefore
+ * outside 058's in-flight predicate, which is what makes a retry possible
+ * without weakening the one-live-intent rule.
+ *
+ * This union previously listed only five, so the two terminal states the
+ * database already accepts were unrepresentable in TypeScript.
+ */
+export type PaymentStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'refunded'
+  | 'cancelled'
+  | 'expired'
+
+/** The provider environment a transaction was taken in. 058 admits only these. */
+export type PaymentProviderMode = 'test' | 'live'
+
+/**
+ * A row of public.payments, as it stands after migrations 058 and 060.
+ *
+ * All nine columns added by those migrations are nullable in the database and
+ * are typed `| null` here accordingly — every pre-existing field keeps exactly
+ * the contract it had, so this widens the type without weakening it.
+ *
+ * Declaring a field is not the same as reading one. Nothing in the application
+ * reads the provider or reconciliation columns yet; the completion authority
+ * (migration 062) is the only thing that writes them, and the trusted caller
+ * that will record forensics does not exist. The guards in
+ * pay-2b-payment-completion-contract.test.ts enforce that distinction.
+ */
 export interface Payment {
   id: string
   user_id: string
@@ -186,6 +227,18 @@ export interface Payment {
   metadata: Record<string, unknown> | null
   created_at: string
   completed_at: string | null
+  /** 058. Which provider handled this transaction, e.g. 'paydunya'. */
+  provider: string | null
+  /** 058. NULL only when `provider` is also NULL (payments_provider_mode_required). */
+  provider_mode: PaymentProviderMode | null
+  /** 058. The provider's own identifier for the transaction. Server data, never shown to a learner. */
+  provider_token: string | null
+  /** 058. The entitlement this payment produced, once one exists. */
+  entitlement_id: string | null
+  /** 060. Why a completion was refused. Written by the trusted caller, not by migration 062. */
+  failure_reason: string | null
+  /** 060. When the most recent provider notification arrived. */
+  last_ipn_at: string | null
 }
 
 // Orange Money payload

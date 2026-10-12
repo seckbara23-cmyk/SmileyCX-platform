@@ -41,7 +41,7 @@
  * rather than decorative.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'fs'
+import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 
 const ROOT = process.cwd()
@@ -60,6 +60,15 @@ const MIGRATIONS = join(ROOT, 'supabase', 'migrations')
 const PAGE = 'app/(platform)/checkout/confirm/page.tsx'
 
 const NEW_COLUMNS = ['failure_reason', 'last_ipn_at'] as const
+
+/**
+ * TypeScript/TSX comments blanked. Used by the "nothing READS the new columns"
+ * sweep so that PROSE naming a column — in a doc comment explaining why the
+ * application must not read it — cannot itself trip the guard.
+ */
+const stripTs = (s: string) =>
+  s.replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+   .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length))
 const OLD_STATUSES = ['pending', 'processing', 'completed', 'failed', 'refunded'] as const
 const NEW_STATUSES = ['cancelled', 'expired'] as const
 const SEVEN = [...OLD_STATUSES, ...NEW_STATUSES]
@@ -513,9 +522,63 @@ describe('PAY-2B — cross-artifact agreement with the deployed reader', () => {
     expect(requested).not.toContain('*')
   })
 
-  it('no application code references the new columns yet', () => {
-    // 060 is a contract, not a feature. PAY-2C writes these; nothing reads them.
-    const dirs = ['app', 'components', 'lib', 'types']
+  it('no application code READS the new columns yet', () => {
+    // 060 is a contract, not a feature. Migration 062 does not write these two
+    // either — its header delegates them to the trusted caller, which does not
+    // exist. So no executable code may touch them.
+    //
+    // PAY-2D-0 SPLIT this assertion in two, and weakened neither half.
+    //
+    // The sweep over app/components/lib is unchanged: a raw substring check,
+    // the strictest form, over every directory that can contain executable
+    // code. A read can only live in one of those.
+    //
+    // EXACTLY ONE file is exempt: types/index.ts, the schema declaration file.
+    // It is exempt because it contains no executable code — so a "read" is not
+    // expressible in it — and because what it must hold IS the schema, which
+    // after 058/060 includes these columns. types/cx.ts is NOT exempt: it does
+    // carry executable helpers, so it stays under the strict sweep.
+    const EXEMPT = 'types/index.ts'
+    const hits: string[] = []
+    const walk = (d: string) => {
+      let entries
+      try { entries = readdirSync(join(ROOT, d), { withFileTypes: true }) } catch { return }
+      for (const e of entries) {
+        const p = `${d}/${e.name}`
+        if (e.isDirectory()) { walk(p); continue }
+        if (!/\.(ts|tsx)$/.test(e.name) || p === EXEMPT) continue
+        const src = read(p)
+        for (const c of NEW_COLUMNS) if (src.includes(c)) hits.push(`${p}:${c}`)
+      }
+    }
+    ;['app', 'components', 'lib', 'types'].forEach(walk)
+    expect(hits, `application code already references: ${hits.join(', ')}`).toEqual([])
+
+    // The exemption is only sound while that file stays declaration-only.
+    expect(stripTs(read(EXEMPT)), `${EXEMPT} gained executable code, so its exemption is unsafe`)
+      .not.toMatch(/^\s*(export\s+)?(function|const|let|var|class)\s/m)
+
+    // And in types, each column appears ONLY as a nullable field of Payment.
+    const T = stripTs(read('types/index.ts'))
+    const payment = /export interface Payment \{([\s\S]*?)\n\}/.exec(T)
+    expect(payment, 'the Payment interface moved').toBeTruthy()
+    for (const c of NEW_COLUMNS) {
+      const all = [...T.matchAll(new RegExp(`\\b${c}\\b`, 'g'))].length
+      const inside = [...payment![1].matchAll(new RegExp(`\\b${c}\\b`, 'g'))].length
+      expect(inside, `${c} is not declared on Payment`).toBe(1)
+      expect(all, `${c} is named ${all - inside} time(s) outside the Payment interface`).toBe(1)
+      expect(payment![1], `${c} must be nullable, as the database has it`)
+        .toMatch(new RegExp(`\\b${c}\\s*:\\s*[\\w ]*\\| null`))
+    }
+  })
+
+  it('the legacy payment stub is deleted and imported by nothing', () => {
+    // N1, CLOSED by PAY-2D-0. lib/payments/index.ts granted the wrong authority
+    // (enrollments, not entitlements) and is now DELETED, so the carve-out this
+    // sweep used to carry (`|| p === 'lib/payments/index.ts'`) is gone and the
+    // whole surface is scanned with no exclusion.
+    expect(existsSync(join(ROOT, 'lib/payments/index.ts')),
+      'the deleted payment stub is back').toBe(false)
     const hits: string[] = []
     const walk = (d: string) => {
       let entries
@@ -524,30 +587,10 @@ describe('PAY-2B — cross-artifact agreement with the deployed reader', () => {
         const p = `${d}/${e.name}`
         if (e.isDirectory()) { walk(p); continue }
         if (!/\.(ts|tsx)$/.test(e.name)) continue
-        const src = read(p)
-        for (const c of NEW_COLUMNS) if (src.includes(c)) hits.push(`${p}:${c}`)
-      }
-    }
-    dirs.forEach(walk)
-    expect(hits, `application code already references: ${hits.join(', ')}`).toEqual([])
-  })
-
-  it('the legacy payment stub is still unimported, and still out of scope', () => {
-    // N1: lib/payments/index.ts grants the wrong authority (enrollments, not
-    // entitlements). Deleting it is a separate slice; 060 must not make it look
-    // closer to usable.
-    const hits: string[] = []
-    const walk = (d: string) => {
-      let entries
-      try { entries = readdirSync(join(ROOT, d), { withFileTypes: true }) } catch { return }
-      for (const e of entries) {
-        const p = `${d}/${e.name}`
-        if (e.isDirectory()) { walk(p); continue }
-        if (!/\.(ts|tsx)$/.test(e.name) || p === 'lib/payments/index.ts') continue
         if (/from\s+['"][^'"]*lib\/payments['"]|from\s+['"]@\/lib\/payments['"]/.test(read(p))) hits.push(p)
       }
     }
     ;['app', 'components', 'lib', 'types'].forEach(walk)
-    expect(hits, `lib/payments is now imported by: ${hits.join(', ')}`).toEqual([])
+    expect(hits, `lib/payments is imported by: ${hits.join(', ')}`).toEqual([])
   })
 })
