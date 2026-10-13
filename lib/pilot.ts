@@ -54,6 +54,42 @@ export const FALLBACK_MODE: PlatformMode =
 export const PLATFORM_MODE: PlatformMode =
   (VALID_MODES as readonly string[]).includes(RAW) ? (RAW as PlatformMode) : FALLBACK_MODE
 
+/**
+ * AUTH-02 — the fallback is now AUDIBLE as well as safe.
+ *
+ * The resolution above is deliberately unchanged: production still degrades
+ * toward lockdown, because every other flag in this codebase fails closed and
+ * this one must too. What was wrong was not the direction, it was the SILENCE.
+ * A missing or misspelled variable produced the most restrictive mode with no
+ * signal anywhere, and the symptom an operator actually saw was "students
+ * cannot register" — several layers away from the cause.
+ *
+ * So the degradation is reported. It does NOT change the resolved value, and
+ * it is not a gate: registration stays reachable in every mode via middleware's
+ * narrow `/signup` exemption, which is the actual fix. This exists so that a
+ * configuration mistake is diagnosable in one step instead of several.
+ *
+ * `null` when the variable was read correctly.
+ */
+export const PLATFORM_MODE_DIAGNOSTIC: string | null =
+  (VALID_MODES as readonly string[]).includes(RAW)
+    ? null
+    : RAW.length === 0
+      ? `NEXT_PUBLIC_PLATFORM_MODE is not set, so PLATFORM_MODE resolved to '${FALLBACK_MODE}'. `
+        + `Set it explicitly to one of: ${VALID_MODES.join(', ')}.`
+      : `NEXT_PUBLIC_PLATFORM_MODE is set to an unrecognised value (${RAW.length} characters), `
+        + `so PLATFORM_MODE resolved to '${FALLBACK_MODE}'. `
+        + `It must be exactly one of: ${VALID_MODES.join(', ')}.`
+
+// Emitted once, server-side only. This module is imported by client components
+// (PAYMENTS_ENABLED), and a browser console is neither the right audience nor a
+// place to describe deployment configuration. The message names the variable
+// and reports the VALUE'S LENGTH, never the value — a misconfigured variable
+// could contain anything, including something pasted there by mistake.
+if (PLATFORM_MODE_DIAGNOSTIC !== null && typeof window === 'undefined') {
+  console.warn(`[PLATFORM_MODE] ${PLATFORM_MODE_DIAGNOSTIC}`)
+}
+
 // ── Derived flags — kept for backward compatibility with existing imports ──
 
 /**

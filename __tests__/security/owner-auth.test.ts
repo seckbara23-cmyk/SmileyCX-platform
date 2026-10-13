@@ -354,12 +354,29 @@ describe('CX-AUTH-1 — login page', () => {
   const form = readFileSync(join(ROOT, 'app/(auth)/login/LoginForm.tsx'), 'utf8')
   const page = readFileSync(join(ROOT, 'app/(auth)/login/page.tsx'), 'utf8')
 
-  it('offers NO public registration link', () => {
-    // Strip comments first: the explanatory note above the removed link
-    // legitimately contains the word "registration".
+  it('offers public registration, and registration is refused on the admin host', () => {
+    // AUTH-02 reversed the first half of this deliberately. It used to assert
+    // that the login page offers NO registration link, which was correct under
+    // the invite-only posture and became wrong when XPA-6A shipped public
+    // learner registration — the page was telling visitors "Accès sur
+    // invitation uniquement" about a form that was already live.
+    //
+    // What CX-AUTH-1 actually protects is the HOST BOUNDARY: the private
+    // administration entrance must not become a registration surface. That
+    // property is unchanged and is now asserted directly, where it lives,
+    // rather than inferred from the absence of a link in shared UI.
     const visible = form.replace(/\{\/\*[\s\S]*?\*\/\}/g, '').replace(/\/\/.*$/gm, '')
-    expect(visible).not.toMatch(/href=\{?['"`]\/signup/)
-    expect(visible).not.toMatch(/S['’]inscrire|Créer un compte|Sign ?up/i)
+    expect(visible, 'the login page should now offer free registration')
+      .toMatch(/href=\{?['"`]\/signup/)
+
+    // The boundary, at both layers that enforce it. A redirect in the browser
+    // is not an authorization control, so the page and the server action each
+    // check the host independently.
+    const signupPage = readFileSync(join(ROOT, 'app/(auth)/signup/page.tsx'), 'utf8')
+    expect(signupPage).toMatch(/isCommercialHost/)
+    expect(signupPage).toMatch(/redirect\('\/login'\)/)
+    const action = readFileSync(join(ROOT, 'app/actions/auth.ts'), 'utf8')
+    expect(action).toMatch(/isCommercialHost/)
   })
 
   it('is French and uses email + password', () => {

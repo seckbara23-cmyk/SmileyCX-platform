@@ -42,6 +42,27 @@ function safeCommercialDeepLink(pathname: string, search: string): string {
 // and preserve core auth flows. Use exact prefix matching.
 const PRIVATE_MODE_EXEMPT = [
   '/login',
+  // ── AUTH-02: registration is reachable in EVERY mode ──────────────────
+  //
+  // `/signup` was the only learner auth page missing from this list, so in
+  // private mode a logged-out visitor asking to register was redirected to
+  // `/login` — and `/login` offers no way to create an account. Registration
+  // was therefore unreachable, with no error anywhere to say so.
+  //
+  // That mattered more than private mode alone suggests, because
+  // PLATFORM_MODE resolves to 'private' in production when the variable is
+  // MISSING OR MISSPELLED (see lib/pilot.ts, XPA-8 W1). One typo in one Vercel
+  // variable silently turned off all public registration.
+  //
+  // This is a NARROW exception, not a relaxation of private mode. It exempts
+  // one path that creates an unprivileged, unverified account and grants
+  // nothing — no enrollment, no entitlement, no payment, no role above 'user'
+  // (Decision 4). Protected learning content under `/learn/…`, `/dashboard`,
+  // `/checkout` and `/certificate` is NOT exempt and stays gated, and the
+  // admin host boundary below is untouched. The page itself still enforces
+  // `isCommercialHost`, and so does the server action independently, so this
+  // does not expose registration on the internal admin host.
+  '/signup',
   '/forgot-password',
   '/reset-password',  // password-reset landing after email link
   '/access-restricted',

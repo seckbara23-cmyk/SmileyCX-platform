@@ -198,11 +198,15 @@ if (result.status === 'unknown') {
 } else {
   console.error(
     `\n✗ [${ERR_SIGNUP_ENABLED}] DEPLOYMENT BLOCKED\n\n` +
-    '  Public self-registration is ENABLED on this Supabase project\n' +
+    "  Supabase's own signup endpoint is OPEN on this project\n" +
     '  (auth settings report disable_signup: false).\n\n' +
-    '  XP Client Academy is invite-only: accounts must be provisioned by an\n' +
-    '  administrator. Deploying in this state would leave anyone able to create\n' +
-    '  an account by calling the Supabase Auth API directly.\n\n' +
+    '  AUTH-02: still a blocker, but NOT because registration is closed.\n' +
+    '  Public student registration IS open and free. It runs through the\n' +
+    '  server-owned registerLearner action, behind validation, a CAPTCHA seam,\n' +
+    '  per-IP and per-email rate limits, versioned legal acceptance, auditing\n' +
+    '  and server-side role assignment. Leaving /auth/v1/signup open lets\n' +
+    '  anyone create an account by calling the Supabase Auth API directly,\n' +
+    '  bypassing every one of those controls. That path is what SEC-1 was.\n\n' +
     '  Fix (operator action, Supabase Dashboard — cannot be done from code):\n' +
     '    Authentication → Sign In / Providers → Email →\n' +
     '    turn OFF "Allow new users to sign up", then redeploy.\n\n' +

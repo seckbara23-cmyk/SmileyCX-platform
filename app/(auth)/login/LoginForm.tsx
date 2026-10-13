@@ -172,14 +172,29 @@ export default function LoginForm({ next, error: callbackErrorProp, adminPortal 
         </form>
 
         {/*
-          CX-AUTH-1: the public registration link is deliberately gone.
-          Self-registration was closed by SEC-2/HOTFIX-3 (Supabase
-          disable_signup=true), so advertising it was both misleading and
-          contrary to the invite-only posture. Accounts are provisioned by an
-          administrator.
+          AUTH-02: this said "Accès sur invitation uniquement", which stopped
+          being true when XPA-6A shipped public learner registration. The
+          CX-AUTH-1 note it replaces was correct when written — self-service
+          signup WAS closed then — but registration has since been rebuilt as a
+          server-owned action and has been live on the commercial domain.
+
+          The SEC-2/HOTFIX-3 control is NOT being unwound and is not what this
+          text was describing. Supabase `disable_signup` stays TRUE, so
+          POST /auth/v1/signup remains closed to the internet; registration goes
+          through `registerLearner`, which uses the admin API behind Zod
+          validation, a CAPTCHA seam, per-IP and per-email rate limits,
+          versioned legal acceptance and auditing, with `platform_role` written
+          server-side from a literal.
+
+          So the accurate statement is that creating an account is free and
+          open, and that an account grants no course access by itself.
         */}
-        <p className="text-center text-xs text-cx-gray mt-6">
-          Accès sur invitation uniquement.
+        <p className="text-center text-sm text-cx-gray mt-6">
+          Pas encore de compte ?{' '}
+          <Link href="/signup" className="text-primary font-semibold hover:underline">
+            Créez gratuitement votre compte
+          </Link>{' '}
+          pour accéder à votre espace étudiant.
         </p>
       </div>
     </div>

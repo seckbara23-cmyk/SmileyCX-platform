@@ -5,12 +5,23 @@ const log = createLogger('security/auth-config')
 /**
  * Runtime validation of the external Supabase Auth configuration (SEC-2 §2).
  *
- * The platform is invite-only: accounts may be provisioned ONLY through the
- * administrative flow. The repository enforces everything it can (no signup UI,
- * no auth.signUp call anywhere, no public registration endpoint), but one
- * control is unavoidably external — Supabase's own `disable_signup` setting,
- * which governs POST /auth/v1/signup. That endpoint is reachable by anyone
- * holding the public anon key, which is embedded in every page by design.
+ * Account creation is PUBLIC but SERVER-OWNED: a student registers freely, and
+ * every account is created by the `registerLearner` server action, which is the
+ * only path that validates input, rate-limits by IP and email, records versioned
+ * legal acceptance, assigns `platform_role` from a server-side literal and
+ * writes an audit record.
+ *
+ * (This paragraph used to read "the platform is invite-only: accounts may be
+ * provisioned ONLY through the administrative flow". That was true when SEC-2
+ * was written and stopped being true when XPA-6A shipped public registration.
+ * AUTH-02 corrected the wording; the control below is unchanged.)
+ *
+ * The repository enforces everything it can — there is no `auth.signUp` call
+ * anywhere, and registration goes through the admin API — but one control is
+ * unavoidably external: Supabase's own `disable_signup` setting, which governs
+ * POST /auth/v1/signup. That endpoint is reachable by anyone holding the public
+ * anon key, which is embedded in every page by design, and it bypasses every
+ * control listed above. It must therefore stay closed.
  *
  * This module verifies that external setting at server startup and refuses to
  * continue when it is definitively insecure. It never silently proceeds.
@@ -90,12 +101,31 @@ export async function checkSignupDisabled(
   }
 }
 
-/** Message shown when the platform is running with public registration open. */
+/**
+ * Message shown when Supabase's own signup endpoint is open.
+ *
+ * AUTH-02 corrected the WORDING, not the control. This used to say the platform
+ * is "invite-only — accounts must be provisioned by an administrator", which
+ * stopped being true when XPA-6A shipped public learner registration. Reading
+ * it, an operator could reasonably conclude that the fix was to leave signup
+ * open, which is the opposite of what is wanted.
+ *
+ * What this check actually defends is narrower and still entirely valid:
+ * `POST /auth/v1/signup` must stay closed so that account creation cannot
+ * bypass `registerLearner`. Registration IS public, but it is SERVER-OWNED —
+ * it runs through the admin API (exempt from `disable_signup`) behind Zod
+ * validation, a CAPTCHA seam, per-IP and per-email rate limits, versioned legal
+ * acceptance and auditing, with `platform_role` written from a literal. Opening
+ * the Supabase endpoint would reintroduce a path with none of those, which is
+ * what SEC-1 was.
+ */
 export const INSECURE_SIGNUP_MESSAGE = [
   `[${ERR_SIGNUP_ENABLED}]`,
-  'SECURITY: public self-registration is ENABLED on this Supabase project',
+  "SECURITY: Supabase's own signup endpoint is OPEN on this project",
   '(auth settings report disable_signup: false).',
-  'XP Client Academy is invite-only — accounts must be provisioned by an administrator.',
+  'Public registration is expected — but it must go through the server-owned',
+  'registerLearner action, which validates, rate-limits, records legal acceptance',
+  'and assigns the role. An open /auth/v1/signup bypasses all of it.',
   'Fix: Supabase Dashboard → Authentication → Sign In / Providers → Email →',
   'disable "Allow new users to sign up", then redeploy.',
   'See docs/security/sec-2-remediation.md (production checklist).',
