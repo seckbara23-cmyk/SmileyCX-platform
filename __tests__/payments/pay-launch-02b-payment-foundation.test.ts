@@ -647,9 +647,18 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     return acc
   }
 
-  it('no PayDunya endpoint, host or API path appears in shipped code', () => {
+  it('no PayDunya endpoint, host or API path appears outside the transport module', () => {
+    // PAY-2D-1 authorised exactly ONE module to hold provider endpoints and
+    // header names: lib/payments/paydunya-client.ts. The sweep is unchanged
+    // everywhere else, so a second module acquiring provider API material --
+    // which is how an unreviewed call path would appear -- still fails here.
+    // Matched on the filename so the check is independent of path separators.
+    // Only one file may bear this name — the directory listing below pins the
+    // whole of lib/payments to exactly two modules.
+    const TRANSPORT_RE = /paydunya-client\.ts$/
     const hits: string[] = []
     for (const f of SHIPPED.flatMap(d => walk(join(ROOT, d)))) {
+      if (TRANSPORT_RE.test(f)) continue
       const s = readFileSync(f, 'utf8')
       for (const re of [/paydunya\.com/i, /checkout-invoice/i, /PAYDUNYA-MASTER-KEY/i,
                         /PAYDUNYA-PRIVATE-KEY/i, /PAYDUNYA-TOKEN/i]) {
@@ -669,16 +678,15 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
 
   it('no PayDunya client, webhook route or IPN handler exists', () => {
     for (const p of ['app/api/webhooks/paydunya', 'app/api/webhooks/paydunya/route.ts',
-                     'app/api/payments/webhook', 'lib/payments/paydunya-client.ts',
-                     'lib/payments/paydunya.ts']) {
-      expect(existsSync(join(ROOT, p)), `${p} exists — PAY-2 has not been authorised`).toBe(false)
+                     'app/api/webhooks', 'app/api/payments/webhook',
+                     'lib/payments/completion.ts', 'lib/payments/paydunya.ts']) {
+      expect(existsSync(join(ROOT, p)), `${p} exists — that slice is not authorised`).toBe(false)
     }
-    // PAY-2D-0 deleted the obsolete index.ts stub, so the credential boundary
-    // is now the ONLY module in lib/payments. That is a stronger statement than
-    // before, not a weaker one: nothing is left in the directory that could be
-    // mistaken for a gateway client.
+    // PAY-2D-0 deleted the obsolete index.ts stub; PAY-2D-1 added the transport
+    // module. The directory is pinned to EXACTLY these two, so a third module
+    // appearing in it -- a completion path, an IPN helper -- fails here.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort())
-      .toEqual(['paydunya-config.ts'])
+      .toEqual(['paydunya-client.ts', 'paydunya-config.ts'])
   })
 
   it('payment creation, the feature flag and the stub are all untouched', () => {

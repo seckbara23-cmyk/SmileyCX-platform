@@ -64,9 +64,11 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
     expect(existsSync(join(ROOT, STUB))).toBe(false)
   })
 
-  it('lib/payments contains only the credential boundary', () => {
+  it('lib/payments contains only the credential boundary and the transport module', () => {
+    // PAY-2D-1 added the authorised HTTP transport. Pinned to EXACTLY these
+    // two, so a third module appearing here still fails.
     const files = readdirSync(join(ROOT, 'lib/payments')).sort()
-    expect(files).toEqual(['paydunya-config.ts'])
+    expect(files).toEqual(['paydunya-client.ts', 'paydunya-config.ts'])
   })
 
   it('no module imports @/lib/payments by any spelling', () => {
@@ -304,22 +306,36 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
     expect(callers, `complete_payment is now called by: ${callers.join(', ')}`).toEqual([])
   })
 
-  it('no PayDunya API client, webhook, callback or IPN handler exists', () => {
+  it('no webhook, callback or IPN handler and no completion module exists', () => {
+    // PAY-2D-1 authorised the TRANSPORT module, so its existence is no longer
+    // the signal. What must still be absent is anything that could RECEIVE a
+    // notification or COMPLETE a payment.
     const routes = sourceFiles(['app']).filter(f => /\/route\.tsx?$/.test(f))
     const payment = routes.filter(r => /webhook|callback|ipn|paydunya|payment/i.test(r))
     // app/auth/callback/route.ts is Supabase AUTH, unrelated to payments.
     expect(payment.filter(r => !r.startsWith('app/auth/')),
       `payment-ish routes appeared: ${payment.join(', ')}`).toEqual([])
-    expect(existsSync(join(ROOT, 'lib/payments/paydunya-client.ts'))).toBe(false)
+    expect(existsSync(join(ROOT, 'app/api/webhooks'))).toBe(false)
     expect(existsSync(join(ROOT, 'lib/payments/completion.ts'))).toBe(false)
+    // And the transport module still has no caller anywhere.
+    const callers = sourceFiles().filter(f =>
+      /from\s+['"][^'"]*paydunya-client['"]/.test(read(f)))
+    expect(callers, `the transport module is now called by: ${callers.join(', ')}`).toEqual([])
   })
 
-  it('no network call to the provider was introduced', () => {
+  it('provider endpoints appear ONLY in the authorised transport module', () => {
+    const TRANSPORT = 'lib/payments/paydunya-client.ts'
     const hits: string[] = []
     for (const f of sourceFiles()) {
+      if (f === TRANSPORT) continue
       if (/app\.paydunya\.com|checkout-invoice/i.test(stripTs(read(f)))) hits.push(f)
     }
     expect(hits, `provider endpoints referenced by: ${hits.join(', ')}`).toEqual([])
+    // The exemption is only meaningful while that module stays transport-only.
+    const t = stripTs(read(TRANSPORT))
+    expect(t, 'the transport module reached for a database client')
+      .not.toMatch(/@\/lib\/supabase|createAdminClient/)
+    expect(t, 'the transport module called an RPC').not.toMatch(/\.rpc\(/)
   })
 
   it('the payment feature flag and platform mode are untouched and still off', () => {
