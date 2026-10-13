@@ -316,7 +316,7 @@ export default async function CourseDetailPage({ params }: Props) {
                 )}
                 {PLATFORM_MODE === 'private' && (
                   <span className="bg-amber-100 text-amber-700 text-xs font-bold px-3 py-1 rounded-full">
-                    Accès sur invitation
+                    Droit d&apos;accès requis
                   </span>
                 )}
               </div>
@@ -380,7 +380,7 @@ export default async function CourseDetailPage({ params }: Props) {
                       : PILOT_MODE || FREE_ACCESS_MODE
                         ? 'Demander un accès'
                         : PLATFORM_MODE === 'private'
-                          ? "Rejoindre la liste d'attente"
+                          ? 'Créer mon compte'
                           : COURSE_COPY.enrollment_cta}
                   </Link>
                 )}
@@ -414,7 +414,8 @@ export default async function CourseDetailPage({ params }: Props) {
               {PLATFORM_MODE === 'private' && !isEnrolled && (
                 <p className="text-xs text-cx-gray flex items-center gap-1.5">
                   <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                  Accès sur invitation uniquement · <Link href="/signup" className="text-primary hover:underline">Rejoindre la liste d&apos;attente</Link>
+                  L&apos;inscription est gratuite. L&apos;accès à cette formation nécessite un droit d&apos;accès valide. ·{' '}
+                      <Link href="/signup" className="text-primary hover:underline">Créer mon compte</Link>
                 </p>
               )}
               {!PILOT_MODE && !FREE_ACCESS_MODE && PLATFORM_MODE !== 'private' && !user && (
@@ -506,8 +507,8 @@ export default async function CourseDetailPage({ params }: Props) {
                     </div>
                   ) : PLATFORM_MODE === 'private' ? (
                     <div className="flex items-baseline gap-2">
-                      <span className="text-lg font-extrabold text-dark">Sur invitation</span>
-                      <span className="text-xs text-cx-gray">— accès limité</span>
+                      <span className="text-lg font-extrabold text-dark">Droit d&apos;accès requis</span>
+                      <span className="text-xs text-cx-gray">— inscription gratuite</span>
                     </div>
                   ) : (
                     <>
@@ -638,7 +639,7 @@ export default async function CourseDetailPage({ params }: Props) {
                 : FREE_ACCESS_MODE
                 ? 'Accès gratuit · Certificat inclus · Phase pilote'
                 : PLATFORM_MODE === 'private'
-                ? 'Accès sur invitation · La plateforme est en cours de lancement'
+                ? 'Inscription gratuite · L’accès à cette formation nécessite un droit d’accès valide'
                 : 'Accès immédiat après paiement · Orange Money · Wave · Carte'}
             </p>
             {isEnrolled ? (
@@ -660,7 +661,7 @@ export default async function CourseDetailPage({ params }: Props) {
                   : PILOT_MODE || FREE_ACCESS_MODE
                   ? 'Demander un accès'
                   : PLATFORM_MODE === 'private'
-                  ? "Rejoindre la liste d'attente"
+                  ? 'Créer mon compte'
                   : COURSE_COPY.payment_cta}
               </Link>
             )}
