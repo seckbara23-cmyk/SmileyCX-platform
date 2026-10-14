@@ -75,6 +75,12 @@ export default async function CoursesPage() {
         // genuinely available. There is no "unavailable" state on this page.
         available: true,
         parcours,
+        // CAT-02 — the price the database holds, not a constant and not a
+        // mode-dependent caption. `numeric` can arrive as a string, so it is
+        // coerced once here rather than in the card.
+        price:     Number(c.price),
+        currency:  c.currency,
+        isFree:    c.is_free === true,
       })
     }
   }

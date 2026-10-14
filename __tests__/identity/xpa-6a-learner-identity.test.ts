@@ -16,7 +16,7 @@
  * of them would have been caught by testing the happy path.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync, readdirSync } from 'fs'
+import { readFileSync, readdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import { execFileSync } from 'child_process'
 
@@ -719,12 +719,34 @@ describe('XPA-6A privileges', () => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 describe('XPA-6A secrets and confidentiality', () => {
-  it('the service-role key is never referenced from a client component', () => {
+  /**
+   * Every application source file, enumerated from the git index.
+   *
+   * ── WHY THE WORKTREE FILTER ───────────────────────────────────────────────
+   *
+   * `git ls-files` reads the INDEX, so a file deleted from the worktree but
+   * whose deletion is not yet staged is still listed, and `read(f)` then throws
+   * ENOENT -- which is how CAT-02 broke this sweep by deleting a dead
+   * component. Skipping an index entry with no file on disk is not a
+   * weakening: a file that does not exist ships no secret. The floor below is
+   * what keeps it honest -- if the enumeration ever silently collapsed (wrong
+   * cwd, git unavailable, a bad glob) the sweep would pass vacuously, so it
+   * must still find the bulk of the tree.
+   */
+  const appSources = () => {
     const files = execFileSync(
       'git', ['ls-files', 'app', 'components', 'lib'], { cwd: ROOT, encoding: 'utf8' },
-    ).split('\n').map(s => s.trim()).filter(f => /\.tsx?$/.test(f))
+    ).split('\n').map(s => s.trim())
+      .filter(f => /\.tsx?$/.test(f))
+      .filter(f => existsSync(join(ROOT, f)))
 
-    const offenders = files.filter(f => {
+    expect(files.length, 'the source enumeration collapsed -- this sweep would pass vacuously')
+      .toBeGreaterThan(150)
+    return files
+  }
+
+  it('the service-role key is never referenced from a client component', () => {
+    const offenders = appSources().filter(f => {
       const src = read(f)
       return /^'use client'/m.test(src) && /SUPABASE_SERVICE_ROLE_KEY|createAdminClient/.test(src)
     })
@@ -732,11 +754,7 @@ describe('XPA-6A secrets and confidentiality', () => {
   }, 20_000)
 
   it('no server-only secret is exposed through a NEXT_PUBLIC_ variable', () => {
-    const files = execFileSync(
-      'git', ['ls-files', 'app', 'components', 'lib'], { cwd: ROOT, encoding: 'utf8' },
-    ).split('\n').map(s => s.trim()).filter(f => /\.tsx?$/.test(f))
-
-    for (const f of files) {
+    for (const f of appSources()) {
       expect(read(f), f).not.toMatch(/NEXT_PUBLIC_\w*(SERVICE_ROLE|SECRET|API_KEY)/)
     }
   }, 20_000)

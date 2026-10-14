@@ -1,8 +1,7 @@
 'use client'
 import { useState } from 'react'
 import Link from 'next/link'
-import { CheckCircle2, Sparkles } from 'lucide-react'
-import { PILOT_MODE } from '@/lib/pilot'
+import { CheckCircle2 } from 'lucide-react'
 import { PRICING_PLANS, formatFcfa } from '../content'
 
 type Billing = 'monthly' | 'annual'
@@ -52,15 +51,14 @@ export default function PricingSection() {
           </div>
         </div>
 
-        {/* Pilot free-access badge (display only — no business logic) */}
-        {PILOT_MODE && (
-          <div className="mb-8">
-            <span className="inline-flex items-center gap-2 bg-success/10 text-success text-xs font-bold px-4 py-2 rounded-full">
-              <Sparkles className="w-3.5 h-3.5" aria-hidden />
-              Acc&egrave;s gratuit pendant la phase pilote
-            </span>
-          </div>
-        )}
+        {/* CAT-02 removed the pilot free-access badge that sat here.
+            It read "Accès gratuit pendant la phase pilote" whenever PILOT_MODE
+            was set — directly above subscription plans priced 29 000 FCFA and
+            up. Display-only, but it contradicted the prices beside it.
+
+            These plans are SUBSCRIPTION offers and are unrelated to per-course
+            prices; "Sur devis" for the enterprise plan stays, because that is
+            genuinely quote-based. */}
 
         {/* Plans */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-stretch">

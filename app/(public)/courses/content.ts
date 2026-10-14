@@ -24,6 +24,17 @@ export type CourseItem = {
   image: string | null
   available: boolean
   parcours: ParcoursId
+  /**
+   * CAT-02 — the authoritative commercial price, from `courses.price`.
+   *
+   * Carried on the item rather than fetched by the card, because the catalogue
+   * is a cached server-rendered page: the card is a presentation component and
+   * must not open its own database read.
+   */
+  price: number
+  currency: string
+  /** True only for a deliberately free course. Rendered as "Gratuit". */
+  isFree: boolean
 }
 
 export type ParcoursConfig = {
@@ -148,133 +159,19 @@ export function parcoursAvailability(
   return state
 }
 
-// ── Course catalog (static fallback — DB rows override matching slugs) ────────
-
-export const STATIC_CATALOG: CourseItem[] = [
-  // Fondations
-  {
-    slug:      'fondamentaux-experience-client',
-    title:     'Expérience client : les fondamentaux pour fidéliser vos relations',
-    desc:      "Découvrez les principes essentiels pour vos clients et posez les bases d'une expérience positive et durable.",
-    duration:  '3h',
-    level:     'Fondations',
-    image:     '/images/Picture5.jpg',
-    available: true,
-    parcours:  'debutant',
-  },
-  {
-    slug:      'experience-client-memorable',
-    title:     'Créer des interactions clients qui donnent envie de revenir',
-    desc:      "Maîtrisez la communication, l'écoute active et les techniques de conversation qui permettent d'offrir un service client de qualité.",
-    duration:  '2h30',
-    level:     'Fondations',
-    image:     '/images/Picture3.jpg',
-    available: true,
-    parcours:  'debutant',
-  },
-  {
-    slug:      'service-client-digital',
-    title:     "Les bases d'un service client digital professionnel et performant",
-    desc:      'Utilisez les canaux digitaux pour répondre vite, réduire les frictions et offrir une expérience client fluide et moderne.',
-    duration:  '2h',
-    level:     'Fondations',
-    image:     '/images/Elearning.jpeg',
-    available: false,
-    parcours:  'debutant',
-  },
-  // Intermédiaire
-  {
-    slug:      null,
-    title:     'Gestion des réclamations & récupération',
-    desc:      'Transformez les incidents en opportunités de fidélisation grâce à une gestion structurée des réclamations.',
-    duration:  '',
-    level:     'Intermédiaire',
-    image:     '/images/Picture6.jpg',
-    available: false,
-    parcours:  'intermediaire',
-  },
-  {
-    slug:      null,
-    title:     "Mesurer l'expérience client",
-    desc:      'NPS, CSAT, CES : choisissez les bons indicateurs et pilotez la satisfaction avec des données fiables.',
-    duration:  '',
-    level:     'Intermédiaire',
-    image:     '/images/Picture2.jpg',
-    available: false,
-    parcours:  'intermediaire',
-  },
-  {
-    slug:      null,
-    title:     'Expérience digitale & omnicanale',
-    desc:      'Offrez une expérience cohérente et sans couture sur tous vos canaux, physiques comme digitaux.',
-    duration:  '',
-    level:     'Intermédiaire',
-    image:     '/images/Picture7.jpg',
-    available: false,
-    parcours:  'intermediaire',
-  },
-  {
-    slug:      null,
-    title:     'Voix du client',
-    desc:      "Collectez, analysez et transformez les retours clients en actions concrètes d'amélioration.",
-    duration:  '',
-    level:     'Intermédiaire',
-    image:     '/images/Picture8.jpg',
-    available: false,
-    parcours:  'intermediaire',
-  },
-  // Avancé
-  {
-    slug:      null,
-    title:     'Stratégie CX',
-    desc:      "Définissez et déployez une stratégie d'expérience client alignée sur vos objectifs business.",
-    duration:  '',
-    level:     'Avancé',
-    image:     '/images/Picture5.jpg',
-    available: false,
-    parcours:  'avance',
-  },
-  {
-    slug:      null,
-    title:     'Customer Insights',
-    desc:      'Exploitez la donnée client pour anticiper les attentes et éclairer vos décisions stratégiques.',
-    duration:  '',
-    level:     'Avancé',
-    image:     '/images/Picture2.jpg',
-    available: false,
-    parcours:  'avance',
-  },
-  {
-    slug:      null,
-    title:     'Gouvernance CX',
-    desc:      "Structurez les rôles, les rituels et les indicateurs pour ancrer l'expérience client dans la durée.",
-    duration:  '',
-    level:     'Avancé',
-    image:     '/images/Picture6.jpg',
-    available: false,
-    parcours:  'avance',
-  },
-  {
-    slug:      null,
-    title:     'IA & Expérience Client',
-    desc:      "Intégrez l'intelligence artificielle pour personnaliser et fluidifier les parcours clients.",
-    duration:  '',
-    level:     'Avancé',
-    image:     '/images/Elearning.jpeg',
-    available: false,
-    parcours:  'avance',
-  },
-  {
-    slug:      null,
-    title:     'Transformation Customer-Centric',
-    desc:      'Conduisez le changement et diffusez une culture centrée client dans toute votre organisation.',
-    duration:  '',
-    level:     'Avancé',
-    image:     '/images/Picture7.jpg',
-    available: false,
-    parcours:  'avance',
-  },
-]
+// ───────────────────────────────────────────────────────
+// CAT-02 removed `STATIC_CATALOG`, the pilot-era hardcoded course list.
+//
+// CAT-ARCH-01 had already stopped the catalogue reading it: /courses is driven
+// by `public_catalogue_courses` plus the `courses` rows, and per decision Q-E
+// the public site shows only published courses that exist - no placeholder
+// cards. The array survived as dead data with zero importers, carrying invented
+// titles, `available: false` placeholders and no price at all.
+//
+// It had to go rather than be extended: CourseItem now requires a price, and
+// the only honest price is the one in the database. Adding figures to
+// hardcoded rows would have invented prices for courses that do not exist.
+// ───────────────────────────────────────────────────────
 
 // ── Pricing ───────────────────────────────────────────────────────────────────
 

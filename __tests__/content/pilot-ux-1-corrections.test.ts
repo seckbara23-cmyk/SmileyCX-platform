@@ -25,7 +25,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import {
-  PARCOURS, PRICING_PLANS, STATIC_CATALOG, levelLabel, type ParcoursId,
+  PARCOURS, PRICING_PLANS, levelLabel, type ParcoursId,
 } from '@/app/(public)/courses/content'
 import { LEVEL_LABELS } from '@/lib/utils/cn'
 
@@ -57,7 +57,17 @@ describe('PILOT-UX-1 — journey terminology', () => {
       expect(p.badge).not.toContain('Débutant')
     }
     for (const plan of PRICING_PLANS) expect(plan.name).not.toContain('Débutant')
-    for (const c of STATIC_CATALOG) expect(c.level).not.toBe('Débutant')
+
+    // CAT-02 deleted STATIC_CATALOG, the pilot-era hardcoded course list this
+    // line used to sweep. Courses now come from the database, so the only way
+    // a learner could still read "Débutant" is a row whose `level` reaches the
+    // page unmapped. Assert the mapping instead of the deleted array -- and
+    // that no SECOND hardcoded course list has reappeared to go unchecked.
+    expect(stripJs(read(COURSES))).toMatch(/level:\s*levelLabel\(c\.level\)/)
+    expect(stripJs(read(COURSES)), 'a raw DB level reaches the card')
+      .not.toMatch(/level:\s*c\.level\b/)
+    expect(stripJs(read(CONTENT)), 'a hardcoded course list is back, unswept')
+      .not.toMatch(/STATIC_CATALOG|CourseItem\[\]\s*=\s*\[/)
   })
 
   it('the first journey badge and pricing plan both say Fondations', () => {
@@ -87,10 +97,16 @@ describe('PILOT-UX-1 — journey terminology', () => {
     expect(LEVEL_LABELS.advanced).toBe('Avancé')
   })
 
-  it('every static Fondations course carries the new level label', () => {
-    const first = STATIC_CATALOG.filter(c => c.parcours === 'debutant')
-    expect(first.length).toBeGreaterThan(0)
-    for (const c of first) expect(c.level).toBe('Fondations')
+  it('every Fondations course carries the new level label, whatever the DB says', () => {
+    // Was: a sweep over STATIC_CATALOG's hardcoded rows, deleted by CAT-02.
+    // The label is now DERIVED at the mapping point, so this checks every
+    // value the first journey's rows can actually hold -- the current DB
+    // value, the legacy French label, and the already-correct one.
+    for (const dbValue of ['beginner', 'Débutant', 'Fondations'])
+      expect(levelLabel(dbValue)).toBe('Fondations')
+    // C1 is the first journey; the mapping that ties it to `debutant` is
+    // asserted above, and the page derives the label from the same row.
+    expect(stripJs(read(COURSES))).toMatch(/C1:\s*'debutant'/)
   })
 })
 

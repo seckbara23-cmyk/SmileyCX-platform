@@ -64,8 +64,37 @@ export interface PublicCourse {
   level: string
   duration_hours: number | null
   cover_url: string | null
+  /**
+   * CAT-02 — the AUTHORITATIVE commercial price, straight from `courses`.
+   *
+   * The catalogue previously selected no pricing column at all, so cards showed
+   * no price and the only figure a visitor could see came from the course detail
+   * page — which fell back to a seed constant when the database row was absent.
+   * Reading price here makes the database the single source.
+   *
+   * `price` is `numeric` in Postgres, so PostgREST may hand it back as a number
+   * or a string depending on the driver. Callers coerce with `Number()`.
+   *
+   * These three columns are readable by `anon`: verified live against production
+   * before this change, because a column the anon role cannot select would make
+   * the whole catalogue query fail 42501 rather than merely omit a price.
+   */
+  price: number
+  currency: string
+  /** True for a deliberately free course (C1-F4 today). Kept in step with `price = 0`. */
+  is_free: boolean
   is_socle?: boolean
 }
+
+/**
+ * The course columns every public read selects.
+ *
+ * Declared once so the two catalogue queries below cannot drift apart — the
+ * defect CAT-01 found was a missing column in one select, which is exactly the
+ * kind of thing a shared constant prevents.
+ */
+const PUBLIC_COURSE_COLUMNS =
+  'id, code, slug, title, description, level, duration_hours, cover_url, price, currency, is_free'
 
 /** Catalogues that have at least one published course. */
 export async function getPublicCatalogues(): Promise<PublicCatalogue[]> {
@@ -121,7 +150,7 @@ export async function getPublicPathCourses(pathCode: string): Promise<PublicCour
 
   const { data: courses } = await supabase
     .from('courses')
-    .select('id, code, slug, title, description, level, duration_hours, cover_url')
+    .select(PUBLIC_COURSE_COLUMNS)
     .in('code', rows.map(r => r.course_code))
     .eq('is_published', true)
 
@@ -173,7 +202,7 @@ export async function getPublishedCoursesByCatalogue(): Promise<Map<string, Publ
 
   const { data: courses } = await supabase
     .from('courses')
-    .select('id, code, slug, title, description, level, duration_hours, cover_url')
+    .select(PUBLIC_COURSE_COLUMNS)
     .in('code', rows.map(r => r.course_code))
     .eq('is_published', true)
 

@@ -294,10 +294,26 @@ describe('CAT-ARCH-01 — the public read path', () => {
   })
 
   it('still reads course content from courses, published only', () => {
+    // CAT-02 moved the column list into PUBLIC_COURSE_COLUMNS, shared by both
+    // public selects so the two cannot drift. This used to pin the literal
+    // string; it now pins the CONTRACT that string stood for -- every content
+    // column still read, published-only still applied -- which is what the
+    // display order actually depends on.
     const fn = src.slice(src.indexOf('export async function getPublishedCoursesByCatalogue'))
     const body = fn.slice(0, fn.indexOf('\n}'))
-    expect(body).toMatch(/\.select\('id, code, slug, title, description, level, duration_hours, cover_url'\)/)
+    expect(body).toMatch(/\.select\(PUBLIC_COURSE_COLUMNS\)/)
     expect(body).toMatch(/\.eq\('is_published', true\)/)
+
+    const decl = /const PUBLIC_COURSE_COLUMNS\s*=\s*\n?\s*'([^']+)'/.exec(src)
+    expect(decl, 'PUBLIC_COURSE_COLUMNS is no longer a literal column list').toBeTruthy()
+    const cols = decl![1].split(',').map(c => c.trim())
+    for (const c of ['id', 'code', 'slug', 'title', 'description', 'level', 'duration_hours', 'cover_url'])
+      expect(cols, `the public read dropped ${c}`).toContain(c)
+    // Stronger than the old literal: name the columns that must NEVER appear,
+    // instead of relying on an exact-match string to notice an addition.
+    for (const c of ['content', 'video_url', 'video_object_path', 'pdf_object_path',
+                     'subtitle_url', 'subtitle_object_path'])
+      expect(cols, `the public read exposes ${c}`).not.toContain(c)
   })
 
   it('never reads the registry directly', () => {
