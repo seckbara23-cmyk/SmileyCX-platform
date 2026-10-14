@@ -6,8 +6,8 @@ import { createClient } from '@/lib/supabase/server'
 import { learnEntryHref, coursePageHref } from '@/lib/learn/routes'
 import { resolveCourseAccess } from '@/lib/auth/course-access'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
-import { FLAGSHIP_COURSE, COURSE_MODULES, COURSE_COPY } from '@/data/seed'
-import { FREE_ACCESS_MODE, PILOT_MODE, PLATFORM_MODE } from '@/lib/pilot'
+import { COURSE_MODULES, COURSE_COPY } from '@/data/seed'
+import { FREE_ACCESS_MODE, PLATFORM_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
 import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
 import type { Metadata } from 'next'
 
@@ -89,8 +89,17 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     .eq('is_published', true)
     .maybeSingle()
 
-  const title       = course?.title       ?? (slug === FLAGSHIP_COURSE.slug ? FLAGSHIP_COURSE.title       : slug.replace(/-/g, ' '))
-  const description = course?.description ?? (slug === FLAGSHIP_COURSE.slug ? FLAGSHIP_COURSE.description : undefined)
+  // CAT-02 — the metadata must not outlive the page.
+  //
+  // The body now 404s for any slug the database does not publish, but this
+  // still reached into `data/seed.ts` for the old flagship slug, so
+  // /courses/comprendre-client-qualite-experience returned 404 carrying the
+  // title and description of a course that does not exist -- exactly the
+  // phantom listing CAT-02 removed from the page, left behind in the <head>
+  // where crawlers and link previews read it. An unpublished slug now gets
+  // nothing but a de-slugified name.
+  const title       = course?.title       ?? slug.replace(/-/g, ' ')
+  const description = course?.description ?? undefined
   const image       = course?.cover_url   ?? null
 
   return {
@@ -124,7 +133,20 @@ export default async function CourseDetailPage({ params }: Props) {
     .eq('is_published', true)
     .maybeSingle()
 
-  if (!dbCourse && slug !== FLAGSHIP_COURSE.slug) notFound()
+  // CAT-02 — a course page requires a published DATABASE row. Full stop.
+  //
+  // This used to read `!dbCourse && slug !== FLAGSHIP_COURSE.slug`, which let
+  // one slug render entirely from `data/seed.ts`. That was not theoretical:
+  // `comprendre-client-qualite-experience` is absent from `courses`, yet
+  // /courses/comprendre-client-qualite-experience returned 200 in production
+  // and advertised a course titled "Comprendre le Client" as GRATUIT — because
+  // the seed carries `price: 0` with a TEMP_FREE_ACCESS note saying to restore
+  // 45000 later. A phantom course, priced free, that nothing could sell and no
+  // entitlement could unlock.
+  //
+  // Making the database the only source means a slug it does not publish is a
+  // 404, which is what withdrawal has meant everywhere else since Q-E.
+  if (!dbCourse) notFound()
 
   // UAT-ROUTE-02: read the PUBLIC projection, not the protected tables.
   //
@@ -244,12 +266,24 @@ export default async function CourseDetailPage({ params }: Props) {
   }
 
   const totalLessons   = modules.reduce((n: number, m: typeof COURSE_MODULES[number]) => n + m.lessons.length, 0)
-  const price          = dbCourse?.price          ?? FLAGSHIP_COURSE.price
-  const currency       = dbCourse?.currency       ?? FLAGSHIP_COURSE.currency
-  const title          = dbCourse?.title          ?? FLAGSHIP_COURSE.title
-  const description    = dbCourse?.description    ?? FLAGSHIP_COURSE.description
-  const level          = dbCourse?.level          ?? FLAGSHIP_COURSE.level
-  const durationHours  = dbCourse?.duration_hours ?? FLAGSHIP_COURSE.duration_hours
+  // CAT-02 — commercial values come from the database and nowhere else. The
+  // `notFound()` above guarantees dbCourse exists, so there is no fallback to
+  // reach for; `numeric` may arrive as a string, hence the coercion.
+  const price          = Number(dbCourse.price)
+  const currency       = String(dbCourse.currency)
+  const isFree         = dbCourse.is_free === true
+  // Whether a learner can act on the price yet. Payments are not activated, so
+  // a paid course shows its price and says so rather than offering a checkout
+  // that cannot complete.
+  const paidPurchaseAvailable = PAYMENTS_ENABLED && !isFree
+  // CAT-02 — no seed fallback for displayed fields either. The `notFound()`
+  // above proves `dbCourse` exists, so these could never fire; but they are the
+  // same shape that produced the phantom course page, and leaving them would
+  // let anyone who later loosened that guard resurrect seed data silently.
+  const title          = dbCourse.title
+  const description    = dbCourse.description
+  const level          = dbCourse.level
+  const durationHours  = dbCourse.duration_hours
   const meta           = COURSE_META[slug]
   // XPA-3: paths that publicly feature this course (V4 §8 "ce cours fait
   // partie des parcours…"). Only publicly visible paths are returned.
@@ -274,11 +308,66 @@ export default async function CourseDetailPage({ params }: Props) {
   //      which is empty in production.
   const ctaAccess = await resolveCourseAccess(slug)
 
+  // CAT-02 — where the CTA sends someone who does NOT yet have access.
+  //
+  //   no account            -> log in / create one, returning to the lesson
+  //   account, purchasable  -> checkout
+  //   account, not yet      -> contact, because checkout cannot complete
+  //
+  // That last arm is the fix for a live dead end: payments are not activated,
+  // and /checkout under PILOT_MODE redirects into /learn/..., which
+  // resolveCourseAccess then refuses for want of an entitlement. The learner
+  // was bounced from a CTA, through a checkout, into a lesson, back to a
+  // refusal. Sending them somewhere that works is the honest state.
   const accessRequestHref = !user
     ? `/login?next=${encodeURIComponent(lessonHref)}`
-    : PLATFORM_MODE === 'private'
-      ? '/signup'
-      : `/checkout?course=${dbCourse?.id ?? slug}`
+    : paidPurchaseAvailable
+      ? `/checkout?course=${dbCourse.id}`
+      : `/contact?course=${encodeURIComponent(slug)}`
+
+  /**
+   * The one caption for "priced, but not purchasable yet".
+   *
+   * Named rather than repeated: it is rendered by the CTA and again by the
+   * commercial line at the foot of the page, and a mutation test caught the
+   * first draft writing it as two literals -- changing one left the other
+   * still saying the opposite.
+   */
+  const PURCHASE_UNAVAILABLE_NOTE = 'Inscription bientôt disponible'
+
+  /** The CTA label for a visitor without access. Never promises what the gate refuses. */
+  const accessRequestLabel = !user
+    ? 'Créer mon compte'
+    : paidPurchaseAvailable
+      ? COURSE_COPY.enrollment_cta
+      : PURCHASE_UNAVAILABLE_NOTE
+
+  /**
+   * CAT-02 — may we offer the progress-aware CTA ("Continuer la formation",
+   * "Passer le quiz", "Obtenir le certificat")?
+   *
+   * Two separate questions used to be answered by one term.
+   *
+   * MAY THEY ENTER is `ctaAccess.allowed`, and only that. The contract in
+   * `lib/auth/course-access.ts` is explicit -- "an enrollment is an academic
+   * transcript and must not authorize access on its own", and the SQL seam
+   * dropped its enrollments arm in migration 037 -- so an entitled learner with
+   * a verified email may enter whether or not an enrollment row exists. Both
+   * CTA sites were gated on `isEnrolled` ALONE, which promised entry to an
+   * enrolled learner whose entitlement had lapsed; the lesson route still
+   * refused them, so it was never a bypass, but it was the page promising what
+   * the gate denies.
+   *
+   * HAVE THEY PROGRESS TO RESUME is a data question, not an authorization one,
+   * and `enrolledProgress` is the thing that answers it. Keying the rich CTA on
+   * the progress object rather than on the transcript row means the label can
+   * never outrun the data behind it, and the authority stays in one place.
+   *
+   * Equivalent today, because progress is only loaded when enrolled -- but it
+   * states the right reason, so decoupling progress from enrollment later
+   * cannot silently turn a transcript back into permission.
+   */
+  const mayContinue = ctaAccess.allowed && !!enrolledProgress
 
   const resolvedLearnHref = ctaAccess.allowed
     ? (enrolledProgress?.continueUrl ?? lessonHref)
@@ -287,6 +376,28 @@ export default async function CourseDetailPage({ params }: Props) {
   // Belt and braces: whatever the branches produced, a self-link is inert.
   const learnHref =
     resolvedLearnHref === coursePageHref(slug) ? accessRequestHref : resolvedLearnHref
+
+  /**
+   * CAT-02 — where the CONTINUE CTA points.
+   *
+   * The two continue CTAs disagreed: the hero used `continueUrl ?? lessonHref`
+   * while the footer used `lessonHref` raw. For a course that publishes no
+   * lessons `lessonHref` degrades to `coursePageHref(slug)`, so an entitled,
+   * enrolled learner got a prominent footer button that reloaded the page they
+   * were already on. A behavioural test on the empty-syllabus case caught it;
+   * both now resolve through here, so they cannot drift apart again.
+   *
+   * The self-link check mirrors the one on `learnHref` above and is defensive
+   * only -- mutation testing shows it is currently unreachable, because
+   * whenever `mayContinue` holds there is an `enrolledProgress` whose
+   * `continueUrl` is a real route. It is kept for the same reason the
+   * `learnHref` guard is: this expression has had three different shapes, and
+   * an inert self-link is the failure mode it keeps reaching for.
+   */
+  const continueHref = (() => {
+    const target = enrolledProgress?.continueUrl ?? lessonHref
+    return target === coursePageHref(slug) ? accessRequestHref : target
+  })()
 
   return (
     <div>
@@ -309,14 +420,22 @@ export default async function CourseDetailPage({ params }: Props) {
                 <span className="bg-primary/10 text-primary text-xs font-semibold px-3 py-1 rounded-full">
                   {LEVEL_LABELS[level]}
                 </span>
-                {(PILOT_MODE || FREE_ACCESS_MODE) && (
+                {/* CAT-02 — the badge states the COMMERCIAL fact from the
+                    database, not the deployment mode. It used to read "Accès
+                    gratuit" whenever PILOT_MODE or FREE_ACCESS_MODE was set,
+                    which labelled all eight courses free regardless of their
+                    price. */}
+                {ctaAccess.allowed ? (
                   <span className="bg-green-100 text-green-700 text-xs font-bold px-3 py-1 rounded-full">
-                    Accès gratuit
+                    Acc&egrave;s actif
                   </span>
-                )}
-                {PLATFORM_MODE === 'private' && (
+                ) : isFree ? (
+                  <span className="bg-green-100 text-green-700 text-xs font-bold px-3 py-1 rounded-full">
+                    Formation gratuite
+                  </span>
+                ) : (
                   <span className="bg-amber-100 text-amber-700 text-xs font-bold px-3 py-1 rounded-full">
-                    Droit d&apos;accès requis
+                    Droit d&apos;acc&egrave;s requis
                   </span>
                 )}
               </div>
@@ -351,9 +470,9 @@ export default async function CourseDetailPage({ params }: Props) {
 
               {/* CTAs */}
               <div className="flex flex-col sm:flex-row gap-3 pt-1">
-                {isEnrolled ? (
+                {mayContinue ? (
                   <Link
-                    href={enrolledProgress?.continueUrl ?? lessonHref}
+                    href={continueHref}
                     className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-success text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-sm"
                   >
                     {enrolledProgress?.nextStep === 'quiz'        ? <ClipboardList className="w-4 h-4" />
@@ -377,11 +496,7 @@ export default async function CourseDetailPage({ params }: Props) {
                         actually holds access still gets an entry label. */}
                     {ctaAccess.allowed
                       ? (enrolledProgress?.continueUrl ? 'Reprendre la formation' : 'Commencer la formation')
-                      : PILOT_MODE || FREE_ACCESS_MODE
-                        ? 'Demander un accès'
-                        : PLATFORM_MODE === 'private'
-                          ? 'Créer mon compte'
-                          : COURSE_COPY.enrollment_cta}
+                      : accessRequestLabel}
                   </Link>
                 )}
                 <a
@@ -392,23 +507,33 @@ export default async function CourseDetailPage({ params }: Props) {
                 </a>
               </div>
 
-              {/* Access note */}
-              {PILOT_MODE && (
+              {/* Access note — CAT-02 */}
+              {/*
+                  Two mode-conditional notes used to live here: "Accès sur
+                  demande · Compte requis · Activation par un administrateur"
+                  under PILOT_MODE, and "Accès gratuit · Certificat inclus ·
+                  Phase pilote" under FREE_ACCESS_MODE. Both described how the
+                  platform was operated rather than what this course costs, and
+                  the first advertised a manual activation step that is not the
+                  commercial model.
+
+                  The replacement is derived from the course row and the access
+                  the gate actually granted, so it cannot promise entry
+                  resolveCourseAccess would refuse.
+              */}
+              {!ctaAccess.allowed && (
                 <p className="text-xs text-cx-gray flex items-center gap-1.5">
-                  <CheckCircle className="w-3.5 h-3.5 text-success shrink-0" />
-                  {/* UAT-ROUTE-02: this said "Aucun compte requis". It was
-                      false. resolveCourseAccess has no pilot arm, so /learn/*
-                      redirects an anonymous visitor to /login regardless of
-                      PLATFORM_MODE, and operating-mode.md records invite-only
-                      as the official mode. The page must not promise entry the
-                      gate refuses. */}
-                  Accès sur demande · Compte requis · Activation par un administrateur
-                </p>
-              )}
-              {FREE_ACCESS_MODE && !PILOT_MODE && (
-                <p className="text-xs text-cx-gray flex items-center gap-1.5">
-                  <CheckCircle className="w-3.5 h-3.5 text-success shrink-0" />
-                  Accès gratuit · Certificat inclus · Phase pilote
+                  {isFree ? (
+                    <>
+                      <CheckCircle className="w-3.5 h-3.5 text-success shrink-0" />
+                      Formation gratuite · Certificat inclus · Compte requis
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                      {formatPrice(price, currency)} · Accès complet à vie · Certificat inclus
+                    </>
+                  )}
                 </p>
               )}
               {PLATFORM_MODE === 'private' && !isEnrolled && (
@@ -418,7 +543,13 @@ export default async function CourseDetailPage({ params }: Props) {
                       <Link href="/signup" className="text-primary hover:underline">Créer mon compte</Link>
                 </p>
               )}
-              {!PILOT_MODE && !FREE_ACCESS_MODE && PLATFORM_MODE !== 'private' && !user && (
+              {/* CAT-02 — "requise avant l'achat" is only true when there IS a
+                  purchase. This was gated on the deployment mode, so flipping
+                  PLATFORM_MODE to 'live' while PAYMENTS_ENABLED stayed off
+                  would have told guests to log in to buy something nothing can
+                  sell. It now follows the same `paidPurchaseAvailable` the CTA
+                  does. */}
+              {paidPurchaseAvailable && !user && (
                 <p className="text-xs text-cx-gray">
                   <Link href="/login" className="text-primary hover:underline">Connexion</Link> requise avant l&apos;achat
                 </p>
@@ -500,15 +631,14 @@ export default async function CourseDetailPage({ params }: Props) {
                 </div>
 
                 <div className="mt-3 pt-3 border-t border-black/[0.06]">
-                  {FREE_ACCESS_MODE || PILOT_MODE ? (
+                  {/* CAT-02 — the price is the DATABASE price, in every mode.
+                      The two branches removed here replaced it with "Gratuit —
+                      phase pilote" and "Droit d'accès requis", so a learner
+                      could not discover what any course costs. */}
+                  {isFree ? (
                     <div className="flex items-baseline gap-2">
-                      <span className="text-lg font-extrabold text-dark">Gratuit</span>
-                      <span className="text-xs text-cx-gray">— phase pilote</span>
-                    </div>
-                  ) : PLATFORM_MODE === 'private' ? (
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-lg font-extrabold text-dark">Droit d&apos;accès requis</span>
-                      <span className="text-xs text-cx-gray">— inscription gratuite</span>
+                      <span className="text-lg font-extrabold text-success">Gratuit</span>
+                      <span className="text-xs text-cx-gray">Acc&egrave;s complet &agrave; vie</span>
                     </div>
                   ) : (
                     <>
@@ -631,20 +761,29 @@ export default async function CourseDetailPage({ params }: Props) {
 
           {/* Bottom CTA */}
           <div className="mt-10 bg-light rounded-2xl p-8 text-center border border-black/[0.05]">
+            {/* CAT-02 — one commercial line, derived from the course row.
+                The four mode branches here said "Activation par un
+                administrateur", "Phase pilote", or promised immediate access
+                after a payment that is not activated. None of them told the
+                reader the price. */}
+            {/* CAT-02 — a learner who ALREADY holds access is not a sales
+                prospect. This line pitched to everyone, so an entitled student
+                opening a course they own read "Inscription bientôt disponible"
+                under their own continue button. The commercial line is for
+                people who cannot get in yet; for everyone else it is replaced
+                by what they actually need to know. */}
             <p className="text-sm text-cx-gray mb-5">
-              {/* UAT-ROUTE-02: see the hero access note. Same false claim, same
-                  correction — the access gate ignores PLATFORM_MODE. */}
-              {PILOT_MODE
-                ? 'Accès sur demande · Compte requis · Activation par un administrateur'
-                : FREE_ACCESS_MODE
-                ? 'Accès gratuit · Certificat inclus · Phase pilote'
-                : PLATFORM_MODE === 'private'
-                ? 'Inscription gratuite · L’accès à cette formation nécessite un droit d’accès valide'
-                : 'Accès immédiat après paiement · Orange Money · Wave · Carte'}
+              {ctaAccess.allowed
+                ? 'Votre accès est actif · Certificat de réussite inclus'
+                : isFree
+                ? 'Formation gratuite · Certificat inclus · Compte requis'
+                : paidPurchaseAvailable
+                ? `${formatPrice(price, currency)} · Accès immédiat après paiement`
+                : `${formatPrice(price, currency)} · Accès complet à vie · ${PURCHASE_UNAVAILABLE_NOTE}`}
             </p>
-            {isEnrolled ? (
+            {mayContinue ? (
               <Link
-                href={lessonHref}
+                href={continueHref}
                 className="inline-flex items-center gap-2 px-10 py-4 bg-success text-white font-bold rounded-cx hover:opacity-90 transition-opacity text-base"
               >
                 <Play className="w-5 h-5" /> Continuer la formation
@@ -658,18 +797,23 @@ export default async function CourseDetailPage({ params }: Props) {
                 {/* UAT-ROUTE-02: same correction as the hero CTA. */}
                 {ctaAccess.allowed
                   ? (enrolledProgress?.continueUrl ? 'Reprendre la formation' : 'Commencer la formation')
-                  : PILOT_MODE || FREE_ACCESS_MODE
-                  ? 'Demander un accès'
-                  : PLATFORM_MODE === 'private'
-                  ? 'Créer mon compte'
-                  : COURSE_COPY.payment_cta}
+                  : accessRequestLabel}
               </Link>
             )}
-            {!PILOT_MODE && !FREE_ACCESS_MODE && PLATFORM_MODE !== 'private' && !user && (
+            {/* CAT-02 — the secondary guest affordance.
+                This was gated on `!PILOT_MODE && !FREE_ACCESS_MODE &&
+                PLATFORM_MODE !== 'private'` and pointed BOTH links at
+                `/checkout?course=...`, bypassing the state machine above. Dead
+                under today's config, it would have woken up the moment
+                PLATFORM_MODE moved to 'live' and sent guests into a checkout
+                that PAYMENTS_ENABLED still refuses. The condition is now just
+                "is this a guest", and the destination is the same safe target
+                the main CTA uses, so the two cannot diverge. */}
+            {!user && (
               <p className="text-xs text-cx-gray mt-4">
-                <Link href={`/login?next=/checkout?course=${dbCourse?.id ?? slug}`} className="text-primary hover:underline">Connectez-vous</Link>
+                <Link href={accessRequestHref} className="text-primary hover:underline">Connectez-vous</Link>
                 {' '}ou{' '}
-                <Link href={`/signup?next=/checkout?course=${dbCourse?.id ?? slug}`} className="text-primary hover:underline">créez un compte</Link>
+                <Link href={`/signup?next=${encodeURIComponent(lessonHref)}`} className="text-primary hover:underline">créez un compte</Link>
                 {' '}pour accéder
               </p>
             )}

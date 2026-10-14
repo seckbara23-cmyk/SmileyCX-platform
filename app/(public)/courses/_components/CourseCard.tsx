@@ -1,8 +1,27 @@
 import Link from 'next/link'
 import Image from 'next/image'
 import { ArrowRight, Clock, GraduationCap, Lock } from 'lucide-react'
+import { formatPrice } from '@/lib/utils/cn'
 import type { CourseItem } from '../content'
 
+/**
+ * Catalogue card (CAT-02).
+ *
+ * ── WHY THE PRICE IS SHOWN BUT THE CTA IS NOT PERSONALISED ────────────────
+ *
+ * This card renders inside `/courses`, which is a CACHED page
+ * (`export const revalidate = 60`) served identically to every visitor by the
+ * cookie-less anon client. So it cannot know whether the person reading it is a
+ * guest, a registered student or already entitled — and it must not try: a
+ * per-viewer CTA on a shared cached page would either leak one visitor's state
+ * to the next or force the whole catalogue to go dynamic.
+ *
+ * The price IS viewer-independent, so it belongs here. Everything that depends
+ * on who is asking — "Continuer", "S'inscrire", "bientôt disponible" — belongs
+ * on the course DETAIL page, which is rendered per request and already resolves
+ * access through `resolveCourseAccess`. This card's job is to state the price
+ * honestly and send the visitor somewhere that can answer the rest.
+ */
 export default function CourseCard({ course }: { course: CourseItem }) {
   return (
     <div className="cx-card flex flex-col rounded-2xl overflow-hidden hover:-translate-y-1 hover:shadow-md transition-all duration-300">
@@ -35,6 +54,18 @@ export default function CourseCard({ course }: { course: CourseItem }) {
       <div className="flex flex-col flex-1 p-5">
         <h3 className="text-[15px] font-bold text-dark leading-snug mb-2">{course.title}</h3>
         <p className="text-[13px] text-cx-gray leading-relaxed line-clamp-3 flex-1 mb-4">{course.desc}</p>
+
+        {/* Price — straight from the database row, never a mode-dependent caption */}
+        <div className="flex items-baseline gap-2 mb-3">
+          {course.isFree ? (
+            <span className="text-base font-extrabold text-success">Gratuit</span>
+          ) : (
+            <span className="text-base font-extrabold text-dark">
+              {formatPrice(course.price, course.currency)}
+            </span>
+          )}
+          <span className="text-[11px] text-cx-gray">Acc&egrave;s &agrave; vie</span>
+        </div>
 
         {/* Footer: meta + CTA */}
         <div className="border-t border-black/[0.06] pt-4 flex items-center justify-between gap-3 flex-wrap">
