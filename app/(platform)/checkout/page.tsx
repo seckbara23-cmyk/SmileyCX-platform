@@ -1,14 +1,30 @@
+import Link from 'next/link'
 import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector'
 import { formatPrice } from '@/lib/utils/cn'
-import { FLAGSHIP_COURSE } from '@/data/seed'
-import { FREE_ACCESS_MODE, PILOT_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
-import { enrollForFree } from '@/app/actions/enrollment'
+import { PILOT_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
 import type { Metadata } from 'next'
 
+// ENR-01C-a — three imports left with the code that used them.
+//
+//   FLAGSHIP_COURSE  the phantom-course fallback (C1). The seed module is no
+//                    longer a source of course identity on any public or
+//                    commercial page.
+//   enrollForFree    the dead free-enrollment branch (C4). This page now
+//                    writes nothing at all.
+//   FREE_ACCESS_MODE its last two uses were that branch and the page title
+//                    below. PILOT_MODE is untouched and still read on line ~50.
+//
+// `lib/pilot.ts` is unchanged and FREE_ACCESS_MODE still has three consumers:
+// checkout/confirm/page.tsx and app/actions/enrollment.ts.
+
 export const metadata: Metadata = {
-  title: FREE_ACCESS_MODE || PILOT_MODE ? 'Inscription gratuite' : 'Paiement',
+  // ENR-01C-a (C5) — this read "Inscription gratuite" under pilot mode, which
+  // titled a browser tab with a claim CAT-02's prices contradict. Static
+  // metadata cannot read the course row, so it states neither a price nor a
+  // freeness: the one word that is true in every mode.
+  title: 'Inscription',
 }
 
 interface Props { searchParams: Promise<{ course?: string }> }
@@ -19,21 +35,24 @@ export default async function CheckoutPage({ searchParams }: Props) {
 
   const supabase = await createClient()
 
-  // Load course first — needed for both pilot and payment paths
-  let course = null
-  const { data: dbCourse } = await supabase
+  // ENR-01C-a (C1) — the course is whatever the DATABASE says, or nothing.
+  //
+  // This used to fall back to `data/seed.ts` for the old flagship slug and for
+  // the literal id 'seed', fabricating a course object with `id: 'seed'`. That
+  // is the same phantom-course escape hatch CAT-02 removed from the public
+  // detail page, left behind here: `?course=comprendre-client-qualite-experience`
+  // or `?course=seed` produced a checkout for a course that exists in no row.
+  //
+  // `courseId` arrives from the query string and is not validated as a uuid, so
+  // a non-uuid makes this query error and return no row — which is the same
+  // answer as "not found", and is handled identically.
+  const { data: course } = await supabase
     .from('courses')
     .select('*')
     .eq('id', courseId)
     .single()
 
-  if (dbCourse) {
-    course = dbCourse
-  } else if (courseId === FLAGSHIP_COURSE.slug || courseId === 'seed') {
-    course = { ...FLAGSHIP_COURSE, id: 'seed', created_at: '', updated_at: '' }
-  } else {
-    notFound()
-  }
+  if (!course) notFound()
 
   // ── PILOT_MODE: No auth or enrollment needed — go straight to learning ─────
   if (PILOT_MODE) {
@@ -73,20 +92,45 @@ export default async function CheckoutPage({ searchParams }: Props) {
     .single()
   if (existing) redirect('/dashboard')
 
-  // ── TEMP_FREE_ACCESS: Bypass payment during pilot ──────────────────────────
-  // When FREE_ACCESS_MODE is true, create an active enrollment immediately
-  // without going through any payment gateway.
-  // To restore payment: remove this entire block.
-  if (FREE_ACCESS_MODE) {
-    if (course.id !== 'seed') {
-      await enrollForFree(course.id)
-    }
-    redirect('/dashboard')
-  }
-  // ── End TEMP_FREE_ACCESS ───────────────────────────────────────────────────
+  // ENR-01C-a (C4) — a TEMP_FREE_ACCESS block stood here and was DEAD CODE.
+  //
+  // It read `if (FREE_ACCESS_MODE) { await enrollForFree(course.id); redirect() }`.
+  // But `FREE_ACCESS_MODE` and `PILOT_MODE` are the SAME predicate --
+  // `PLATFORM_MODE === 'pilot'` (lib/pilot.ts) -- and the `if (PILOT_MODE)`
+  // branch above returns unconditionally, so this could never be reached: by
+  // the time control arrived here, FREE_ACCESS_MODE was provably false.
+  //
+  // Had it been reachable it was also wrong twice over: it called
+  // `enrollForFree` for ANY course including the paid ones, and it DISCARDED
+  // the result, so a learner was redirected to /dashboard and told they were
+  // enrolled whether or not anything had been written. (`enrollForFree` is
+  // itself closed behind SELF_ENROLLMENT_OPEN and writes no entitlement, so
+  // nothing was ever granted.) Removed rather than repaired: free enrollment
+  // is ENR-01E/F and will be a server action with its own authority checks.
+  //
+  // NOTHING replaces it. This slice introduces no enrollment or entitlement
+  // write of any kind.
 
-  // ── PAYMENTS_ENABLED guard — shows pilot message when gateways not active ──
+  // ── PAYMENTS_ENABLED guard ────────────────────────────────────────────────
+  //
+  // ENR-01C-a (C5). This panel announced "Accès gratuit en cours -- La
+  // plateforme est en phase pilote. L'accès aux formations est entièrement
+  // gratuit et ne nécessite aucun paiement", and offered "Accéder à ma
+  // formation" pointing at /dashboard.
+  //
+  // Every clause of that was false once CAT-02 published real prices: the
+  // courses are not free, no access follows from arriving here, and /dashboard
+  // shows nothing to a learner with no entitlement. It described how the
+  // platform was once operated rather than what this course costs.
+  //
+  // The replacement states the commercial fact from the course ROW, using the
+  // same derivation and the same wording as the public detail page, and sends
+  // the learner somewhere that works.
   if (!PAYMENTS_ENABLED) {
+    const price    = Number(course.price)
+    const currency = String(course.currency)
+    const isFree   = course.is_free === true
+
     return (
       <div className="cx-section">
         <div className="cx-container max-w-2xl text-center py-16">
@@ -94,18 +138,31 @@ export default async function CheckoutPage({ searchParams }: Props) {
             <span className="text-3xl">🎓</span>
           </div>
           <h1 className="text-2xl font-extrabold text-dark mb-3">
-            Accès gratuit en cours
+            Inscription bient&ocirc;t disponible
           </h1>
-          <p className="text-cx-gray mb-8 max-w-md mx-auto">
-            La plateforme est en phase pilote. L&apos;accès aux formations est entièrement
-            gratuit et ne nécessite aucun paiement.
+          <p className="text-cx-gray mb-2 max-w-md mx-auto font-semibold text-dark">
+            {isFree
+              ? 'Formation gratuite · Certificat inclus · Compte requis'
+              : `${formatPrice(price, currency)} · Accès complet à vie · Certificat inclus`}
           </p>
-          <a
-            href="/dashboard"
-            className="inline-block px-6 py-3 bg-primary text-white font-bold rounded-cx hover:opacity-90 transition-opacity"
-          >
-            Accéder à ma formation →
-          </a>
+          <p className="text-cx-gray mb-8 max-w-md mx-auto text-sm">
+            Le paiement en ligne n&apos;est pas encore activé pour cette formation.
+            Contactez-nous pour organiser votre inscription.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link
+              href={`/contact?course=${encodeURIComponent(String(course.slug))}`}
+              className="inline-block px-6 py-3 bg-primary text-white font-bold rounded-cx hover:opacity-90 transition-opacity"
+            >
+              Nous contacter
+            </Link>
+            <Link
+              href={`/courses/${course.slug}`}
+              className="inline-block px-6 py-3 bg-light border border-black/[0.08] text-dark font-semibold rounded-cx hover:bg-white transition-colors"
+            >
+              Revenir &agrave; la formation
+            </Link>
+          </div>
         </div>
       </div>
     )
