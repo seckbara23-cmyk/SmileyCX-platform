@@ -7,7 +7,12 @@ import { learnEntryHref, coursePageHref } from '@/lib/learn/routes'
 import { resolveCourseAccess } from '@/lib/auth/course-access'
 import { formatPrice, LEVEL_LABELS } from '@/lib/utils/cn'
 import { COURSE_MODULES, COURSE_COPY } from '@/data/seed'
-import { FREE_ACCESS_MODE, PLATFORM_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
+// ENR-01B dropped FREE_ACCESS_MODE from this page: the curriculum icons were
+// its last consumer here, and a deployment mode is not an access fact. The same
+// move was made for the lesson player under UAT-ACCESS-01. Pilot mode itself is
+// untouched -- `lib/pilot.ts` still exports it and checkout, checkout/confirm
+// and `app/actions/enrollment.ts` still read it.
+import { PLATFORM_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
 import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
 import type { Metadata } from 'next'
 
@@ -736,7 +741,29 @@ export default async function CourseDetailPage({ params }: Props) {
                 <div className="border-t border-black/[0.06] divide-y divide-black/[0.03]">
                   {mod.lessons.map((lesson: typeof COURSE_MODULES[number]['lessons'][number]) => (
                     <div key={lesson.slug} className="flex items-center gap-3 px-4 sm:px-5 py-3 hover:bg-light/30 transition-colors">
-                      {(lesson.is_preview || FREE_ACCESS_MODE) ? (
+                      {/* ENR-01B — the icon states who may actually OPEN this
+                          lesson, which is not the same question as what the
+                          deployment mode is.
+
+                          `is_preview` is an authorization fact: migration 036's
+                          `lessons_visible` policy admits a row on
+                          `lessons.is_preview = true` alone, so a preview lesson
+                          genuinely is readable without an entitlement.
+                          FREE_ACCESS_MODE grants nothing anywhere in SQL — it
+                          only used to paint this icon. Reading the two as one
+                          disjunct meant pilot mode showed a Play icon on all
+                          128 protected lessons; migration 043 measured the same
+                          defect from the other side ("Measured: 0 lock icons
+                          anywhere") and ruled that the badge "promises access
+                          the platform does not grant".
+
+                          `ctaAccess.allowed` is the same seam the learn layout
+                          enforces, so an entitled learner no longer sees a lock
+                          on a lesson they can open. This changes presentation
+                          only: the row is a plain div, and authorization still
+                          lives in `lessons_visible`, `resolveCourseAccess` and
+                          the media route. */}
+                      {(ctaAccess.allowed || lesson.is_preview) ? (
                         <Play className="w-3.5 h-3.5 text-primary shrink-0" />
                       ) : (
                         <Lock className="w-3.5 h-3.5 text-cx-gray/50 shrink-0" />
@@ -746,7 +773,17 @@ export default async function CourseDetailPage({ params }: Props) {
                         {lesson.duration_minutes && (
                           <span className="text-xs text-cx-gray">{lesson.duration_minutes} min</span>
                         )}
-                        {(lesson.is_preview || FREE_ACCESS_MODE) && (
+                        {/* ENR-01B — GRATUIT claims this lesson is open to the
+                            public, so only the authoritative flag may set it.
+
+                            Deliberately NOT `ctaAccess.allowed`: an entitled
+                            learner's lessons are not free, they are paid for,
+                            and a learner enrolled in the free COURSE holds an
+                            entitlement rather than a public preview. The
+                            course-level "Formation gratuite" badge already
+                            states that a course costs nothing; this badge means
+                            something narrower and must stay narrow. */}
+                        {lesson.is_preview && (
                           <span className="text-[10px] font-bold text-success bg-green-50 px-2 py-0.5 rounded-full">
                             GRATUIT
                           </span>
