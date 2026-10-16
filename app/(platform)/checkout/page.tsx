@@ -93,14 +93,32 @@ export default async function CheckoutPage({ searchParams }: Props) {
     .single()
   if (!profile) redirect(`/login?next=/checkout?course=${courseId}`)
 
-  // If already enrolled, send to dashboard
-  const { data: existing } = await supabase
-    .from('enrollments')
-    .select('id')
-    .eq('user_id', user.id)
-    .eq('course_id', course.id)
-    .single()
-  if (existing) redirect('/dashboard')
+  // ENR-01C-c (C3) — an enrollment row used to decide this, and it is not
+  // evidence of anything commercial.
+  //
+  // What stood here read `enrollments` and, on finding a row, redirected to
+  // /dashboard as though the learner already had the course:
+  //
+  //   if (existing) redirect('/dashboard')
+  //
+  // Per Q-L and migration 037 an enrollment is an ACADEMIC TRANSCRIPT and
+  // authorizes nothing — `has_course_access()` does not read the table at all.
+  // So this check answered a commercial question with an academic fact, and it
+  // ran BEFORE the entitlement check, which meant it won.
+  //
+  // Two live production rows sat in exactly that state: one learner holds
+  // active enrollments in C1-F4 and C2-F5 with NO entitlement row of any kind,
+  // both with payment_id null — records left by the retired pilot path. They
+  // were bounced to /dashboard, which shows them nothing, and could not reach
+  // the price of the paid course they might want to buy. The mirror case also
+  // exists: one learner holds a live MANUAL_ADMIN entitlement with no
+  // enrollment row, and was treated as a prospect until ENR-01C-b.
+  //
+  // Nothing replaces it. The entitlement check below was already the correct
+  // authority; removing this leaves it as the ONLY one, so checkout now agrees
+  // with the course page, the learn layout and the media route by construction
+  // rather than by coincidence. A revoked, expired, suspended or absent
+  // entitlement all deny here for the same reason they deny there.
 
   // ENR-01C-b (C2) — an ALREADY-ENTITLED learner is not a sales prospect.
   //

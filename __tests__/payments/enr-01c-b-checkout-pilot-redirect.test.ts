@@ -369,25 +369,34 @@ describe('ENR-01C-b · 5. nothing is granted, and C1/C4/C5 remain fixed', () => 
     expect(hrefs, 'the panel offers /dashboard again').not.toContain('/dashboard')
   })
 
-  it('C3 is EXPLICITLY unchanged: an enrollment row still routes to /dashboard', async () => {
-    // Out of scope for this slice. Pinned so ENR-01C-c has to declare intent.
+  it('C3 is FIXED: an enrollment row no longer routes anyone to /dashboard', async () => {
+    // Was: the enrollment row redirected to /dashboard as if the learner had
+    // the course. Two live production rows sat in exactly that state.
     setMode('public')
     fixture = { course: PAID, modules: SYLLABUS, ...LEARNERS.enrolledUnentitled }
     const r = await visit(PAID.id)
 
-    expect(touched, 'the enrollments read disappeared — that belongs to ENR-01C-c')
-      .toContain('enrollments')
-    expect(r, 'C3 behaviour changed').toEqual({ kind: 'redirect', url: '/dashboard' })
+    expect(touched, 'checkout still reads enrollments').not.toContain('enrollments')
+    expect(r.kind, 'an enrollment row still short-circuited checkout').toBe('render')
+    if (r.kind !== 'render') return
+    expect(flat(r.tree), 'the enrolled-but-unentitled learner was not shown the price')
+      .toMatch(/Inscription bient[oô]t disponible/)
+    expect(hrefsOf(r.tree).filter(h => h.includes('/learn/'))).toEqual([])
   })
 
-  it('the enrollment check still runs BEFORE the entitlement check', async () => {
-    // Ordering matters: putting the entitlement check first would silently
-    // change C3's observable behaviour for an enrolled+entitled learner.
+  it('the ENTITLEMENT check is now the only access authority in checkout', async () => {
+    // Was: 'the enrollment check still runs BEFORE the entitlement check'.
+    // There is no enrollment check left to order against.
     setMode('public')
-    fixture = { course: PAID, modules: SYLLABUS, user: VERIFIED, profile: ACTIVE, access: HAS_ACCESS, enrollment: ENROLLED }
+    fixture = {
+      course: PAID, modules: SYLLABUS, user: VERIFIED, profile: ACTIVE,
+      access: HAS_ACCESS, enrollment: ENROLLED,
+    }
     const r = await visit(PAID.id)
-    expect(r, 'the entitlement check overtook C3').toEqual({ kind: 'redirect', url: '/dashboard' })
-    expect(touched.indexOf('enrollments')).toBeLessThan(
-      touched.indexOf('my_course_access') === -1 ? Infinity : touched.indexOf('my_course_access'))
+
+    expect(touched).toContain('my_course_access')
+    expect(touched).not.toContain('enrollments')
+    expect(r, 'an entitled learner is no longer routed by their transcript')
+      .toEqual({ kind: 'redirect', url: `/courses/${PAID.slug}` })
   })
 })
