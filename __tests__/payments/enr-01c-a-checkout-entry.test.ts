@@ -366,12 +366,16 @@ describe('ENR-01C-a · out of scope: C2 and C3 are unchanged', () => {
     expect(flat(r.tree)).toMatch(/Inscription bient[oô]t disponible/)
   })
 
-  it('C3: the duplicate check STILL reads enrollments (not fixed by this slice)', async () => {
+  it('C3 is FIXED by ENR-01C-c: checkout no longer reads enrollments at all', async () => {
+    // This pinned the defect while C3 was out of scope. ENR-01C-c removed the
+    // enrollment read entirely, so the pin is re-aimed at the correction: an
+    // enrollment row is an academic transcript and no longer decides anything
+    // here.
     public_()
     fixture = { course: PAID, user: VERIFIED, profile: PROFILE, enrollment: { id: 'e1' } }
     const r = await visit(PAID.id)
-    expect(touched, 'C3 changed — that belongs to ENR-01C-c').toContain('enrollments')
-    expect(r).toEqual({ kind: 'redirect', url: '/dashboard' })
+    expect(touched, 'checkout still reads the enrollments table').not.toContain('enrollments')
+    expect(r.kind, 'an enrollment row still routed the learner away').toBe('render')
   })
 
   it('an unauthenticated visitor is still sent to log in', async () => {
