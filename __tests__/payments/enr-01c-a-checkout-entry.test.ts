@@ -181,7 +181,11 @@ describe('ENR-01C-a · C1 — no course is ever invented', () => {
         expect(r.kind, `?course=${id} did not 404 (got ${r.kind}${r.kind === 'redirect' ? ' ' + r.url : ''})`)
           .toBe('notFound')
       }
-    })
+      // ENR-01C-b: checkout now imports the access seam, so each
+      // resetModules() in this loop reloads a larger graph. Isolated this
+      // runs in <1s; the default 5s cap is reached only by the repeated
+      // re-import, not by the page.
+    }, 20_000)
 
     it(`[${mode}] an arbitrary unknown id 404s`, async () => {
       mode === 'pilot' ? pilot() : public_()
@@ -344,18 +348,22 @@ describe('ENR-01C-a · C5 — the unavailable-payment panel states the real pric
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('ENR-01C-a · out of scope: C2 and C3 are unchanged', () => {
-  it('C2: pilot mode STILL redirects into /learn (not fixed by this slice)', async () => {
+  it('C2 is FIXED by ENR-01C-b: pilot mode no longer redirects into /learn', async () => {
+    // This pinned the defect while C2 was out of scope. ENR-01C-b removed the
+    // redirect, so the pin is re-aimed at the corrected behaviour rather than
+    // deleted: an unentitled learner in pilot mode now reaches the priced
+    // panel, and no lesson URL is produced.
     pilot()
     fixture = {
-      course: PAID, user: VERIFIED, profile: PROFILE,
+      course: PAID, user: VERIFIED, profile: PROFILE, enrollment: null,
       modules: { id: 'm1', slug: 'module-1', lessons: [{ id: 'l1', slug: 'lecon-1' }] },
     }
     const r = await visit(PAID.id)
-    expect(r.kind).toBe('redirect')
-    if (r.kind === 'redirect') {
-      expect(r.url, 'C2 changed — that belongs to ENR-01C-b')
-        .toBe(`/learn/${PAID.slug}/module-1/lecon-1`)
-    }
+    expect(r.kind, 'checkout still navigates away in pilot mode').toBe('render')
+    if (r.kind !== 'render') return
+    expect(hrefsOf(r.tree).some(h => h.includes('/learn/')), 'a lesson URL was exposed')
+      .toBe(false)
+    expect(flat(r.tree)).toMatch(/Inscription bient[oô]t disponible/)
   })
 
   it('C3: the duplicate check STILL reads enrollments (not fixed by this slice)', async () => {
