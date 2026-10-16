@@ -365,7 +365,12 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
   it('checkout behaviour is unchanged by this slice', () => {
     // The checkout rework is PAY-2D-4 and is explicitly out of scope here.
     const page = read('app/(platform)/checkout/page.tsx')
-    expect(page).toMatch(/if \(PILOT_MODE\)/)
+    // ENR-01C-b removed the `if (PILOT_MODE)` branch this used to pin, which
+    // redirected every caller into /learn without consulting the access gate.
+    // That assertion only marked the branch's EXISTENCE, so re-aiming it at the
+    // property the branch violated is strictly stronger than restating it: this
+    // slice must not reintroduce a lesson redirect from checkout.
+    expect(page, 'checkout redirects into /learn again').not.toContain('redirect(`/learn/')
     expect(page).toMatch(/if \(!PAYMENTS_ENABLED\)/)
     const sel = read('components/payment/PaymentMethodSelector.tsx')
     expect(sel).toMatch(/createPaymentRecord/)

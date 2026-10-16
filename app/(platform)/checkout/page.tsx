@@ -3,7 +3,13 @@ import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector'
 import { formatPrice } from '@/lib/utils/cn'
-import { PILOT_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
+import { PAYMENTS_ENABLED } from '@/lib/pilot'
+import { resolveCourseAccessById } from '@/lib/auth/course-access'
+
+// ENR-01C-b dropped PILOT_MODE from this page: the pilot redirect was its
+// last consumer here, and a deployment mode is not an access fact. `lib/pilot.ts`
+// is untouched and PILOT_MODE still has consumers elsewhere; PAYMENTS_ENABLED
+// stays and still gates the payment UI.
 import type { Metadata } from 'next'
 
 // ENR-01C-a — three imports left with the code that used them.
@@ -54,23 +60,27 @@ export default async function CheckoutPage({ searchParams }: Props) {
 
   if (!course) notFound()
 
-  // ── PILOT_MODE: No auth or enrollment needed — go straight to learning ─────
-  if (PILOT_MODE) {
-    const { data: firstMod } = await supabase
-      .from('modules')
-      .select('id, slug, lessons(id, slug)')
-      .eq('course_id', course.id)
-      .order('order_index')
-      .limit(1)
-      .maybeSingle()
-
-    const firstLesson = (firstMod?.lessons as { id: string; slug: string }[] | null)?.[0]
-    if (firstMod && firstLesson) {
-      redirect(`/learn/${course.slug}/${firstMod.slug ?? firstMod.id}/${firstLesson.slug ?? firstLesson.id}`)
-    }
-    redirect(`/courses/${course.slug}`)
-  }
-  // ── End PILOT_MODE ─────────────────────────────────────────────────────────
+  // ENR-01C-b (C2) — a PILOT_MODE block stood here and sent every caller
+  // straight into a lesson. It read, ABOVE the auth check and above any
+  // access resolution:
+  //
+  //   if (PILOT_MODE) {            // "No auth or enrollment needed"
+  //     … read modules/lessons …
+  //     … then sent the caller to the first lesson under /learn …
+  //   }
+  //
+  // A DEPLOYMENT MODE IS NOT AN ACCESS GRANT. `PILOT_MODE` appears in no
+  // policy, no function and no grant; `resolveCourseAccess` is the authority
+  // and this block never asked it. Production runs PLATFORM_MODE=pilot, so a
+  // signed-in learner following any checkout link was bounced into a lesson
+  // the learn layout then refused: CTA -> checkout -> lesson -> denial. The
+  // route itself always held, so this was never a bypass — it was the page
+  // promising entry the gate denies, the same shape CAT-02 removed from the
+  // price and ENR-01B from the lesson badge.
+  //
+  // Nothing replaces it here. Control now falls through to the auth check, the
+  // enrollment check (C3, deliberately untouched), the entitlement check below,
+  // and finally the priced panel — all of which already exist.
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect(`/login?next=/checkout?course=${courseId}`)
@@ -91,6 +101,27 @@ export default async function CheckoutPage({ searchParams }: Props) {
     .eq('course_id', course.id)
     .single()
   if (existing) redirect('/dashboard')
+
+  // ENR-01C-b (C2) — an ALREADY-ENTITLED learner is not a sales prospect.
+  //
+  // Deleting the pilot redirect would otherwise have shown the priced panel
+  // ("Inscription bientôt disponible") to someone who already holds access and
+  // simply has no enrollment row yet — a real production state: one live
+  // entitlement currently exists with no matching enrollment.
+  //
+  // The authority is `resolveCourseAccessById`, the same seam the learn layout,
+  // the media route and `ensureAcademicEnrollment` use, and which
+  // `has_course_access()` mirrors in SQL. This DELEGATES to it rather than
+  // re-deciding anything, so no authorization logic is duplicated here, and it
+  // deliberately does NOT read the enrollment row above: an enrollment is an
+  // academic transcript and authorizes nothing (Q-L, migration 037).
+  //
+  // The destination is the COURSE PAGE, not a lesson URL. That page already
+  // resolves this learner's access and renders the correct progress-aware CTA
+  // (CAT-02 / ENR-01B), so checkout computes no lesson route and can promise
+  // nothing the gate would refuse.
+  const access = await resolveCourseAccessById(String(course.id))
+  if (access.allowed) redirect(`/courses/${course.slug}`)
 
   // ENR-01C-a (C4) — a TEMP_FREE_ACCESS block stood here and was DEAD CODE.
   //

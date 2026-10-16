@@ -683,7 +683,9 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
     expect(action).toMatch(/status:\s+'pending'/)
     expect(action, 'the action started using the provider client').not.toMatch(/paydunya-client/)
     const page = read('app/(platform)/checkout/page.tsx')
-    expect(page).toMatch(/if \(PILOT_MODE\)/)
+    // ENR-01C-b removed the pinned `if (PILOT_MODE)` branch (see the note in
+    // pay-2d-0). Re-aimed at the invariant it was standing in for.
+    expect(page, 'checkout redirects into /learn again').not.toContain('redirect(`/learn/')
     expect(page).toMatch(/if \(!PAYMENTS_ENABLED\)/)
   })
 
