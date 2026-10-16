@@ -34,8 +34,9 @@
  * environment, resets the module registry, and re-imports. No test sends mail:
  * the provider is a stub and is asserted on for call count.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { spawnSync } from 'child_process'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
+import { spawnSync, spawn } from 'child_process'
+import { createServer } from 'node:http'
 import { join } from 'path'
 
 // ── the provider boundary, and nothing above it ────────────────────────────
@@ -201,6 +202,45 @@ describe('AUTH-LAUNCH-B1 · 2. the production configuration gate', () => {
   const SCRIPT = join(process.cwd(), 'scripts/security/verify-prod-config.mjs')
 
   /**
+   * Every variable the gate reads, pinned to a neutral value.
+   *
+   * WHY THESE ARE SET AND NOT DELETED — this is exactly what broke CI run
+   * 38950773617. The gate loads `.env.local` for any key still `undefined`, so
+   * deleting NEXT_PUBLIC_SUPABASE_URL does NOT make the project unconfigured
+   * on a developer machine: the loader puts the real URL straight back. Locally
+   * the gate therefore probed the live Supabase project over the network and
+   * printed "public self-registration is disabled"; in CI, where ci.yml pins
+   * placeholder credentials and no .env.local exists, it printed the skip line
+   * instead. The suite was asserting an ambient outcome, and the two
+   * environments disagreed.
+   *
+   * An explicit value wins, because the loader skips any key that is already
+   * defined — '' included. So every row below declares its own world, and no
+   * row reaches the network unless it says so.
+   */
+  const NEUTRAL: NodeJS.ProcessEnv = {
+    // No real project: the Auth probe must announce a skip, not reach out.
+    NEXT_PUBLIC_SUPABASE_URL: 'https://placeholder.supabase.co',
+    NEXT_PUBLIC_SUPABASE_ANON_KEY: 'placeholder-anon-key',
+    // Payments inactive, and no LIVE credential anywhere near the build.
+    PAYDUNYA_MODE: '',
+    PAYDUNYA_TEST_MASTER_KEY: '', PAYDUNYA_TEST_PRIVATE_KEY: '', PAYDUNYA_TEST_TOKEN: '',
+    PAYDUNYA_LIVE_MASTER_KEY: '', PAYDUNYA_LIVE_PRIVATE_KEY: '', PAYDUNYA_LIVE_TOKEN: '',
+  }
+
+  /** The ambient environment, stripped of anything that could decide a row. */
+  function baseEnv(): NodeJS.ProcessEnv {
+    const base: NodeJS.ProcessEnv = { ...process.env }
+    for (const k of ['VERCEL_ENV', 'RESEND_API_KEY', 'EMAIL_DRY_RUN', 'EMAIL_FROM']) delete base[k]
+    // A PayDunya variable exposed to the browser is refused by NAME, so for
+    // those the key must be absent rather than blank.
+    for (const k of Object.keys(base)) {
+      if (k.startsWith('NEXT_PUBLIC_') && /PAYDUNYA/i.test(k)) delete base[k]
+    }
+    return { ...base, ...NEUTRAL }
+  }
+
+  /**
    * Run the real gate with a controlled environment.
    *
    * `spawnSync` rather than `execFileSync`: the sender notice is a
@@ -208,18 +248,72 @@ describe('AUTH-LAUNCH-B1 · 2. the production configuration gate', () => {
    * stdout when the child exits 0 — which hid that notice entirely. Both
    * streams are needed because the gate reports on both.
    */
-  function gate(env: Record<string, string>): { code: number; out: string } {
-    // Strip the ambient mailer/CI vars so each row is exactly what it declares.
-    const base = { ...process.env }
-    for (const k of ['VERCEL_ENV', 'RESEND_API_KEY', 'EMAIL_DRY_RUN', 'EMAIL_FROM']) delete base[k]
+  function gate(env: NodeJS.ProcessEnv): { code: number; out: string } {
     const r = spawnSync(process.execPath, [SCRIPT], {
-      env: { ...base, ...env }, encoding: 'utf8',
+      env: { ...baseEnv(), ...env }, encoding: 'utf8',
     })
     return { code: r.status ?? 1, out: (r.stdout ?? '') + (r.stderr ?? '') }
   }
 
+  /**
+   * The same gate, run without blocking this process.
+   *
+   * Required by every row that points NEXT_PUBLIC_SUPABASE_URL at the fixture
+   * below: `spawnSync` blocks this event loop, so the fixture server could
+   * never answer the child's request and the probe would time out into
+   * SEC2_SIGNUP_UNVERIFIED for every case alike — the tests would agree with
+   * each other while measuring nothing.
+   */
+  function gateAsync(env: NodeJS.ProcessEnv): Promise<{ code: number; out: string }> {
+    return new Promise(resolve => {
+      const child = spawn(process.execPath, [SCRIPT], { env: { ...baseEnv(), ...env } })
+      let out = ''
+      child.stdout.on('data', d => { out += String(d) })
+      child.stderr.on('data', d => { out += String(d) })
+      child.on('close', code => resolve({ code: code ?? 1, out }))
+    })
+  }
+
+  /**
+   * A stand-in for `GET /auth/v1/settings`, so the signup cases are decided by
+   * this test rather than by whatever the real project reports today.
+   *
+   * 127.0.0.1, never `localhost`: the gate's placeholder predicate is
+   * /placeholder|example\.com|localhost/i, so a localhost URL would be
+   * classified as "no real project" and skipped before the probe ran.
+   */
+  let server: ReturnType<typeof createServer> | null = null
+
+  async function closeFixture() {
+    if (!server) return
+    const s = server
+    server = null
+    await new Promise<void>(r => s.close(() => r()))
+  }
+
+  async function supabaseFixture(payload: unknown, status = 200): Promise<NodeJS.ProcessEnv> {
+    await closeFixture()
+    server = createServer((req, res) => {
+      if (!req.url?.startsWith('/auth/v1/settings')) { res.writeHead(404); res.end(); return }
+      res.writeHead(status, { 'content-type': 'application/json' })
+      res.end(JSON.stringify(payload))
+    })
+    const s = server
+    await new Promise<void>(r => s.listen(0, '127.0.0.1', r))
+    const addr = s.address()
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0
+    return {
+      NEXT_PUBLIC_SUPABASE_URL: `http://127.0.0.1:${port}`,
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: 'fixture-anon-key',
+    }
+  }
+
+  afterAll(closeFixture)
+
   const KEY = 'test-key-not-a-real-credential'
   const SENDER = 'XP Client Academy <noreply@example.com>'
+  /** A mailer configuration the gate is satisfied with, for the rows below. */
+  const MAILER_OK: NodeJS.ProcessEnv = { VERCEL_ENV: 'production', RESEND_API_KEY: KEY, EMAIL_FROM: SENDER }
 
   // ── it must NOT block anything that is not a live deployment ──────────────
 
@@ -296,10 +390,58 @@ describe('AUTH-LAUNCH-B1 · 2. the production configuration gate', () => {
 
   // ── it must not have displaced the checks that were already there ────────
 
-  it('the pre-existing signup and PayDunya checks still run', () => {
-    const r = gate({ VERCEL_ENV: 'production', RESEND_API_KEY: KEY, EMAIL_FROM: SENDER })
-    expect(r.out, 'the PayDunya gate stopped reporting').toMatch(/PayDunya/)
-    expect(r.out, 'the signup check stopped reporting').toMatch(/self-registration is disabled|SEC2_SIGNUP/)
+  it('an UNCONFIGURED Supabase project produces the explicit skip, and still passes', async () => {
+    // This is what CI actually runs: ci.yml pins placeholder Supabase
+    // credentials, so there is no project to interrogate. The gate must say so
+    // rather than claim a verified setting, and must still exit 0.
+    const r = await gateAsync(MAILER_OK)
+    expect(r.out, 'the mailer gate stopped reporting').toMatch(/Mailer configuration verified/)
+    expect(r.out, 'the PayDunya gate stopped reporting').toMatch(/PayDunya not configured/)
+    expect(r.out, 'the Auth check neither ran nor announced a skip')
+      .toMatch(/Skipping production Auth config check/)
+    expect(r.out, 'a skipped probe claimed a verified setting')
+      .not.toMatch(/self-registration is disabled/)
+    expect(r.code).toBe(0)
+  })
+
+  it('a CONFIGURED project with signup CLOSED exercises the real signup check', async () => {
+    const fixture = await supabaseFixture({ disable_signup: true })
+    const r = await gateAsync({ ...MAILER_OK, ...fixture })
+    expect(r.out).toMatch(/Mailer configuration verified/)
+    expect(r.out, 'the probe was skipped instead of run')
+      .not.toMatch(/Skipping production Auth config check/)
+    expect(r.out, 'the signup check stopped reporting')
+      .toMatch(/Auth configuration verified: public self-registration is disabled/)
+    expect(r.code).toBe(0)
+  })
+
+  it('a CONFIGURED project with signup OPEN is still BLOCKED, mailer notwithstanding', async () => {
+    // The point of the row: a satisfied mailer gate must not buy a pass on
+    // SEC-2. The mailer block runs first and exits 0 on its own terms, so the
+    // only thing stopping this build is the check that was already there.
+    const fixture = await supabaseFixture({ disable_signup: false })
+    const r = await gateAsync({ ...MAILER_OK, ...fixture })
+    expect(r.out, 'the mailer gate did not pass, so this proves nothing')
+      .toMatch(/Mailer configuration verified/)
+    expect(r.out).toMatch(/SEC2_SIGNUP_ENABLED/)
+    expect(r.code, 'an open Supabase signup endpoint was allowed through').toBe(1)
+  })
+
+  it('an UNREADABLE setting warns and does not block (ratified SEC-2 policy)', async () => {
+    const fixture = await supabaseFixture({ disable_signup: 'yes' }) // not a boolean
+    const r = await gateAsync({ ...MAILER_OK, ...fixture })
+    expect(r.out).toMatch(/SEC2_SIGNUP_UNVERIFIED/)
+    expect(r.out, 'an unreadable setting was reported as secure')
+      .not.toMatch(/self-registration is disabled/)
+    expect(r.code, 'a transient read failure blocked a deployment').toBe(0)
+  })
+
+  it('a PayDunya violation still BLOCKS when the mailer is perfectly configured', () => {
+    const r = gate({ ...MAILER_OK, PAYDUNYA_LIVE_MASTER_KEY: 'live-credential-sentinel' })
+    expect(r.out, 'the mailer gate did not pass, so this proves nothing')
+      .toMatch(/Mailer configuration verified/)
+    expect(r.out).toMatch(/PAYDUNYA_CONFIG/)
+    expect(r.code, 'a LIVE PayDunya credential was allowed through').toBe(1)
   })
 
   it('the gate never prints a credential value', () => {
