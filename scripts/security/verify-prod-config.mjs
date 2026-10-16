@@ -53,6 +53,109 @@ if (existsSync('.env.local')) {
   }
 }
 
+// ══ Mailer configuration gate (AUTH-LAUNCH-B1) ═══════════════════════
+//
+// WHY THIS EXISTS
+// `lib/email` treats a MISSING mailer key as dry-run:
+//
+//   DRY_RUN = process.env.EMAIL_DRY_RUN === 'true' || !process.env.RESEND_API_KEY
+//
+// and the dry-run branch returns `{ success: true }` — the same value a real
+// send returns. There is no `skipped` or `dryRun` field to tell them apart, so a
+// production deployment with no key does this, silently:
+//
+//   registerLearner -> createUser(email_confirm: false)   account is unconfirmed
+//                   -> dispatchVerificationEmail -> true  nothing was sent
+//                   -> audit verificationSent: true       the log asserts success
+//                   -> learner told to check their inbox  nothing will arrive
+//
+// GoTrue then refuses password sign-in for an unconfirmed user, so every
+// registration produces an account that can never be used, and the only trace
+// is one log.info line. AUTH-UAT-01 raised this as blocker B1.
+//
+// WHY A DEPLOY-TIME GATE, AND WHY `VERCEL_ENV`
+//
+// Public registration is NOT feature-flagged here. Supabase's `disable_signup`
+// stays true permanently — that closes Supabase's OWN endpoint, not ours — and
+// AUTH-02 made `/signup` reachable in every PLATFORM_MODE. So "is public signup
+// enabled" is always yes, and the only question left is "is this the deployment
+// real learners reach".
+//
+// NODE_ENV cannot answer that: `next build` sets it to 'production' for a local
+// build and a preview build alike, so gating on it would fail `npm run build` on
+// any developer machine without a mail key. VERCEL_ENV can: the platform sets
+// it to production | preview | development, and it is absent locally and in CI.
+//
+// Preview deployments are deliberately NOT gated. They serve on *.vercel.app,
+// which `isAdminHost` treats as the internal host, and `registerLearner` refuses
+// a non-commercial host before creating anything — so a preview cannot register
+// a learner and does not need a mailer. That is a boundary, not a gap.
+//
+// Reads variable PRESENCE only, never a value. No network.
+{
+  const present = name => {
+    const v = process.env[name]
+    return typeof v === 'string' && v.trim().length > 0
+  }
+
+  const isLiveDeployment = process.env.VERCEL_ENV === 'production'
+  const hasKey    = present('RESEND_API_KEY')
+  const dryRunOn  = process.env.EMAIL_DRY_RUN === 'true'
+  const hasSender = present('EMAIL_FROM')
+
+  const mailerFailures = []
+
+  if (isLiveDeployment) {
+    if (!hasKey) {
+      mailerFailures.push(
+        'RESEND_API_KEY is missing or blank.\n' +
+        '    lib/email falls back to DRY RUN when the key is absent and still\n' +
+        '    reports success, so every public registration would produce an\n' +
+        '    account that can never be activated. Set RESEND_API_KEY in the\n' +
+        '    Vercel Production environment.',
+      )
+    }
+    if (dryRunOn) {
+      mailerFailures.push(
+        "EMAIL_DRY_RUN is set to 'true' on a production deployment.\n" +
+        '    Verification email would be logged and discarded. Remove the\n' +
+        '    variable, or set it to any other value, for Production.',
+      )
+    }
+  }
+
+  if (mailerFailures.length > 0) {
+    console.error('\n✗ [MAILER_UNAVAILABLE] DEPLOYMENT BLOCKED\n')
+    for (const f of mailerFailures) console.error(`  • ${f}\n`)
+    console.error(
+      '  Public registration is always enabled in this application, so a live\n' +
+      '  deployment without a working mailer strands every learner it attracts.\n' +
+      '  This gate checks variable PRESENCE only and never reads a value.\n',
+    )
+    process.exit(1)
+  }
+
+  if (!isLiveDeployment) {
+    console.log(
+      `• Mailer gate not enforced (VERCEL_ENV=${process.env.VERCEL_ENV ?? 'unset'}) — ` +
+      `local, CI and preview builds are exempt; key ${hasKey ? 'present' : 'absent'}.`,
+    )
+  } else if (!hasSender) {
+    // Not a blocker: EMAIL_FROM has a deliberate fallback (decision register
+    // Q-D) and a wrong sender fails LOUDLY — Resend returns an error, the send
+    // returns { success: false }, and `verificationSent: false` is audited.
+    // Unlike a missing key, that failure is visible. Warn, do not block.
+    console.warn(
+      '⚠ [MAILER_SENDER_DEFAULT] EMAIL_FROM is unset; lib/email will use its\n' +
+      '  built-in sender. Resend only delivers from a domain it has verified —\n' +
+      '  confirm that domain is verified, or set EMAIL_FROM to one that is.',
+    )
+    console.log('✓ Mailer configuration verified: key present, dry-run off.')
+  } else {
+    console.log('✓ Mailer configuration verified: key present, dry-run off, sender set.')
+  }
+}
+
 // ══ PayDunya configuration gate (PAY-LAUNCH-02A) ═══════════════════════════
 //
 // Deliberately placed BEFORE the Supabase placeholder short-circuit below. That
