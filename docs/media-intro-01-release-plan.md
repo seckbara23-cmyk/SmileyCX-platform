@@ -7,7 +7,8 @@
 | Baseline | `131375d0928446be40f4cf0f04039d740f7510a5` (`origin/main`) |
 | Source videos | `incoming media/` — git-ignored, never committed, never deployed |
 | Protected bucket | `course-content` (private) |
-| Tool | `scripts/media/intro-release.mjs` |
+| Tool | `scripts/media/intro-release.mjs` (CLI) + `intro-release-core.mjs` (engine) |
+| Hardening | MEDIA-INTRO-03 corrected defects D1–D4; see §8 |
 | Manifest | `docs/media-intro-01-manifest.json` |
 
 ---
@@ -40,26 +41,32 @@ Seven films, seven published courses. `courses.code` is UNIQUE and immutable (mi
 
 ## 2. Execution sequence
 
+`<ref>` is the Supabase project reference — the `<ref>` in `https://<ref>.supabase.co`. Naming it is mandatory for every write, so the wrong environment cannot be hit by accident.
+
 ```bash
 # 1. READ-ONLY. Verifies the seven hashes, re-resolves every code against the
-#    database, detects existing Introductions, writes the manifest. Exits 1 on
-#    any mismatch. Safe to run at any time.
+#    database, detects existing Introductions, freezes the rollback baseline,
+#    writes the manifest. Exits 1 on any mismatch. Safe to run at any time.
 node scripts/media/intro-release.mjs plan
 
-# 2. Upload to the PRIVATE bucket. Each file gets a NEW object path; the old
-#    C1-F1 object is left untouched. Verifies the uploaded size against the
-#    source and records it in the manifest. Skips anything already uploaded.
-node scripts/media/intro-release.mjs upload --approved
+# 2. Upload to the PRIVATE bucket. Object paths are DETERMINISTIC in
+#    (course code, content hash), so a retry after a crash reconciles the
+#    object already there instead of minting a second one. The old C1-F1
+#    object is left untouched. Checkpointed after every file.
+node scripts/media/intro-release.mjs upload --approved --project-ref=<ref>
 
-# 3. Attach. Six INSERTs + one PATCH of video_object_path. Refuses to run
-#    without a verified upload. Re-checks for an existing `introduction` slug
-#    immediately before each insert, so a re-run cannot duplicate.
-node scripts/media/intro-release.mjs apply --approved
+# 3. Attach. Six INSERTs + one PATCH of video_object_path. Refuses without a
+#    verified upload. Re-reads course, module and lesson identities
+#    immediately before each write, and records what ACTUALLY executed.
+node scripts/media/intro-release.mjs apply --approved --project-ref=<ref>
 
 # 4. READ-ONLY verification. Confirms each lesson's object path, protected
 #    source, is_preview = false, owning module, that the public storage URL is
 #    refused, and that no module carries two Introductions.
 node scripts/media/intro-release.mjs verify
+
+#    Optional on steps 2/4: --deep-verify re-downloads and re-hashes the
+#    stored bytes rather than trusting size and content type alone.
 ```
 
 Steps 2 and 3 are **separately approvable**: uploading bytes to a private bucket changes nothing a learner can see, while `apply` is what alters the catalogue.
@@ -142,3 +149,18 @@ So both issued certificates stay viewable and third-party verifiable. The only d
 ## 7. Observation outside this slice's scope
 
 `/verify-certificate/[certificateId]` selects `id, certificate_number, issued_at, courses(title), profiles(full_name, email)` and consults neither `revoked_at` nor `status`. A revoked certificate would therefore still verify as genuine. The `certificates` table has both columns. Reported, not changed — it is unrelated to the Introduction work and deserves its own slice.
+
+## 8. MEDIA-INTRO-03 — release tool hardening
+
+The MEDIA-INTRO-02 preflight audited the merged tooling and found four defects, all in the *recovery* paths rather than the happy path. Each was reproduced against the merged code with a mock Supabase before being fixed.
+
+| | Defect | Reproduced behaviour | After |
+|---|---|---|---|
+| **D1** | Manifest written once, after the loop, with `process.exit` inside it | A failure on the 3rd upload left **2 objects in storage and 0 recorded**; the retry issued 7 fresh POSTs and storage ended with **9 objects for 7 sources** — 2 orphans | Atomic checkpoint after **every** completed operation, and object paths are **deterministic** in (code, content hash), so a retry reconciles instead of duplicating |
+| **D2** | `plan` recomputed `previousObjectPath` | After `apply`, a re-`plan` rewrote the baseline to the newly applied path; the rollback statement became a **no-op** | Baseline captured once and **frozen**; `plannedOperation` frozen too |
+| **D3** | Unverified-but-present object | Retry re-POSTed the same path and got **409 the resource already exists** — the release could not proceed | Existing object is reconciled on size and content type (optionally re-hashed) and **adopted**; a mismatched object is refused, never overwritten |
+| **D4** | Manifest held the *planned* operation | A concurrent admin Introduction was updated as a REPLACE while the manifest still said CREATE, so rollback would have **deleted the administrator's lesson** | `executed` records the real operation, the target lesson and `createdByThisRelease`; rollback deletes only what this release demonstrably made |
+
+Additional guards: `--project-ref=<ref>` is required for every write and must match the configured project; course, module and lesson identities are re-read immediately before each write; real environment variables now take precedence over `.env.local`; rollback refuses when the lesson's media changed underneath it.
+
+Covered by **38 tests** in `__tests__/media/media-intro-03-release-tool.test.ts`, which drive the full lifecycle — including crashes, retries, concurrent admin edits and wrong-project attempts — against mocked storage and database responses.
