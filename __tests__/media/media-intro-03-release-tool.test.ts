@@ -33,6 +33,7 @@ import { spawnSync } from 'node:child_process'
 import {
   createContext, cmdPlan, cmdUpload, cmdApply, cmdVerify, cmdRollback,
   objectPathFor, writeManifestAtomic, readManifest,
+  assertWritablePayload, LESSON_GENERATED_COLUMNS, LESSON_WRITABLE_COLUMNS,
 } from '../../scripts/media/intro-release-core.mjs'
 
 // ── the world: an in-memory PostgREST + object store ───────────────────────
@@ -61,6 +62,10 @@ interface World {
   failInsert: string | null
   /** make an upload succeed remotely but then crash before the checkpoint */
   crashAfterUpload: string | null
+  /** every write payload the engine sent, for contract assertions */
+  writes: { method: string; table: string; body: Record<string, unknown> }[]
+  /** drop the content type from object info, as some storage versions do */
+  infoOmitsType: boolean
   nextId: number
 }
 
@@ -90,8 +95,36 @@ function makeWorld(): World {
     storage: new Map(),
     calls: [],
     failUpload: null, failInfo: null, failInsert: null, crashAfterUpload: null,
+    writes: [], infoOmitsType: false,
     nextId: 100,
   }
+}
+
+/**
+ * MEDIA-INTRO-07: the mock now enforces the production schema contract.
+ *
+ * The previous harness accepted any column in a write payload, so 38 tests
+ * passed while the first statement the real database saw was rejected. The
+ * generated-column list comes from the engine's own export, so the mock and the
+ * tool cannot drift apart: if one learns about a new derived column, so does
+ * the other.
+ */
+function generatedViolation(body: Record<string, unknown>) {
+  const hit = Object.keys(body ?? {}).find(k => LESSON_GENERATED_COLUMNS.includes(k))
+  if (!hit) return null
+  // Byte-for-byte the shape production returned during MEDIA-INTRO-06.
+  return json(400, {
+    code: '428C9',
+    details: `Column "${hit}" is a generated column.`,
+    hint: null,
+    message: `column "${hit}" can only be updated to DEFAULT`,
+  })
+}
+
+/** Emulate migration 054's STORED expression: re-derived on every write. */
+function derive(row: Record<string, unknown>) {
+  const path = (row.video_object_path ?? '') as string
+  row.video_source = path !== '' ? 'protected' : (row.video_url ? 'protected' : null)
 }
 
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => ({
@@ -125,7 +158,13 @@ function makeFetch(w: World) {
       const path = decodeURIComponent(m[1])
       if (w.failInfo === path) return json(500, { error: 'transient' })
       const o = w.storage.get(path)
-      return o ? json(200, { size: o.bytes, mimetype: o.type }) : json(404, { error: 'not found' })
+      if (!o) return json(404, { error: 'not found' })
+      // Production shape: this Supabase version names the field `content_type`
+      // (snake_case). The old mock said `mimetype`, which is why the resolver's
+      // type check could read null in production and never fire.
+      const body: Record<string, unknown> = { size: o.bytes }
+      if (!w.infoOmitsType) body.content_type = o.type
+      return json(200, body)
     }
     m = /^\/storage\/v1\/object\/public\/[^/]+\/(.+)$/.exec(u.pathname)
     if (m) return json(400, { error: 'Bucket is not public' })
@@ -170,6 +209,9 @@ function makeFetch(w: World) {
     }
     if (method === 'POST') {
       const body = JSON.parse(init.body)
+      w.writes.push({ method, table, body })
+      const gen = generatedViolation(body)
+      if (table === 'lessons' && gen) return gen
       const course = w.modules.find(x => x.id === body.module_id)?.course_id
       const code = w.courses.find(c => c.id === course)?.code
       if (w.failInsert === code) return json(500, { error: 'insert failed' })
@@ -178,13 +220,17 @@ function makeFetch(w: World) {
         return json(409, { code: '23505', message: 'duplicate key value violates unique constraint' })
       }
       const row = { id: `f0000000-0000-4000-8000-${String(w.nextId++).padStart(12, '0')}`, ...body }
+      if (table === 'lessons') derive(row)
       rows.push(row)
       return json(201, [row])
     }
     if (method === 'PATCH') {
       const body = JSON.parse(init.body)
+      w.writes.push({ method, table, body })
+      const gen = generatedViolation(body)
+      if (table === 'lessons' && gen) return gen
       const hit = rows.filter(match)
-      for (const r of hit) Object.assign(r, body)
+      for (const r of hit) { Object.assign(r, body); if (table === 'lessons') derive(r) }
       return json(200, hit)
     }
     if (method === 'DELETE') {
@@ -642,5 +688,170 @@ describe('MEDIA-INTRO-03 · CLI write guards', () => {
     for (const args of [['upload'], ['apply', '--approved'], ['rollback', '--approved', '--project-ref=x']]) {
       expect(cli(args).out).not.toContain('fixture-service-key-not-real')
     }
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+/**
+ * MEDIA-INTRO-07 — the generated-column contract.
+ *
+ * The approved production activation failed on its FIRST statement:
+ *
+ *   {"code":"428C9","details":"Column \"video_source\" is a generated column.",
+ *    "message":"column \"video_source\" can only be updated to DEFAULT"}
+ *
+ * Migration 054 adds `video_source` as `generated always as (…) stored`, and
+ * its expression already returns 'protected' whenever `video_object_path` is
+ * non-empty — so the write was both forbidden and redundant.
+ *
+ * The 38 tests above all passed beforehand because THIS harness accepted any
+ * column. That is the defect being closed here: the mock now enforces the same
+ * list the engine refuses to send, so the two cannot drift apart again.
+ */
+describe('MEDIA-INTRO-07 · generated-column contract', () => {
+  const PATCH_URL = `https://fixture.supabase.co/rest/v1/lessons?id=eq.${INTRO_A}`
+
+  it('the mock rejects a generated-column write with the exact production error', async () => {
+    const f = makeFetch(w)
+    const r = await f(PATCH_URL, { method: 'PATCH', body: JSON.stringify({ video_source: 'protected' }) })
+    expect(r.status).toBe(400)
+    const body = JSON.parse(await r.text())
+    expect(body.code).toBe('428C9')
+    expect(body.details).toMatch(/is a generated column/)
+    expect(body.message).toMatch(/can only be updated to DEFAULT/)
+  })
+
+  it('reproduces MEDIA-INTRO-06 and proves the corrected shape succeeds', async () => {
+    const f = makeFetch(w)
+    // What the failed release sent.
+    const before = await f(PATCH_URL, {
+      method: 'PATCH',
+      body: JSON.stringify({ video_object_path: 'video/x.mp4', video_source: 'protected' }),
+    })
+    expect(before.status).toBe(400)
+    // What the engine sends now.
+    const after = await f(PATCH_URL, {
+      method: 'PATCH', body: JSON.stringify({ video_object_path: 'video/x.mp4' }),
+    })
+    expect(after.status).toBe(200)
+  })
+
+  it('assertWritablePayload refuses every generated column and anything off the allowlist', () => {
+    for (const g of LESSON_GENERATED_COLUMNS) {
+      expect(() => assertWritablePayload({ [g]: 'x' }), g).toThrow(/generated column/)
+    }
+    expect(() => assertWritablePayload({ video_object_path: 'v', video_source: 'protected' }))
+      .toThrow(/video_source/)
+    expect(() => assertWritablePayload({ id: 'nope' })).toThrow(/allowlist/)
+    expect(() => assertWritablePayload({ created_at: 'nope' })).toThrow(/allowlist/)
+    expect(() => assertWritablePayload({ video_object_path: 'v' })).not.toThrow()
+
+    expect(LESSON_WRITABLE_COLUMNS).toContain('video_object_path')
+    expect(LESSON_WRITABLE_COLUMNS).not.toContain('video_source')
+    expect(LESSON_GENERATED_COLUMNS).toHaveLength(6)
+  })
+
+  it('REPLACE writes video_object_path and nothing else', async () => {
+    await cmdPlan(ctx); await cmdUpload(ctx); await cmdApply(ctx)
+    const patches = w.writes.filter(x => x.table === 'lessons' && x.method === 'PATCH')
+    expect(patches.length).toBeGreaterThan(0)
+    for (const p of patches) expect(Object.keys(p.body)).toEqual(['video_object_path'])
+  })
+
+  it('CREATE writes only the allowlisted columns', async () => {
+    await cmdPlan(ctx); await cmdUpload(ctx); await cmdApply(ctx)
+    const posts = w.writes.filter(x => x.table === 'lessons' && x.method === 'POST')
+    expect(posts).toHaveLength(2)                         // T1-F2 and T1-F3
+    for (const p of posts) {
+      expect(Object.keys(p.body).sort()).toEqual(
+        ['is_preview', 'module_id', 'order_index', 'slug', 'title', 'video_object_path'])
+    }
+  })
+
+  it('ROLLBACK writes video_object_path and nothing else', async () => {
+    await cmdPlan(ctx); await cmdUpload(ctx); await cmdApply(ctx)
+    w.writes.length = 0
+    await cmdRollback(ctx)
+    const patches = w.writes.filter(x => x.table === 'lessons' && x.method === 'PATCH')
+    expect(patches.length).toBeGreaterThan(0)
+    for (const p of patches) expect(Object.keys(p.body)).toEqual(['video_object_path'])
+  })
+
+  it('video_source is DERIVED as protected, and never appears in any write', async () => {
+    await cmdPlan(ctx); await cmdUpload(ctx); await cmdApply(ctx)
+
+    for (const code of ['T1-F1', 'T1-F2', 'T1-F3']) {
+      const id = entry(code).executed.lessonId
+      const row = w.lessons.find(l => l.id === id)!
+      expect(row.video_source, `${code} did not derive protected`).toBe('protected')
+      expect(String(row.video_object_path)).toMatch(/^video\/intro-/)
+    }
+    // The whole point: not one write mentioned it.
+    expect(w.writes.filter(x => 'video_source' in x.body)).toHaveLength(0)
+    for (const g of LESSON_GENERATED_COLUMNS) {
+      expect(w.writes.filter(x => g in x.body), g).toHaveLength(0)
+    }
+  })
+
+  it('the full lifecycle still succeeds end to end under the stricter mock', async () => {
+    const p = await cmdPlan(ctx);   expect(p.ok).toBe(true)
+    const u = await cmdUpload(ctx); expect(u.ok).toBe(true)
+    const a = await cmdApply(ctx);  expect(a.ok).toBe(true)
+    const v = await cmdVerify(ctx); expect(v.ok).toBe(true)
+    expect(w.lessons.filter(l => l.slug === 'introduction')).toHaveLength(3)
+  })
+})
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('MEDIA-INTRO-07 · storage content-type reconciliation', () => {
+  it("recognises production's `content_type` field and verifies on it", async () => {
+    await cmdPlan(ctx)
+    const r = await cmdUpload(ctx)
+    expect(r.ok).toBe(true)
+    expect(r.results.every(x => x.state === 'uploaded')).toBe(true)
+  })
+
+  it('refuses an existing object whose content type is wrong', async () => {
+    await cmdPlan(ctx)
+    const p1 = objectPathFor('T1-F1', targets[0].sha256)
+    const src = readFileSync(join(sourceDir, 'T1_F1_Intro.mp4'))
+    // Right size, wrong type — the size check alone would have waved it through.
+    w.storage.set(p1, { bytes: src.length, type: 'text/plain', body: src })
+
+    const r = await cmdUpload(ctx)
+    expect(r.ok).toBe(false)
+    expect(r.errors![0]).toMatch(/content type text\/plain != video\/mp4/)
+    expect(w.calls.some(c => c === `POST /storage/v1/object/course-content/${p1}`)).toBe(false)
+  })
+
+  it('a MISSING content type is not waved through when the bytes were not hashed', async () => {
+    build({ deepVerify: false })
+    w.infoOmitsType = true
+    await cmdPlan(ctx)
+    const r = await cmdUpload(ctx)
+    expect(r.ok).toBe(false)
+    expect(r.errors![0]).toMatch(/content type unavailable and deep verification was skipped/)
+  })
+
+  it('a MISSING content type is acceptable when the bytes ARE hashed', async () => {
+    build({ deepVerify: true })
+    w.infoOmitsType = true
+    await cmdPlan(ctx)
+    const r = await cmdUpload(ctx)
+    expect(r.ok, 'deep hash should outrank a missing content type').toBe(true)
+    expect(entry('T1-F1').upload.verified).toBe(true)
+  })
+
+  it('deep verification fails loudly if the stored bytes differ', async () => {
+    build({ deepVerify: true })
+    await cmdPlan(ctx)
+    const p1 = objectPathFor('T1-F1', targets[0].sha256)
+    const src = readFileSync(join(sourceDir, 'T1_F1_Intro.mp4'))
+    // Same length, different bytes: only a hash can tell.
+    w.storage.set(p1, { bytes: src.length, type: 'video/mp4', body: Buffer.alloc(src.length, 0x41) })
+
+    const r = await cmdUpload(ctx)
+    expect(r.ok).toBe(false)
+    expect(r.errors![0]).toMatch(/hash differently/)
   })
 })
