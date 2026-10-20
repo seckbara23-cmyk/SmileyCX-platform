@@ -12,7 +12,7 @@ import { PILOT_MODE } from '@/lib/pilot'
 import { resolveAutoAdvanceTarget, type AdvanceTarget } from '@/lib/learn/auto-advance'
 import { lessonAssetSrcFromSource } from '@/lib/media/paths'
 import LessonSidebar, { type SidebarModuleRow, type SidebarLessonRow } from '@/components/lms/LessonSidebar'
-import { buildSidebarStructure } from '@/components/lms/sidebarStructure'
+import { buildSidebarStructure, buildLessonSequence } from '@/components/lms/sidebarStructure'
 import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigation'
 import AutoAdvanceBanner from '@/components/lms/AutoAdvanceBanner'
 import ExerciseBlock, { type ExerciseData } from '@/components/lms/ExerciseBlock'
@@ -493,13 +493,9 @@ export default function LessonPlayerPage() {
   // lessons first, then the numbered modules' remaining lessons. Each lesson
   // keeps its *raw* owning module (so its URL and quiz gating are unchanged).
   const sidebarStructure = buildSidebarStructure(modules)
-  const rawModuleById     = new Map(modules.map(m => [m.id, m]))
-  const allLessons: FlatLesson[] = [
-    ...sidebarStructure.standalone.map(s => ({ ...s.lesson, module: rawModuleById.get(s.moduleId)! })),
-    ...sidebarStructure.modules.flatMap(m =>
-      m.lessons.map(l => ({ ...l, module: rawModuleById.get(m.id)! }))
-    ),
-  ]
+  // MEDIA-INTRO-01: the sequence is derived by the same module that builds the
+  // sidebar, so the prev/next controls cannot drift from what is rendered.
+  const allLessons: FlatLesson[] = buildLessonSequence(modules)
   const currentIndex              = lesson ? allLessons.findIndex(l => l.id === lesson.id) : -1
   const prevLesson                = currentIndex > 0                       ? allLessons[currentIndex - 1] : null
   const nextLesson                = currentIndex < allLessons.length - 1  ? allLessons[currentIndex + 1] : null

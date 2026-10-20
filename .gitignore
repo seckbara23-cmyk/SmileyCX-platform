@@ -43,3 +43,13 @@ coverage/
 # Supabase CLI local state (project ref, pooler URL, version pins).
 # Machine-local link artifacts — never commit.
 supabase/.temp/
+
+# ── Media staging ─────────────────────────────────────────────────────────────
+# Source video handed over for upload (MEDIA-INTRO-01: seven course
+# Introduction films, ~42 MiB). Course media lives in the PRIVATE
+# `course-content` Supabase bucket and is delivered by
+# /api/media/lesson/<id>/<kind> behind the entitlement check — never from the
+# repository and never from public/. Keeping the staging folder out of git is
+# what stops a stray `git add -A` turning protected media into a public asset
+# and bloating history with binaries that cannot be removed cheaply.
+incoming media/
