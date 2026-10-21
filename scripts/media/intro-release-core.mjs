@@ -47,6 +47,60 @@ export const LESSON_SLUG = 'introduction'
 export const INTRO_ORDER = 0
 export const MANIFEST_VERSION = 2
 
+// ── the lessons write contract (MEDIA-INTRO-07) ────────────────────────────
+//
+// Migration 054 adds six columns to public.lessons as
+// `generated always as (…) stored`. Postgres refuses to accept a value for
+// any of them: `428C9 — column "x" can only be updated to DEFAULT`.
+//
+// MEDIA-INTRO-06's approved activation failed on its very first statement for
+// exactly that reason: the REPLACE payload carried `video_source: 'protected'`.
+// The write was not just rejected, it was redundant — 054's expression reads
+//
+//     when coalesce(video_object_path, '') <> '' then 'protected'
+//
+// so writing the raw object path already yields `protected`. The database is
+// the authority on the derived value, and the release tool must not restate it.
+//
+// Listing the columns here, rather than deleting three offending lines, is the
+// point: the same list is what the test harness rejects writes against, so the
+// tool and its mock cannot disagree about the schema again — which is how 38
+// green tests let a doomed statement reach production.
+export const LESSON_GENERATED_COLUMNS = Object.freeze([
+  'video_source', 'video_external_url',
+  'pdf_source', 'pdf_external_url',
+  'subtitle_source', 'subtitle_external_url',
+])
+
+/** Everything this release is ever allowed to write on `lessons`. */
+export const LESSON_WRITABLE_COLUMNS = Object.freeze([
+  'module_id', 'slug', 'title', 'order_index', 'is_preview', 'video_object_path',
+])
+
+/**
+ * Refuse a payload before it reaches the network.
+ *
+ * Catching this locally turns a 400 from production into a loud failure in a
+ * test, and keeps the allowlist narrow: `id` and `created_at` carry database
+ * defaults and are deliberately absent, as is every column this release has no
+ * business touching.
+ */
+export function assertWritablePayload(payload, where = 'lessons write') {
+  const keys = Object.keys(payload ?? {})
+  const generated = keys.filter(k => LESSON_GENERATED_COLUMNS.includes(k))
+  if (generated.length > 0) {
+    throw new Error(
+      `${where}: refusing to write generated column(s) ${generated.join(', ')} — ` +
+      'migration 054 derives them (Postgres 428C9). Write the raw object path instead.',
+    )
+  }
+  const unknown = keys.filter(k => !LESSON_WRITABLE_COLUMNS.includes(k))
+  if (unknown.length > 0) {
+    throw new Error(`${where}: column(s) not on the release write allowlist: ${unknown.join(', ')}`)
+  }
+  return payload
+}
+
 /** Hash a local file. */
 export function sha256File(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
@@ -336,17 +390,39 @@ async function reconcile(ctx, entry) {
   if (!info) return { state: 'absent' }
 
   const size = Number(info.size ?? info.contentLength ?? info.metadata?.size ?? -1)
-  const type = info.mimetype ?? info.contentType ?? info.metadata?.mimetype ?? null
+  // MEDIA-INTRO-07: production storage reports the type as `content_type`.
+  // The resolver only knew `mimetype`/`contentType`, so it always read null and
+  // the check it advertises never ran. Harmless at the time — the SHA-256 is
+  // strictly stronger and did run — but a verification that silently does
+  // nothing is worse than none, because it is believed.
+  const type = info.content_type
+    ?? info.mimetype ?? info.contentType
+    ?? info.metadata?.content_type ?? info.metadata?.mimetype
+    ?? null
+
   if (size !== entry.sourceBytes) {
-    return { state: 'corrupt', why: `size ${size} != source ${entry.sourceBytes}` }
+    return { state: 'mismatch', why: `size ${size} != source ${entry.sourceBytes}` }
   }
-  if (type && type !== 'video/mp4') {
-    return { state: 'corrupt', why: `content type ${type} != video/mp4` }
+  if (type !== null && type !== 'video/mp4') {
+    return { state: 'mismatch', why: `content type ${type} != video/mp4` }
   }
+
   if (ctx.deepVerify) {
     const h = await deepHash(ctx, entry.objectPath)
-    if (h && h !== entry.sourceSha256) return { state: 'corrupt', why: 'stored bytes hash differently' }
-    if (h) return { state: 'verified', size, type, sha256: h }
+    if (h === null) {
+      return { state: 'mismatch', why: 'deep verification requested but the object could not be read back' }
+    }
+    if (h !== entry.sourceSha256) return { state: 'mismatch', why: 'stored bytes hash differently' }
+    return { state: 'verified', size, type, sha256: h }
+  }
+
+  // No deep hash: an unresolvable content type is the only evidence left, so it
+  // may not be waved through. Either name the type or verify the bytes.
+  if (type === null) {
+    return {
+      state: 'mismatch',
+      why: 'content type unavailable and deep verification was skipped — nothing left to verify beyond size',
+    }
   }
   return { state: 'verified', size, type }
 }
@@ -378,7 +454,7 @@ export async function cmdUpload(ctx) {
       ctx.log(`  + ${e.code} existing object reconciled and adopted — no re-upload`)
       continue
     }
-    if (pre.state === 'corrupt') {
+    if (pre.state === 'mismatch') {
       entry.upload = { verified: false, objectPath: e.objectPath, error: pre.why }
       writeManifestAtomic(ctx.manifestPath, manifest)
       results.push({ code: e.code, state: 'corrupt', why: pre.why })
@@ -458,10 +534,14 @@ export async function cmdApply(ctx) {
           lessonId: rv.intro.id, objectPath: rv.intro.video_object_path ?? null,
         }
       }
+      // `video_source` is deliberately absent: migration 054 derives it from
+      // the object path. Writing it is a 428C9, and restating it is redundant.
       const r = await ctx.rest(`lessons?id=eq.${rv.intro.id}`, {
         method: 'PATCH',
         headers: { Prefer: 'return=representation' },
-        body: JSON.stringify({ video_object_path: e.objectPath, video_source: 'protected' }),
+        body: JSON.stringify(assertWritablePayload(
+          { video_object_path: e.objectPath }, `${e.code} REPLACE`,
+        )),
       })
       if (!r.ok) {
         writeManifestAtomic(ctx.manifestPath, manifest)
@@ -485,15 +565,15 @@ export async function cmdApply(ctx) {
     const r = await ctx.rest('lessons', {
       method: 'POST',
       headers: { Prefer: 'return=representation' },
-      body: JSON.stringify({
+      body: JSON.stringify(assertWritablePayload({
         module_id: entry.moduleId,
         slug: LESSON_SLUG,
         title: LESSON_TITLE,
         order_index: INTRO_ORDER,
         is_preview: false,
         video_object_path: e.objectPath,
-        video_source: 'protected',
-      }),
+        // video_source omitted on purpose — derived by migration 054.
+      }, `${e.code} CREATE`)),
     })
     if (!r.ok) {
       writeManifestAtomic(ctx.manifestPath, manifest)
@@ -588,7 +668,9 @@ export async function cmdRollback(ctx) {
       }
       const r = await ctx.rest(`lessons?id=eq.${ex.lessonId}`, {
         method: 'PATCH',
-        body: JSON.stringify({ video_object_path: entry.baseline.objectPath, video_source: 'protected' }),
+        body: JSON.stringify(assertWritablePayload(
+          { video_object_path: entry.baseline.objectPath }, `${entry.code} ROLLBACK`,
+        )),
       })
       if (!r.ok) { results.push({ code: entry.code, state: 'failed', why: `HTTP ${r.status}` }); continue }
       entry.executed = null

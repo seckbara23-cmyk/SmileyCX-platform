@@ -8,7 +8,9 @@
  *   node scripts/media/intro-release.mjs apply    --approved --project-ref=<ref>
  *   node scripts/media/intro-release.mjs rollback --approved --project-ref=<ref>
  *
- *   --deep-verify   also re-hash uploaded bytes (slower, strongest check)
+ *   Uploaded bytes are re-downloaded and re-hashed by default; that SHA-256 is
+ *   the release evidence. `--no-deep-verify` opts out and falls back to size
+ *   plus content type. `--deep-verify` remains accepted and is now the default.
  *
  * ── WHY A SCRIPT AND NOT THE ADMIN UI ────────────────────────────────────────
  *
@@ -72,7 +74,11 @@ const MUTATING = ['upload', 'apply', 'rollback']
 const argv     = process.argv.slice(2)
 const mode     = (argv[0] ?? 'plan').toLowerCase()
 const approved = argv.includes('--approved')
-const deep     = argv.includes('--deep-verify')
+// MEDIA-INTRO-07: deep verification is ON by default. The SHA-256 of the bytes
+// actually stored is the release evidence, and the size-plus-content-type pair
+// it replaces turned out to be weaker than advertised. `--deep-verify` is still
+// accepted so existing runbooks keep working; `--no-deep-verify` is the escape.
+const deep     = !argv.includes('--no-deep-verify')
 const refArg   = (argv.find(a => a.startsWith('--project-ref=')) ?? '').split('=')[1] ?? null
 
 /**
