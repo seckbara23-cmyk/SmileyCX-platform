@@ -20,11 +20,19 @@
         "objectPath": "video/1782748552522-tgh2wbdeljd.mp4"
       },
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c1f1-afdc8ef544bc3ec7.mp4",
+        "bytes": 22391672
       },
-      "executed": null,
+      "executed": {
+        "operation": "REPLACE",
+        "lessonId": "cd363ae6-40be-4952-9a00-dbc1119be25c",
+        "createdByThisRelease": false,
+        "objectPath": "video/intro-c1f1-afdc8ef544bc3ec7.mp4",
+        "plannedOperation": "REPLACE"
+      },
       "lessonId": "cd363ae6-40be-4952-9a00-dbc1119be25c",
-      "rollback": "nothing executed — no rollback needed"
+      "rollback": "restore lessons.video_object_path = video/1782748552522-tgh2wbdeljd.mp4 on lesson cd363ae6-40be-4952-9a00-dbc1119be25c"
     },
     {
       "code": "C1-F2",
@@ -40,11 +48,19 @@
       "isPreview": false,
       "baseline": null,
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c1f2-2e601c24b633d00c.mp4",
+        "bytes": 4329579
       },
-      "executed": null,
-      "lessonId": null,
-      "rollback": "nothing executed — no rollback needed"
+      "executed": {
+        "operation": "CREATE",
+        "lessonId": "a09bfee8-9100-4016-a148-8e888a99e343",
+        "createdByThisRelease": true,
+        "objectPath": "video/intro-c1f2-2e601c24b633d00c.mp4",
+        "plannedOperation": "CREATE"
+      },
+      "lessonId": "a09bfee8-9100-4016-a148-8e888a99e343",
+      "rollback": "delete lesson a09bfee8-9100-4016-a148-8e888a99e343 only if it has zero lesson_progress rows"
     },
     {
       "code": "C1-F3",
@@ -60,11 +76,19 @@
       "isPreview": false,
       "baseline": null,
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c1f3-b6c9079f7ae72ca9.mp4",
+        "bytes": 4154204
       },
-      "executed": null,
-      "lessonId": null,
-      "rollback": "nothing executed — no rollback needed"
+      "executed": {
+        "operation": "CREATE",
+        "lessonId": "13b22099-4408-4fe1-bbf7-5dae6531d668",
+        "createdByThisRelease": true,
+        "objectPath": "video/intro-c1f3-b6c9079f7ae72ca9.mp4",
+        "plannedOperation": "CREATE"
+      },
+      "lessonId": "13b22099-4408-4fe1-bbf7-5dae6531d668",
+      "rollback": "delete lesson 13b22099-4408-4fe1-bbf7-5dae6531d668 only if it has zero lesson_progress rows"
     },
     {
       "code": "C2-F1",
@@ -80,11 +104,19 @@
       "isPreview": false,
       "baseline": null,
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c2f1-a4a900fd9e171649.mp4",
+        "bytes": 3871751
       },
-      "executed": null,
-      "lessonId": null,
-      "rollback": "nothing executed — no rollback needed"
+      "executed": {
+        "operation": "CREATE",
+        "lessonId": "0a5ba69a-8d75-4e24-ad1a-35d5a5a1c69b",
+        "createdByThisRelease": true,
+        "objectPath": "video/intro-c2f1-a4a900fd9e171649.mp4",
+        "plannedOperation": "CREATE"
+      },
+      "lessonId": "0a5ba69a-8d75-4e24-ad1a-35d5a5a1c69b",
+      "rollback": "delete lesson 0a5ba69a-8d75-4e24-ad1a-35d5a5a1c69b only if it has zero lesson_progress rows"
     },
     {
       "code": "C2-F2",
@@ -100,11 +132,19 @@
       "isPreview": false,
       "baseline": null,
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c2f2-8cde7ecec5dc256f.mp4",
+        "bytes": 2846278
       },
-      "executed": null,
-      "lessonId": null,
-      "rollback": "nothing executed — no rollback needed"
+      "executed": {
+        "operation": "CREATE",
+        "lessonId": "d95cae86-e7c4-4f56-a739-837e4a0feaf7",
+        "createdByThisRelease": true,
+        "objectPath": "video/intro-c2f2-8cde7ecec5dc256f.mp4",
+        "plannedOperation": "CREATE"
+      },
+      "lessonId": "d95cae86-e7c4-4f56-a739-837e4a0feaf7",
+      "rollback": "delete lesson d95cae86-e7c4-4f56-a739-837e4a0feaf7 only if it has zero lesson_progress rows"
     },
     {
       "code": "C2-F4",
@@ -120,11 +160,19 @@
       "isPreview": false,
       "baseline": null,
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c2f4-fc2d1ca48c96787c.mp4",
+        "bytes": 3918431
       },
-      "executed": null,
-      "lessonId": null,
-      "rollback": "nothing executed — no rollback needed"
+      "executed": {
+        "operation": "CREATE",
+        "lessonId": "8bbc719d-d80f-456d-8e8c-24227c00409d",
+        "createdByThisRelease": true,
+        "objectPath": "video/intro-c2f4-fc2d1ca48c96787c.mp4",
+        "plannedOperation": "CREATE"
+      },
+      "lessonId": "8bbc719d-d80f-456d-8e8c-24227c00409d",
+      "rollback": "delete lesson 8bbc719d-d80f-456d-8e8c-24227c00409d only if it has zero lesson_progress rows"
     },
     {
       "code": "C2-F5",
@@ -140,11 +188,19 @@
       "isPreview": false,
       "baseline": null,
       "upload": {
-        "verified": false
+        "verified": true,
+        "objectPath": "video/intro-c2f5-458b53ea8cb0ceeb.mp4",
+        "bytes": 2781312
       },
-      "executed": null,
-      "lessonId": null,
-      "rollback": "nothing executed — no rollback needed"
+      "executed": {
+        "operation": "CREATE",
+        "lessonId": "10c6363b-9a3a-47d1-b1f8-3192ccf30d28",
+        "createdByThisRelease": true,
+        "objectPath": "video/intro-c2f5-458b53ea8cb0ceeb.mp4",
+        "plannedOperation": "CREATE"
+      },
+      "lessonId": "10c6363b-9a3a-47d1-b1f8-3192ccf30d28",
+      "rollback": "delete lesson 10c6363b-9a3a-47d1-b1f8-3192ccf30d28 only if it has zero lesson_progress rows"
     }
   ],
   "slice": "MEDIA-INTRO-01",
