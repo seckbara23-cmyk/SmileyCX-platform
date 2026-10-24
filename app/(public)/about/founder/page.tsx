@@ -3,9 +3,10 @@ import Link from 'next/link'
 import {
   ArrowRight, CheckCircle, Award, Globe,
   TrendingUp, User, Gem, GraduationCap, MessageCircle,
-  Mail, Phone, Linkedin,
+  Mail, Phone,
 } from 'lucide-react'
 import type { Metadata } from 'next'
+import { CONTACT_EMAIL, CONTACT_PHONE, CONTACT_PHONE_HREF } from '@/lib/brand'
 
 export const metadata: Metadata = {
   title: 'Fondatrice — Marieme Ba | XP Client Academy',
@@ -237,25 +238,21 @@ export default function FounderPage() {
 
             {/* Links */}
             <div className="flex flex-wrap items-center gap-5">
+              {/* XP-BRAND-01 §8: the official academy coordinates replace the
+                  personal ones. The bare https://www.linkedin.com link went to
+                  the network's home page, not a profile, so it is withdrawn
+                  until an official URL is supplied rather than invented. */}
               <a
-                href="https://www.linkedin.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-1.5 text-white/80 text-sm font-semibold hover:text-white transition-colors"
+                href={`mailto:${CONTACT_EMAIL}`}
+                className="flex items-center gap-1.5 text-white/80 text-sm hover:text-white transition-colors break-all"
               >
-                <Linkedin className="w-4 h-4" /> LinkedIn
+                <Mail className="w-4 h-4" /> {CONTACT_EMAIL}
               </a>
               <a
-                href="mailto:mariemelly@gmail.com"
+                href={CONTACT_PHONE_HREF}
                 className="flex items-center gap-1.5 text-white/80 text-sm hover:text-white transition-colors"
               >
-                <Mail className="w-4 h-4" /> mariemelly@gmail.com
-              </a>
-              <a
-                href="tel:+221775760382"
-                className="flex items-center gap-1.5 text-white/80 text-sm hover:text-white transition-colors"
-              >
-                <Phone className="w-4 h-4" /> +221 77 576 03 82
+                <Phone className="w-4 h-4" /> {CONTACT_PHONE}
               </a>
             </div>
 

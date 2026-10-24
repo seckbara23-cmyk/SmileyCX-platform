@@ -81,7 +81,7 @@ export default function CourseCard({ course }: { course: CourseItem }) {
           {course.available && course.slug ? (
             <Link
               href={`/courses/${course.slug}`}
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-secondary text-white text-[13px] font-bold rounded-cx hover:bg-secondary-dark transition-all"
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-secondary text-footer text-[13px] font-bold rounded-cx hover:bg-secondary-dark transition-all"
             >
               Voir la formation <ArrowRight className="w-3.5 h-3.5" aria-hidden />
             </Link>

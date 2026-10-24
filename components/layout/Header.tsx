@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
+import Image from 'next/image'
 import { usePathname } from 'next/navigation'
 import { Menu, X, ChevronDown, User, LayoutDashboard, LogOut, BookOpen } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
@@ -120,13 +121,24 @@ export default function Header({ compact = false }: { compact?: boolean }) {
           aria-label="Navigation principale"
         >
           {/* Logo */}
+          {/* XP-BRAND-01: the official logo replaces the typographic
+              wordmark. Intrinsic 600×432 with `h-* w-auto` so the supplied
+              proportions are never stretched, at either header density. */}
           <Link
             href="/#accueil"
             onClick={(e) => handleNavClick(e, 'accueil')}
-            className="text-2xl font-extrabold text-primary tracking-tight shrink-0"
+            aria-label="XP Client Academy — accueil"
+            className="shrink-0"
           >
-            XP<span className="text-secondary"> Client</span>{' '}
-            <span className="text-lg font-semibold text-cx-gray">Academy</span>
+            <Image
+              src="/brand/xp-client-academy-logo.png"
+              alt="XP Client Academy"
+              width={600}
+              height={432}
+              priority
+              className={cn('w-auto transition-all', compact ? 'h-9' : 'h-11')}
+              sizes="153px"
+            />
           </Link>
 
           {/* Desktop nav */}
@@ -216,11 +228,12 @@ export default function Header({ compact = false }: { compact?: boolean }) {
                 )}
               </div>
             ) : PILOT_MODE ? (
+              /* XP-BRAND-01 §11: account access, not a commercial CTA. */
               <Link
-                href="/courses"
-                className="px-5 py-2 text-sm font-semibold bg-secondary text-white rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5"
+                href="/login"
+                className="px-5 py-2 text-sm font-semibold bg-secondary text-footer rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5"
               >
-                Acc&eacute;der aux formations
+                Se connecter
               </Link>
             ) : (
               <>
@@ -232,7 +245,7 @@ export default function Header({ compact = false }: { compact?: boolean }) {
                 </Link>
                 <Link
                   href="/signup"
-                  className="px-5 py-2 text-sm font-semibold bg-secondary text-white rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5"
+                  className="px-5 py-2 text-sm font-semibold bg-secondary text-footer rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5"
                 >
                   S&apos;inscrire
                 </Link>
@@ -300,11 +313,11 @@ export default function Header({ compact = false }: { compact?: boolean }) {
             </>
           ) : PILOT_MODE ? (
             <Link
-              href="/courses"
+              href="/login"
               onClick={() => setMenuOpen(false)}
-              className="px-4 py-3 text-sm font-semibold text-center bg-secondary text-white rounded-cx hover:bg-secondary-dark transition-colors"
+              className="px-4 py-3 text-sm font-semibold text-center bg-secondary text-footer rounded-cx hover:bg-secondary-dark transition-colors"
             >
-              Acc&eacute;der aux formations
+              Se connecter
             </Link>
           ) : (
             <>
@@ -313,7 +326,7 @@ export default function Header({ compact = false }: { compact?: boolean }) {
                 Connexion
               </Link>
               <Link href="/signup" onClick={() => setMenuOpen(false)}
-                className="px-4 py-3 text-sm font-semibold text-center bg-secondary text-white rounded-cx hover:bg-secondary-dark transition-colors">
+                className="px-4 py-3 text-sm font-semibold text-center bg-secondary text-footer rounded-cx hover:bg-secondary-dark transition-colors">
                 S&apos;inscrire gratuitement
               </Link>
             </>

@@ -28,7 +28,7 @@ export default function Button({
     'focus-visible:outline-2 focus-visible:outline-offset-2',
     {
       // Variants
-      'bg-secondary text-white border-2 border-secondary hover:bg-secondary-dark hover:border-secondary-dark hover:-translate-y-0.5 hover:shadow-btn active:translate-y-0':
+      'bg-secondary text-footer border-2 border-secondary hover:bg-secondary-dark hover:border-secondary-dark hover:-translate-y-0.5 hover:shadow-btn active:translate-y-0':
         variant === 'primary',
       'bg-transparent text-primary border-2 border-primary hover:bg-primary hover:text-white hover:-translate-y-0.5':
         variant === 'outline',

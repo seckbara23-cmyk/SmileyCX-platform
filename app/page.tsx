@@ -4,10 +4,12 @@ import { ArrowRight, CheckCircle, Monitor, MapPin, Mail, Phone, BookOpen, Award,
 import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
 import ContactForm from '@/app/(public)/contact/ContactForm'
+import FinalCtaButton from '@/components/site/FinalCtaButton'
+import { CONTACT_EMAIL, CONTACT_PHONE, CONTACT_PHONE_HREF } from '@/lib/brand'
 
 const FEATURE_ITEMS = [
   { icon: BookOpen, label: 'Formations pratiques et concrètes' },
-  { icon: Monitor,  label: 'En ligne et en présentiel' },
+  { icon: Monitor,  label: 'Formations 100% en ligne' },
   { icon: Users,    label: 'Cas réels inspirés du terrain' },
   { icon: Award,    label: 'Certificats de réussite' },
 ]
@@ -35,12 +37,12 @@ export default function HomePage() {
                   <span className="text-secondary">avantage concurrentiel</span>
                 </h1>
                 <p className="text-cx-gray text-lg leading-relaxed mb-8 max-w-lg">
-                  Des formations concr&egrave;tes, en ligne et en pr&eacute;sentiel, pour am&eacute;liorer
+                  Des formations concr&egrave;tes, accessibles en ligne, pour am&eacute;liorer
                   la qualit&eacute; de service et la satisfaction client.
                 </p>
                 <a
                   href="#formations"
-                  className="inline-flex items-center gap-2 px-7 py-3.5 bg-[#131140] text-white font-bold rounded-cx hover:bg-[#1c1a5e] transition-all hover:-translate-y-0.5 shadow-btn text-base"
+                  className="inline-flex items-center gap-2 px-7 py-3.5 bg-primary text-white font-bold rounded-cx hover:bg-primary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
                 >
                   D&eacute;couvrir nos formations <ArrowRight className="w-5 h-5" />
                 </a>
@@ -155,7 +157,13 @@ export default function HomePage() {
                   <div className="w-12 h-12 rounded-xl bg-secondary/10 flex items-center justify-center shrink-0">
                     <MapPin className="w-6 h-6 text-secondary" />
                   </div>
-                  <h3 className="text-lg font-bold text-dark">Formation en pr&eacute;sentiel</h3>
+                  <div>
+                    <h3 className="text-lg font-bold text-dark">Formation en pr&eacute;sentiel</h3>
+                    {/* XP-BRAND-01 §10 */}
+                    <span className="mt-1 inline-flex items-center rounded-full border border-soon-fg/20 bg-soon-bg px-2.5 py-0.5 text-xs font-semibold text-soon-fg">
+                      Bient&ocirc;t disponible
+                    </span>
+                  </div>
                 </div>
                 {/* Body */}
                 <div className="flex-1">
@@ -176,9 +184,12 @@ export default function HomePage() {
                   </div>
                 </div>
                 {/* Footer */}
-                <a href="#contact" className="mt-6 text-sm font-semibold text-secondary hover:underline inline-flex items-center gap-1">
-                  Demander un atelier <ArrowRight className="w-4 h-4" />
-                </a>
+                {/* The booking action is withdrawn until the offer opens: a
+                    disabled control still reads as "soon", a live link would
+                    take a booking the academy cannot honour. */}
+                <p className="mt-6 text-sm text-cx-gray">
+                  Les formations en pr&eacute;sentiel seront propos&eacute;es prochainement.
+                </p>
               </div>
 
             </div>
@@ -270,7 +281,7 @@ export default function HomePage() {
             <div className="cx-section-title text-center mb-12">
               <h2>Contactez-nous</h2>
               <p>
-                Une question sur une formation&nbsp;? Une demande d&apos;atelier en pr&eacute;sentiel&nbsp;?
+                Une question sur une formation&nbsp;? Une demande particuli&egrave;re&nbsp;?
                 Remplissez le formulaire &mdash; nous vous r&eacute;pondons sous 24h.
               </p>
             </div>
@@ -290,8 +301,8 @@ export default function HomePage() {
                       <Mail className="w-4 h-4 text-primary shrink-0 mt-0.5" />
                       <div>
                         <p className="text-xs text-cx-gray font-semibold mb-0.5">Email</p>
-                        <a href="mailto:mariemeify@gmail.com" className="text-sm text-dark hover:text-primary transition-colors">
-                          mariemeify@gmail.com
+                        <a href={`mailto:${CONTACT_EMAIL}`} className="text-sm text-dark hover:text-primary transition-colors break-all">
+                          {CONTACT_EMAIL}
                         </a>
                       </div>
                     </div>
@@ -299,7 +310,9 @@ export default function HomePage() {
                       <Phone className="w-4 h-4 text-primary shrink-0 mt-0.5" />
                       <div>
                         <p className="text-xs text-cx-gray font-semibold mb-0.5">T&eacute;l&eacute;phone</p>
-                        <p className="text-sm text-dark">+(221) 77 576 0306</p>
+                        <a href={CONTACT_PHONE_HREF} className="text-sm text-dark hover:text-primary transition-colors">
+                          {CONTACT_PHONE}
+                        </a>
                       </div>
                     </div>
                     <div className="flex items-start gap-3">
@@ -314,10 +327,14 @@ export default function HomePage() {
                 </div>
 
                 <div className="cx-card p-6 bg-primary/5 border-primary/10">
-                  <h3 className="text-sm font-bold text-dark mb-2">Formation en pr&eacute;sentiel</h3>
+                  <div className="flex items-center gap-2 mb-2">
+                    <h3 className="text-sm font-bold text-dark">Formation en pr&eacute;sentiel</h3>
+                    <span className="inline-flex items-center rounded-full border border-soon-fg/20 bg-soon-bg px-2 py-0.5 text-[11px] font-semibold text-soon-fg">
+                      Bient&ocirc;t disponible
+                    </span>
+                  </div>
                   <p className="text-xs text-cx-gray leading-relaxed">
-                    Ateliers sur mesure pour &eacute;quipes de 5 &agrave; 30 personnes &agrave; Dakar et en r&eacute;gion.
-                    Pr&eacute;cisez &laquo;&nbsp;Formation en pr&eacute;sentiel&nbsp;&raquo; dans le champ Service.
+                    Les formations en pr&eacute;sentiel seront propos&eacute;es prochainement.
                   </p>
                 </div>
               </div>
@@ -329,24 +346,15 @@ export default function HomePage() {
         <section className="cx-hero-gradient text-white py-16">
           <div className="cx-container text-center">
             <h2 className="text-2xl md:text-3xl font-extrabold mb-3">
-              Pr&ecirc;t &agrave; investir dans la qualit&eacute; de service&nbsp;?
+              Pr&ecirc;t &agrave; d&eacute;velopper vos comp&eacute;tences en exp&eacute;rience client&nbsp;?
             </h2>
             <p className="text-white/80 mb-8 max-w-lg mx-auto">
-              Acc&egrave;s anticip&eacute; disponible &mdash; rejoignez la phase pilote et formez vos &eacute;quipes d&egrave;s maintenant.
+              Des formations pratiques, accessibles en ligne et adapt&eacute;es &agrave; votre rythme.
             </p>
-            <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <Link
-                href="/courses"
-                className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-white text-primary font-bold rounded-cx hover:bg-white/90 transition-all hover:-translate-y-0.5"
-              >
-                Acc&eacute;der aux formations <ArrowRight className="w-5 h-5" />
-              </Link>
-              <a
-                href="#contact"
-                className="inline-flex items-center justify-center gap-2 px-7 py-3.5 border-2 border-white/40 text-white font-semibold rounded-cx hover:bg-white/15 transition-all"
-              >
-                Demander une formation en pr&eacute;sentiel
-              </a>
+            {/* One CTA. The présentiel booking link is withdrawn here too — the
+                offer carries "Bientôt disponible" everywhere it appears. */}
+            <div className="flex justify-center">
+              <FinalCtaButton />
             </div>
           </div>
         </section>

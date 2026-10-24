@@ -157,7 +157,7 @@ export default async function AdminDashboardPage() {
       <div className="mt-6 cx-card p-5">
         <h2 className="font-bold text-dark mb-4">Actions rapides</h2>
         <div className="flex flex-wrap gap-3">
-          <Link href="/admin/courses/new" className="px-4 py-2.5 bg-secondary text-white text-sm font-semibold rounded-cx hover:bg-secondary-dark transition-colors">
+          <Link href="/admin/courses/new" className="px-4 py-2.5 bg-secondary text-footer text-sm font-semibold rounded-cx hover:bg-secondary-dark transition-colors">
             + Nouvelle formation
           </Link>
           <Link href="/admin/modules/new" className="px-4 py-2.5 bg-light text-dark text-sm font-semibold rounded-cx hover:bg-light/70 transition-colors">

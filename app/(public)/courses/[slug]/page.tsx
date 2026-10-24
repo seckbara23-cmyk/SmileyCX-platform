@@ -492,7 +492,7 @@ export default async function CourseDetailPage({ params }: Props) {
                 ) : (
                   <Link
                     href={learnHref}
-                    className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-sm"
+                    className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-sm"
                   >
                     <Play className="w-4 h-4" />
                     {/* UAT-ROUTE-02: the label must match where the link goes.
@@ -828,7 +828,7 @@ export default async function CourseDetailPage({ params }: Props) {
             ) : (
               <Link
                 href={learnHref}
-                className="inline-flex items-center gap-2 px-10 py-4 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
+                className="inline-flex items-center gap-2 px-10 py-4 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
               >
                 <Play className="w-5 h-5" />
                 {/* UAT-ROUTE-02: same correction as the hero CTA. */}

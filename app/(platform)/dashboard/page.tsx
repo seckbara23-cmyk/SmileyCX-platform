@@ -367,7 +367,7 @@ export default async function DashboardPage() {
             <div className="flex flex-wrap gap-2 justify-center">
               <Link
                 href="/courses"
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all text-sm"
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark transition-all text-sm"
               >
                 Voir les formations <ArrowRight className="w-4 h-4" />
               </Link>
