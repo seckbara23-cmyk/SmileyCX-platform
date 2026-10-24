@@ -20,15 +20,15 @@ function formatDateFR(dateStr: string) {
   return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long' }).format(new Date(dateStr))
 }
 
-const PRIMARY = '#4a6de5'
-const AMBER   = '#f59e0b'
-const GRAY    = '#6b7280'
+const PRIMARY = '#1B2A4A'   // --xp-primary
+const AMBER   = '#E8741E'   // --xp-accent
+const GRAY    = '#64748B'   // --xp-text-muted
 const DARK    = '#111827'
-const LIGHT   = '#6b7280'
+const LIGHT   = '#64748B'   // --xp-text-muted
 
 const s = StyleSheet.create({
   page: {
-    backgroundColor: '#fafbff',
+    backgroundColor: '#FFFFFF',
     fontFamily: 'Helvetica',
     position: 'relative',
   },
@@ -65,7 +65,7 @@ const s = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 4,
   },
-  nameLine: { width: 140, height: 1, backgroundColor: '#e5e7eb', marginBottom: 14, alignSelf: 'center' },
+  nameLine: { width: 140, height: 1, backgroundColor: '#E2E8F0', marginBottom: 14, alignSelf: 'center' },
   forCompleting: { fontSize: 9, color: GRAY, marginBottom: 5, textAlign: 'center' },
   course: {
     fontSize: 15,
@@ -81,23 +81,23 @@ const s = StyleSheet.create({
     gap: 80,
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: '#e5e7eb',
+    borderTopColor: '#E2E8F0',
     width: '100%',
     marginBottom: 18,
   },
   sigBlock: { alignItems: 'center' },
-  sigLine: { width: 90, height: 1, backgroundColor: '#d1d5db', marginBottom: 4 },
-  sigName: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#374151', textAlign: 'center' },
-  sigRole: { fontSize: 6, color: '#9ca3af', marginTop: 1, textAlign: 'center' },
+  sigLine: { width: 90, height: 1, backgroundColor: '#E2E8F0', marginBottom: 4 },
+  sigName: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: '#1B2A4A', textAlign: 'center' },
+  sigRole: { fontSize: 6, color: '#64748B', marginTop: 1, textAlign: 'center' },
   footer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     paddingTop: 10,
     borderTopWidth: 1,
-    borderTopColor: '#f3f4f6',
+    borderTopColor: '#E2E8F0',
     width: '100%',
   },
-  footerText: { fontSize: 7, color: '#9ca3af' },
+  footerText: { fontSize: 7, color: '#64748B' },
   verify: { marginTop: 6, alignItems: 'center' as const },
   certNum: { fontSize: 7, fontFamily: 'Courier', color: PRIMARY },
 })

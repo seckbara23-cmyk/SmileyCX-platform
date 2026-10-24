@@ -1,136 +1,148 @@
 'use client'
 import Link from 'next/link'
-import { Mail, Phone, MapPin, Facebook, Twitter, Linkedin, Instagram } from 'lucide-react'
-import { CONTACT_EMAIL } from '@/lib/brand'
+import Image from 'next/image'
+import { Mail, Phone, MapPin, Linkedin } from 'lucide-react'
+import {
+  CONTACT_EMAIL, CONTACT_PHONE, CONTACT_PHONE_HREF, CONTACT_LOCATION,
+  BRAND_LEGAL_NAME,
+} from '@/lib/brand'
 
-const SERVICES_LINKS = [
-  'Stratégie CX', 'Parcours Client', 'Voix du Client',
-  'Expérience Employé', 'Mesure & Analyse', 'Formation CX',
+/**
+ * Public footer (XP-BRAND-01 §9).
+ *
+ * Three balanced zones — identity, quick links, official contact — replacing
+ * the previous four-column layout. Removed deliberately:
+ *
+ *   • the "Nos Services" column (Stratégie CX, Parcours Client, Voix du Client,
+ *     Expérience Employé, Mesure & Analyse, Formation CX). Every one of those
+ *     six pointed at /courses; they advertised consulting services the academy
+ *     does not sell here.
+ *   • the "Admin" link. The administration ROUTES are untouched and RBAC is
+ *     unchanged — the link simply stops being advertised to visitors and
+ *     learners, which is all the brief asks.
+ *   • the newsletter form, which was an `onSubmit={e => e.preventDefault()}`
+ *     stub: it collected an address and discarded it.
+ *
+ * The logo sits on a white panel because the footer ground is #111827 and the
+ * official wordmark is navy — it would be unreadable directly on the dark
+ * surface, and recolouring the artwork is exactly what the brief forbids.
+ */
+
+/**
+ * Social links are rendered ONLY when a verified destination is configured.
+ * The brief says LinkedIn is ready and must point at the official page, but
+ * supplies no URL, and it also says not to invent URLs or show broken links.
+ * So the icon appears the moment NEXT_PUBLIC_LINKEDIN_URL is set, and not
+ * before. The other networks are still being created and stay absent.
+ */
+const LINKEDIN_URL = process.env.NEXT_PUBLIC_LINKEDIN_URL ?? ''
+
+const QUICK_LINKS = [
+  { href: '/',         label: 'Accueil' },
+  { href: '/courses',  label: 'Formations' },
+  { href: '/about',    label: 'À propos' },
+  { href: '/contact',  label: 'Contact' },
 ]
 
 export default function Footer() {
+  const year = new Date().getFullYear()
+
   return (
-    <footer className="bg-[#111827] text-white/80">
-      <div className="cx-container py-16">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-10">
-          {/* Brand */}
-          <div>
-            <p className="text-2xl font-extrabold text-white mb-3 tracking-tight">
-              XP<span className="text-secondary"> Client</span>{' '}
-              <span className="text-lg font-semibold text-white/60">Academy</span>
-            </p>
-            <p className="text-sm text-white/60 leading-relaxed mb-5">
-              Développer l&apos;excellence en expérience client pour les individus et les entreprises à travers des formations certifiantes en ligne.
-            </p>
-            <div className="flex gap-2.5">
-              {[
-                { Icon: Facebook, label: 'Facebook' },
-                { Icon: Twitter,  label: 'Twitter' },
-                { Icon: Linkedin, label: 'LinkedIn' },
-                { Icon: Instagram, label: 'Instagram' },
-              ].map(({ Icon, label }) => (
-                <button
-                  key={label}
-                  type="button"
-                  aria-label={label}
-                  className="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center text-white/70 hover:bg-primary hover:text-white transition-colors duration-300"
-                >
-                  <Icon className="w-4 h-4" />
-                </button>
-              ))}
+    <footer className="bg-footer text-white/80">
+      <div className="cx-container py-14">
+        <div className="grid grid-cols-1 md:grid-cols-12 gap-10 md:gap-8">
+
+          {/* ── Zone 1 — official logo + positioning ───────────────────── */}
+          <div className="md:col-span-5">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+              <Link href="/" aria-label="XP Client Academy — accueil" className="shrink-0">
+                <span className="inline-flex bg-white rounded-cx p-3">
+                  {/* Intrinsic 600×432; width/height keep the official ratio. */}
+                  <Image
+                    src="/brand/xp-client-academy-logo.png"
+                    alt="XP Client Academy"
+                    width={600}
+                    height={432}
+                    className="h-12 w-auto"
+                    sizes="167px"
+                  />
+                </span>
+              </Link>
+              <p className="text-sm text-white/60 leading-relaxed">
+                Des formations pratiques en expérience client, accessibles en ligne
+                et adaptées à votre rythme.
+              </p>
             </div>
+
+            {LINKEDIN_URL && (
+              <div className="flex gap-2.5 mt-6">
+                <a
+                  href={LINKEDIN_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label="LinkedIn"
+                  className="w-9 h-9 rounded-lg bg-white/10 flex items-center justify-center text-white/70 hover:bg-secondary hover:text-white transition-colors duration-300"
+                >
+                  <Linkedin className="w-4 h-4" />
+                </a>
+              </div>
+            )}
           </div>
 
-          {/* Quick Links */}
-          <div>
-            <h3 className="text-sm font-bold text-white mb-4 uppercase tracking-wider">Liens rapides</h3>
+          {/* ── Zone 2 — quick links ───────────────────────────────────── */}
+          <nav className="md:col-span-3" aria-label="Liens rapides">
+            <h2 className="text-sm font-bold text-white mb-4 uppercase tracking-wider">
+              Liens rapides
+            </h2>
             <ul className="flex flex-col gap-2.5">
-              {[
-                { href: '/',          label: 'Accueil' },
-                { href: '/courses',   label: 'Formations' },
-                { href: '/about',     label: 'À Propos' },
-                { href: '/contact',   label: 'Contact' },
-                { href: '/login',     label: 'Connexion' },
-                { href: '/signup',    label: "S'inscrire" },
-              ].map(l => (
+              {QUICK_LINKS.map(l => (
                 <li key={l.href}>
-                  <Link href={l.href} className="text-sm text-white/55 hover:text-white transition-colors">
+                  <Link
+                    href={l.href}
+                    className="text-sm text-white/55 hover:text-white transition-colors"
+                  >
                     {l.label}
                   </Link>
                 </li>
               ))}
             </ul>
-          </div>
+          </nav>
 
-          {/* Services */}
-          <div>
-            <h3 className="text-sm font-bold text-white mb-4 uppercase tracking-wider">Nos Services</h3>
-            <ul className="flex flex-col gap-2.5">
-              {SERVICES_LINKS.map(s => (
-                <li key={s}>
-                  <Link href="/courses" className="text-sm text-white/55 hover:text-white transition-colors">
-                    {s}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {/* Contact */}
-          <div>
-            <h3 className="text-sm font-bold text-white mb-4 uppercase tracking-wider">Contact</h3>
+          {/* ── Zone 3 — official contact ──────────────────────────────── */}
+          <div className="md:col-span-4">
+            <h2 className="text-sm font-bold text-white mb-4 uppercase tracking-wider">
+              Contact
+            </h2>
             <div className="flex flex-col gap-3">
-              <div className="flex items-start gap-3 text-sm text-white/60">
+              <p className="flex items-start gap-3 text-sm text-white/60">
                 <MapPin className="w-4 h-4 mt-0.5 shrink-0 text-secondary" />
-                <span>Dakar, Sénégal<br />& International</span>
-              </div>
-              <div className="flex items-center gap-3 text-sm text-white/60">
+                <span>{CONTACT_LOCATION}</span>
+              </p>
+              <p className="flex items-center gap-3 text-sm text-white/60">
                 <Phone className="w-4 h-4 shrink-0 text-secondary" />
-                <span>+(221) 77 576 0306</span>
-              </div>
-              <div className="flex items-center gap-3 text-sm text-white/60">
+                <a href={CONTACT_PHONE_HREF} className="hover:text-white transition-colors">
+                  {CONTACT_PHONE}
+                </a>
+              </p>
+              <p className="flex items-center gap-3 text-sm text-white/60">
                 <Mail className="w-4 h-4 shrink-0 text-secondary" />
-                <a href={`mailto:${CONTACT_EMAIL}`} className="hover:text-white transition-colors">
+                <a href={`mailto:${CONTACT_EMAIL}`} className="hover:text-white transition-colors break-all">
                   {CONTACT_EMAIL}
                 </a>
-              </div>
-            </div>
-
-            {/* Newsletter mini-form */}
-            <div className="mt-6">
-              <p className="text-xs text-white/50 mb-3">Newsletter — restez informé :</p>
-              <form className="flex gap-2" onSubmit={e => e.preventDefault()}>
-                <input
-                  type="email"
-                  placeholder="Votre email"
-                  className="flex-1 px-3 py-2 text-sm rounded-cx bg-white/10 border border-white/15 text-white placeholder:text-white/40 focus:outline-none focus:border-white/40"
-                />
-                <button
-                  type="submit"
-                  className="px-3 py-2 text-sm font-semibold bg-secondary text-white rounded-cx hover:bg-secondary-dark transition-colors shrink-0"
-                >
-                  OK
-                </button>
-              </form>
+              </p>
             </div>
           </div>
         </div>
 
-        <hr className="border-white/10 mt-12 mb-6" />
+        {/* ── Bottom row ───────────────────────────────────────────────── */}
+        <hr className="border-white/10 mt-10 mb-5" />
         <div className="flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-white/40">
-          <p>© 2025 XP Client Consulting. Tous droits réservés.</p>
+          <p>© {year} {BRAND_LEGAL_NAME}. Tous droits réservés.</p>
+          {/* Only pages that exist. There is no /legal route, so "mentions
+              légales" is not linked rather than linked to a 404. */}
           <div className="flex gap-4">
-            <Link href="/privacy"    className="hover:text-white/70 transition-colors">Confidentialité</Link>
-            <Link href="/terms"      className="hover:text-white/70 transition-colors">CGU</Link>
-            {/*
-              CX-AUTH-2B: points at /admin, not the deleted /admin/login.
-              The link means "go to administration", so /admin is the correct
-              target: an anonymous visitor is sent to /login?next=/admin and
-              lands on the dashboard after signing in, while the owner goes
-              straight there. Linking to /login directly would send an already
-              authenticated owner to /dashboard instead.
-            */}
-            <Link href="/admin" className="hover:text-white/70 transition-colors">Admin</Link>
+            <Link href="/privacy" className="hover:text-white/70 transition-colors">Confidentialité</Link>
+            <Link href="/terms"   className="hover:text-white/70 transition-colors">CGU</Link>
           </div>
         </div>
         <div className="mt-5 flex justify-center">

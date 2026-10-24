@@ -25,9 +25,10 @@ export const metadata: Metadata = {
     url:         PUBLIC_SITE_URL,
     title:       SITE_TITLE,
     description: SITE_DESCRIPTION,
-    // Uses the existing tracked XP mark. A purpose-built 1200×630 master is
-    // pending the logo decision (register Q-A) — no artwork is invented here.
-    images: [{ url: '/icon.png', width: 245, height: 246, alt: BRAND_NAME }],
+    // The official XP symbol, cropped from the logo supplied with the charte
+    // graphique and padded to a square (XP-BRAND-01). A purpose-built 1200×630
+    // social master is still pending — no artwork is invented here.
+    images: [{ url: '/icon.png', width: 512, height: 512, alt: BRAND_NAME }],
   },
   twitter: {
     card:        'summary',
@@ -44,7 +45,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+          href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&display=swap"
           rel="stylesheet"
         />
       </head>

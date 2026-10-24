@@ -117,7 +117,7 @@ export default function ContactForm({ defaultService }: { defaultService?: strin
       <button
         type="submit"
         disabled={pending}
-        className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark disabled:opacity-60 transition-all w-full sm:w-auto"
+        className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark disabled:opacity-60 transition-all w-full sm:w-auto"
       >
         {pending && <Loader2 className="w-4 h-4 animate-spin" />}
         Envoyer le message

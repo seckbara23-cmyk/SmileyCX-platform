@@ -11,15 +11,15 @@ export function welcomeEmailHtml({ fullName, loginUrl }: WelcomeEmailData): stri
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Bienvenue sur XP Client</title>
   <style>
-    body { margin: 0; padding: 0; background: #f4f6fb; font-family: Inter, Arial, sans-serif; color: #1e2235; }
+    body { margin: 0; padding: 0; background: #F5F6F8; font-family: Montserrat, Inter, Arial, sans-serif; color: #1B2A4A; }
     .wrapper { max-width: 600px; margin: 40px auto; background: #ffffff; border-radius: 10px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
-    .header { background: #4a6de5; padding: 32px 40px; text-align: center; }
+    .header { background: #1B2A4A; padding: 32px 40px; text-align: center; }
     .header h1 { color: #ffffff; margin: 0; font-size: 28px; letter-spacing: -0.5px; }
     .header p { color: rgba(255,255,255,.75); margin: 8px 0 0; font-size: 14px; }
     .body { padding: 40px; }
     .body h2 { font-size: 20px; margin: 0 0 12px; }
     .body p { font-size: 15px; line-height: 1.65; color: #444; margin: 0 0 16px; }
-    .btn { display: inline-block; background: #ff7b54; color: #ffffff !important; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 15px; margin: 8px 0; }
+    .btn { display: inline-block; background: #E8741E; color: #ffffff !important; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: 600; font-size: 15px; margin: 8px 0; }
     .footer { padding: 24px 40px; text-align: center; font-size: 12px; color: #aaa; border-top: 1px solid #eee; }
   </style>
 </head>

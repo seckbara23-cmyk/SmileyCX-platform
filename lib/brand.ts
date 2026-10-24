@@ -43,27 +43,30 @@ export const BRAND_NAME = 'XP Client Academy'
 export const BRAND_LEGAL_NAME = 'XP Client Consulting'
 
 /**
- * Public contact address shown in the UI and used as the notification
- * recipient fallback.
+ * Public contact address DISPLAYED in the UI.
  *
- * ⚠️ OPERATOR ACTION PENDING (decision register Q-C). The address below is the
- * one that is live today. It is intentionally NOT changed to an
- * @xpclient-academy.com address in code: that mailbox has not been confirmed to
- * exist, and pointing the contact page at an unrouted address would silently
- * discard contact and waitlist submissions with no error anywhere.
- *
- * To complete the migration: create the new mailbox, then set
- * NEXT_PUBLIC_CONTACT_EMAIL in the environment. Every surface reads this
- * constant, so it is a one-variable switch with no code change.
+ * The charte graphique (XP-BRAND-01 §8) makes contact@xpclient-academy.com the
+ * official public address, which settles the display half of decision Q-C.
  *
  * Reads ONLY NEXT_PUBLIC_CONTACT_EMAIL. A server-only variable cannot be
  * inlined into client bundles, so using one here would make the Footer (a
- * client component) display a different address from the server — a silent
- * divergence. Server code that needs the *recipient* still reads CONTACT_EMAIL
- * directly and falls back to this value.
+ * client component) show a different address from the server.
  */
 export const CONTACT_EMAIL: string =
-  process.env.NEXT_PUBLIC_CONTACT_EMAIL ?? 'bonjour@smileycx.com'
+  process.env.NEXT_PUBLIC_CONTACT_EMAIL ?? 'contact@xpclient-academy.com'
+
+/**
+ * Delivery recipient for contact and waitlist mail lives in
+ * `lib/email/contact-recipient.ts`, which is server-only: it reads a
+ * server-side variable, and this module must stay client-safe.
+ */
+
+/** Official public phone number, display form (XP-BRAND-01 §8). */
+export const CONTACT_PHONE = '+221 78 685 78 78'
+/** Official public phone number, tel: link form. */
+export const CONTACT_PHONE_HREF = 'tel:+221786857878'
+/** Official public location. */
+export const CONTACT_LOCATION = 'Dakar, Sénégal'
 
 /** Absolute URL on the canonical public domain. */
 export function publicUrl(path: string): string {

@@ -112,22 +112,22 @@ export default function CertificateView({
 
         {/* Corner ornaments */}
         <svg aria-hidden className="cert-corner cert-corner-tl" viewBox="0 0 60 60" fill="none">
-          <path d="M2 30 L2 2 L30 2" stroke="#4a6de5" strokeWidth="3" strokeLinecap="round" />
+          <path d="M2 30 L2 2 L30 2" stroke="#1B2A4A" strokeWidth="3" strokeLinecap="round" />
           <path d="M2 18 L2 2 L18 2" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" opacity=".6" />
           <circle cx="2" cy="2" r="3" fill="#f59e0b" />
         </svg>
         <svg aria-hidden className="cert-corner cert-corner-tr" viewBox="0 0 60 60" fill="none">
-          <path d="M58 30 L58 2 L30 2" stroke="#4a6de5" strokeWidth="3" strokeLinecap="round" />
+          <path d="M58 30 L58 2 L30 2" stroke="#1B2A4A" strokeWidth="3" strokeLinecap="round" />
           <path d="M58 18 L58 2 L42 2" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" opacity=".6" />
           <circle cx="58" cy="2" r="3" fill="#f59e0b" />
         </svg>
         <svg aria-hidden className="cert-corner cert-corner-bl" viewBox="0 0 60 60" fill="none">
-          <path d="M2 30 L2 58 L30 58" stroke="#4a6de5" strokeWidth="3" strokeLinecap="round" />
+          <path d="M2 30 L2 58 L30 58" stroke="#1B2A4A" strokeWidth="3" strokeLinecap="round" />
           <path d="M2 42 L2 58 L18 58" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" opacity=".6" />
           <circle cx="2" cy="58" r="3" fill="#f59e0b" />
         </svg>
         <svg aria-hidden className="cert-corner cert-corner-br" viewBox="0 0 60 60" fill="none">
-          <path d="M58 30 L58 58 L30 58" stroke="#4a6de5" strokeWidth="3" strokeLinecap="round" />
+          <path d="M58 30 L58 58 L30 58" stroke="#1B2A4A" strokeWidth="3" strokeLinecap="round" />
           <path d="M58 42 L58 58 L42 58" stroke="#f59e0b" strokeWidth="1.5" strokeLinecap="round" opacity=".6" />
           <circle cx="58" cy="58" r="3" fill="#f59e0b" />
         </svg>

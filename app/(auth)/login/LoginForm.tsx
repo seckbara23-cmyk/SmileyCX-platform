@@ -161,7 +161,7 @@ export default function LoginForm({ next, error: callbackErrorProp, adminPortal 
           <button
             type="submit"
             disabled={loading}
-            className="mt-1 w-full inline-flex items-center justify-center gap-2 font-semibold rounded-cx px-6 py-3 text-base transition-all duration-300 select-none bg-secondary text-white border-2 border-secondary hover:bg-secondary-dark hover:border-secondary-dark hover:-translate-y-0.5 hover:shadow-btn active:translate-y-0 disabled:opacity-60 disabled:cursor-not-allowed"
+            className="mt-1 w-full inline-flex items-center justify-center gap-2 font-semibold rounded-cx px-6 py-3 text-base transition-all duration-300 select-none bg-secondary text-footer border-2 border-secondary hover:bg-secondary-dark hover:border-secondary-dark hover:-translate-y-0.5 hover:shadow-btn active:translate-y-0 disabled:opacity-60 disabled:cursor-not-allowed"
           >
             {loading ? (
               <><Loader2 className="w-4 h-4 animate-spin" /> Connexion en cours…</>

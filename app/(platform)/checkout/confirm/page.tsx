@@ -104,7 +104,7 @@ export default async function ConfirmPage({ searchParams }: Props) {
           <div className="flex flex-col gap-3">
             <Link
               href="/dashboard"
-              className="flex items-center justify-center gap-2 px-6 py-3.5 bg-secondary text-white font-bold rounded-cx hover:bg-secondary-dark transition-all"
+              className="flex items-center justify-center gap-2 px-6 py-3.5 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark transition-all"
             >
               <BookOpen className="w-5 h-5" /> Retour au tableau de bord
             </Link>

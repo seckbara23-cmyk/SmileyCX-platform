@@ -83,7 +83,7 @@ export default function LessonNavigation({
       return (
         <Link
           href={`/learn/${courseSlug}/${moduleId}/quiz`}
-          className="inline-flex items-center gap-2 px-6 py-3.5 bg-secondary text-white font-bold rounded-xl hover:opacity-90 active:scale-[0.98] transition-all text-sm shadow-sm"
+          className="inline-flex items-center gap-2 px-6 py-3.5 bg-secondary text-footer font-bold rounded-xl hover:opacity-90 active:scale-[0.98] transition-all text-sm shadow-sm"
         >
           <ClipboardList className="w-4 h-4" /> Passer au quiz du module
           <ChevronRight className="w-4 h-4" />
