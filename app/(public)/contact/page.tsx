@@ -1,7 +1,8 @@
 import type { Metadata } from 'next'
 import ContactForm from './ContactForm'
 import { Mail, Phone, MapPin } from 'lucide-react'
-import { CONTACT_EMAIL, CONTACT_PHONE, CONTACT_PHONE_HREF, CONTACT_LOCATION } from '@/lib/brand'
+import { CONTACT_PHONE, CONTACT_PHONE_HREF, CONTACT_LOCATION } from '@/lib/brand'
+import ContactEmailLink from '@/components/site/ContactEmailLink'
 
 export const metadata: Metadata = {
   title: 'Contact',
@@ -26,7 +27,10 @@ export default async function ContactPage({ searchParams }: Props) {
           </p>
         </div>
 
-        <div className="grid md:grid-cols-[1fr_280px] gap-10">
+        {/* Sidebar track is 320px, not 280px: the official email needs 227px at
+            text-sm, and 280px left only 204px after the card padding and icon
+            row. The page container (max-w-4xl) is unchanged. */}
+        <div className="grid md:grid-cols-[1fr_320px] gap-10">
 
           {/* Form */}
           <div className="cx-card p-7">
@@ -40,16 +44,14 @@ export default async function ContactPage({ searchParams }: Props) {
               <div className="flex flex-col gap-4">
                 <div className="flex items-start gap-3">
                   <Mail className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs text-cx-gray font-semibold mb-0.5">Email</p>
-                    <a href={`mailto:${CONTACT_EMAIL}`} className="text-sm text-dark hover:text-primary transition-colors">
-                      {CONTACT_EMAIL}
-                    </a>
+                    <ContactEmailLink className="text-sm text-dark hover:text-primary transition-colors break-words" />
                   </div>
                 </div>
                 <div className="flex items-start gap-3">
                   <Phone className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs text-cx-gray font-semibold mb-0.5">Téléphone</p>
                     <a href={CONTACT_PHONE_HREF} className="text-sm text-dark hover:text-primary transition-colors">
                       {CONTACT_PHONE}
@@ -58,7 +60,7 @@ export default async function ContactPage({ searchParams }: Props) {
                 </div>
                 <div className="flex items-start gap-3">
                   <MapPin className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                  <div>
+                  <div className="min-w-0">
                     <p className="text-xs text-cx-gray font-semibold mb-0.5">Localisation</p>
                     <p className="text-sm text-dark">{CONTACT_LOCATION}</p>
                     <p className="text-xs text-cx-gray">Formations disponibles à distance</p>
