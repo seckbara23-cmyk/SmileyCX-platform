@@ -5,7 +5,8 @@ import Header from '@/components/layout/Header'
 import Footer from '@/components/layout/Footer'
 import ContactForm from '@/app/(public)/contact/ContactForm'
 import FinalCtaButton from '@/components/site/FinalCtaButton'
-import { CONTACT_EMAIL, CONTACT_PHONE, CONTACT_PHONE_HREF } from '@/lib/brand'
+import { CONTACT_PHONE, CONTACT_PHONE_HREF } from '@/lib/brand'
+import ContactEmailLink from '@/components/site/ContactEmailLink'
 
 const FEATURE_ITEMS = [
   { icon: BookOpen, label: 'Formations pratiques et concrètes' },
@@ -286,7 +287,9 @@ export default function HomePage() {
               </p>
             </div>
 
-            <div className="grid md:grid-cols-[1fr_260px] gap-10">
+            {/* Sidebar track matches the /contact card at 320px: the official
+                email needs 227px at text-sm, and 260px left only 184px. */}
+            <div className="grid md:grid-cols-[1fr_320px] gap-10">
               {/* Form */}
               <div className="cx-card p-7">
                 <ContactForm />
@@ -299,16 +302,14 @@ export default function HomePage() {
                   <div className="flex flex-col gap-4">
                     <div className="flex items-start gap-3">
                       <Mail className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-xs text-cx-gray font-semibold mb-0.5">Email</p>
-                        <a href={`mailto:${CONTACT_EMAIL}`} className="text-sm text-dark hover:text-primary transition-colors break-all">
-                          {CONTACT_EMAIL}
-                        </a>
+                        <ContactEmailLink className="text-sm text-dark hover:text-primary transition-colors break-words" />
                       </div>
                     </div>
                     <div className="flex items-start gap-3">
                       <Phone className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-xs text-cx-gray font-semibold mb-0.5">T&eacute;l&eacute;phone</p>
                         <a href={CONTACT_PHONE_HREF} className="text-sm text-dark hover:text-primary transition-colors">
                           {CONTACT_PHONE}
@@ -317,7 +318,7 @@ export default function HomePage() {
                     </div>
                     <div className="flex items-start gap-3">
                       <MapPin className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-                      <div>
+                      <div className="min-w-0">
                         <p className="text-xs text-cx-gray font-semibold mb-0.5">Localisation</p>
                         <p className="text-sm text-dark">Dakar, S&eacute;n&eacute;gal</p>
                         <p className="text-xs text-cx-gray">Formations disponibles &agrave; distance</p>

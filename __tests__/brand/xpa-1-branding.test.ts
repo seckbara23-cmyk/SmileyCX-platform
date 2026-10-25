@@ -259,17 +259,32 @@ describe('XPA-1 — email branding', () => {
 })
 
 describe('XPA-1 — contact address is single-sourced', () => {
-  it('all four display surfaces read the constant, none hardcode an address', () => {
+  it('every display surface reads the constant, none hardcode an address', () => {
+    // XP-BRAND-04A moved the two "Nos coordonnées" cards onto the shared
+    // <ContactEmailLink>, which exists to control where the address may wrap.
+    // That is still single-sourcing — the component reads CONTACT_EMAIL, as
+    // the next assertion pins — so a surface may reach the constant either
+    // directly or through that component, but may never inline an address.
     for (const f of [
       'app/(public)/contact/page.tsx',
+      'app/page.tsx',
       'app/(public)/terms/page.tsx',
       'app/(platform)/checkout/confirm/page.tsx',
       'components/layout/Footer.tsx',
     ]) {
       const src = read(f)
-      expect(src).toMatch(/CONTACT_EMAIL/)
+      expect(src, `${f} reaches the address through neither route`)
+        .toMatch(/CONTACT_EMAIL|ContactEmailLink/)
       expect(src).not.toMatch(/bonjour@smileycx\.com/)
+      expect(src, `${f} inlines the address instead of reading the constant`)
+        .not.toMatch(/xpclient-academy\.com/)
     }
+  })
+
+  it('the shared email link reads the constant rather than inlining it', () => {
+    const src = read('components/site/ContactEmailLink.tsx')
+    expect(src).toMatch(/import \{ CONTACT_EMAIL \} from '@\/lib\/brand'/)
+    expect(src).toMatch(/mailto:\$\{CONTACT_EMAIL\}/)
   })
 
   it('is client-safe — reads only a NEXT_PUBLIC var so client and server agree', () => {
