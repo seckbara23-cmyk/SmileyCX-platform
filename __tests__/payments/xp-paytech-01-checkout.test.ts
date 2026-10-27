@@ -335,10 +335,45 @@ describe('XP-PAYTECH-01 · the transport layer', () => {
     ).rejects.toSatisfy((e: unknown) => e instanceof PaytechApiError && e.reason === 'invalid_argument')
   })
 
-  it('has NO confirm/verify function, because the provider documents none', () => {
+  it('exposes the server-to-server settlement check, which is the only proof of payment', async () => {
+    // XP-PAYTECH-01 asserted the OPPOSITE here — that no confirm function
+    // existed "because the provider documents none". That was wrong:
+    // GET /payment/get-status?token_payment={token} is documented, and its
+    // absence from the design is what left fulfilment resting on a signature
+    // that does not cover the outcome. The corrected invariant is that the
+    // settlement check exists and is reachable.
     const c = code('lib/payments/paytech-client.ts')
-    expect(c).not.toMatch(/function\s+confirm/i)
-    expect(c).not.toMatch(/verify-payment|check-payment|payment-status/)
+    expect(c).toMatch(/export async function confirmPaymentStatus/)
+    expect(c).toContain('/payment/get-status')
+    const { PAYTECH_GET_STATUS_PATH } = await import('@/lib/payments/paytech-client')
+    expect(PAYTECH_GET_STATUS_PATH).toBe('/payment/get-status')
+  })
+
+  it('the settlement check never throws, so a caller cannot forget to catch', async () => {
+    const { confirmPaymentStatus } = await import('@/lib/payments/paytech-client')
+    const env = {
+      PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: API_KEY, PAYTECH_TEST_API_SECRET: API_SECRET,
+    }
+    // Transport failure, bad token and an unconfigured provider all resolve to
+    // `unknown` rather than rejecting.
+    for (const [label, call] of [
+      ['transport throws', () => confirmPaymentStatus('paytech_tok_ABCDEFGH', {
+        env, fetchImpl: (async () => { throw new Error('down') }) as unknown as typeof fetch,
+      })],
+      ['malformed token', () => confirmPaymentStatus('../../etc/passwd', { env })],
+      ['no config', () => confirmPaymentStatus('paytech_tok_ABCDEFGH', { env: {} })],
+    ] as const) {
+      const r = await call()
+      expect(r.outcome, label).toBe('unknown')
+    }
+  })
+
+  it('the IPN decides settlement from the provider, never from type_event', () => {
+    const c = code('app/api/payments/paytech/ipn/route.ts')
+    expect(c).toMatch(/confirmPaymentStatus\(/)
+    // The outcome used to come off the notification. It must not any more.
+    expect(c).not.toMatch(/verification\.outcome/)
+    expect(c).toMatch(/settlement\.outcome !== 'paid'/)
   })
 
   it('never reaches the database or the completion authority', () => {

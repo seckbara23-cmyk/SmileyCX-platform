@@ -49,6 +49,12 @@ const state: {
   updates: Record<string, unknown>[]
   rpcCalls: Record<string, unknown>[]
   terminalRowsAffected: number
+  /**
+   * What PayTech's /payment/get-status returns. `null` makes the call fail at
+   * the transport, which must resolve to `unknown` and fulfil nothing.
+   */
+  settlement: Record<string, unknown> | null
+  statusCalls: string[]
 } = {
   payment: null,
   lookupError: null,
@@ -56,6 +62,8 @@ const state: {
   updates: [],
   rpcCalls: [],
   terminalRowsAffected: 1,
+  settlement: null,
+  statusCalls: [],
 }
 
 function freshPayment(over: Partial<PaymentRow> = {}): PaymentRow {
@@ -165,6 +173,24 @@ beforeEach(() => {
   state.updates = []
   state.rpcCalls = []
   state.terminalRowsAffected = 1
+  state.statusCalls = []
+  // Default: PayTech confirms the payment settled for our amount.
+  state.settlement = { success: 1, type_event: 'sale_complete', item_price: AMOUNT }
+
+  // The settlement check runs for real against this fake transport, so the
+  // response parsing and the fail-closed branches are genuinely exercised.
+  vi.stubGlobal('fetch', vi.fn(async (url: unknown) => {
+    const u = String(url)
+    if (u.includes('/payment/get-status')) {
+      state.statusCalls.push(u)
+      if (state.settlement === null) throw new Error('network down')
+      return new Response(JSON.stringify(state.settlement), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    throw new Error(`unexpected fetch to ${u}`)
+  }))
 
   vi.stubEnv('PAYTECH_ENABLED', 'true')
   vi.stubEnv('PAYTECH_MODE', 'test')
@@ -226,6 +252,7 @@ describe('XP-PAYTECH-01 · scenario 2 — pending payment', () => {
 
 describe('XP-PAYTECH-01 · scenarios 3 and 4 — cancelled and failed', () => {
   it('a signed cancellation marks the payment cancelled and grants nothing', async () => {
+    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
     const res = await post(signedPayload({ type_event: 'sale_canceled' }))
     expect(res.status).toBe(200)
     expect(state.rpcCalls, 'a cancellation must never reach complete_payment').toEqual([])
@@ -371,6 +398,7 @@ describe('XP-PAYTECH-01 · scenarios 9 and 10 — duplicate and replay', () => {
 describe('XP-PAYTECH-01 · scenario 11 — out-of-order notification', () => {
   it('a cancellation arriving AFTER a completed payment revokes nothing', async () => {
     state.payment = freshPayment({ status: 'completed' })
+    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
     const res = await post(signedPayload({ type_event: 'sale_canceled' }))
     expect(res.status).toBe(200)
     expect((await res.json()).detail).toBe('already_terminal')
@@ -481,5 +509,100 @@ describe('XP-PAYTECH-01 · forensics (migration 062, obligation 6)', () => {
     expect(text).not.toContain(API_SECRET)
     expect(text).not.toContain(API_KEY)
     expect(text).not.toContain(sha256(API_SECRET))
+  })
+})
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('XP-PAYTECH-02 · settlement, not the notification, decides', () => {
+  /**
+   * The defect this suite exists for.
+   *
+   * `hmac_compute` signs `amount|ref_command|api_key`. No status field is in
+   * that message, so for one order the signature is IDENTICAL whether the
+   * payment completed or was cancelled. XP-PAYTECH-01 read `type_event` to
+   * decide the outcome, so anyone holding a single authentic notification for
+   * an order could flip `sale_canceled` to `sale_complete` and be granted the
+   * course — with a signature that verifies perfectly.
+   */
+  it('a FLIPPED type_event cannot buy a course when PayTech says it was cancelled', async () => {
+    // The attacker's payload: a genuine, correctly signed notification whose
+    // only modification is the unauthenticated outcome field.
+    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
+
+    const forged = signedPayload({ type_event: 'sale_complete' })
+    const res = await post(forged)
+
+    expect(res.status).toBe(200)
+    expect(state.rpcCalls, 'a flipped outcome must never grant an entitlement').toEqual([])
+    // And the payment is moved to cancelled, which is what actually happened.
+    expect(state.updates.some(u => u.status === 'cancelled')).toBe(true)
+  })
+
+  it('always asks PayTech, and asks about the token it correlated on', async () => {
+    await post(signedPayload())
+    expect(state.statusCalls).toHaveLength(1)
+    expect(state.statusCalls[0]).toContain('/payment/get-status')
+    expect(state.statusCalls[0]).toContain(`token_payment=${TOKEN}`)
+  })
+
+  it('fulfils when and only when settlement is confirmed paid', async () => {
+    await post(signedPayload())
+    expect(state.rpcCalls).toHaveLength(1)
+  })
+
+  it('fulfils nothing while the transaction is still pending at the provider', async () => {
+    state.settlement = { success: 1, status: 'pending' }
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('unsettled:pending')
+    expect(state.rpcCalls).toEqual([])
+    expect(state.updates.some(u => u.failure_reason === 'settlement_pending')).toBe(true)
+  })
+
+  it('fulfils nothing when the provider cannot be reached', async () => {
+    state.settlement = null // the fake transport throws
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('unsettled:unknown')
+    expect(state.rpcCalls, 'an unreachable provider must not grant access').toEqual([])
+  })
+
+  it('fulfils nothing for a status it does not recognise', async () => {
+    // The /payment/get-status response shape is undocumented, so an
+    // unrecognised value is the EXPECTED case until a real sandbox response
+    // confirms it. It must refuse, not lean towards paid.
+    state.settlement = { success: 1, status: 'quelque_chose_inattendu' }
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('unsettled:unknown')
+    expect(state.rpcCalls).toEqual([])
+  })
+
+  it('fulfils nothing when the provider itself reports failure', async () => {
+    state.settlement = { success: -1, message: 'nope' }
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('unsettled:unknown')
+    expect(state.rpcCalls).toEqual([])
+  })
+
+  it('refuses when the CONFIRMED amount is not the stored amount', async () => {
+    // The notification claimed the right amount and signed it; the
+    // authoritative source disagrees. That is the failure only this check sees.
+    state.settlement = { success: 1, type_event: 'sale_complete', item_price: 1 }
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('amount_mismatch')
+    expect(state.rpcCalls).toEqual([])
+    expect(state.updates.some(u => u.failure_reason === 'settlement_amount_mismatch')).toBe(true)
+  })
+
+  it('reads a status nested one level down', async () => {
+    state.settlement = { success: 1, data: { status: 'sale_complete', amount: AMOUNT } }
+    await post(signedPayload())
+    expect(state.rpcCalls).toHaveLength(1)
+  })
+
+  it('never asks PayTech before the notification is authenticated', async () => {
+    // The settlement call costs a round trip and leaks nothing, but an
+    // unauthenticated caller must not be able to make us originate traffic.
+    await post(signedPayload({ api_secret_sha256: 'deadbeef' }))
+    expect(state.statusCalls, 'an unauthenticated caller must not trigger a provider call').toEqual([])
   })
 })
