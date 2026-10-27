@@ -21,7 +21,7 @@ import { spawn } from 'node:child_process'
 
 const SCRIPT = 'scripts/security/verify-uat-isolation.mjs'
 const PRODUCTION_REF = 'eqoqcxkdcxeosjqaafhs'
-const UAT_REF = 'localuatprojectref01'
+const UAT_REF = 'hosteduatprojectref1'
 
 /** A Supabase-shaped JWT carrying a chosen project ref. Signature is irrelevant. */
 function keyFor(ref: string, role: 'anon' | 'service_role'): string {
@@ -35,14 +35,29 @@ function keyFor(ref: string, role: 'anon' | 'service_role'): string {
 }
 
 /**
+ * A key as the LOCAL stack mints one: a JWT with no `ref`, because it is not
+ * issued for a hosted project. The default fixture uses these, so the happy
+ * path represents a genuine local run rather than a hosted project that
+ * merely happens not to be production.
+ */
+function localKey(role: 'anon' | 'service_role'): string {
+  const b64 = (o: unknown) => Buffer.from(JSON.stringify(o)).toString('base64url')
+  return [
+    b64({ alg: 'HS256', typ: 'JWT' }),
+    b64({ iss: 'supabase-demo', role, exp: 9999999999 }),
+    'signature-not-checked',
+  ].join('.')
+}
+
+/**
  * Every variable the gate reads, pinned to a safe local default. A test
  * overrides only what it is about.
  */
 function isolatedEnv(over: Record<string, string> = {}): Record<string, string> {
   return {
     NEXT_PUBLIC_SUPABASE_URL:            'http://127.0.0.1:54321',
-    NEXT_PUBLIC_SUPABASE_ANON_KEY:       keyFor(UAT_REF, 'anon'),
-    SUPABASE_SERVICE_ROLE_KEY:           keyFor(UAT_REF, 'service_role'),
+    NEXT_PUBLIC_SUPABASE_ANON_KEY:       localKey('anon'),
+    SUPABASE_SERVICE_ROLE_KEY:           localKey('service_role'),
     PAYTECH_MODE:                        '',
     PAYTECH_PROD_API_KEY:                '',
     PAYTECH_PROD_API_SECRET:             '',
@@ -180,5 +195,68 @@ describe('XP-SEC-02 · the gate never leaks a credential', () => {
     expect(src).toContain(`const PRODUCTION_PROJECT_REF = '${PRODUCTION_REF}'`)
     // It must not be read from the environment it is policing.
     expect(src).not.toMatch(/PRODUCTION_PROJECT_REF\s*=\s*(process\.env|env\[)/)
+  })
+})
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('XP-SEC-03 · a loopback URL demands local credentials', () => {
+  /**
+   * The production check alone leaves a gap: a key for some OTHER hosted
+   * project — a colleague's, a staging one — beside a local URL would pass,
+   * and every request would leave the machine.
+   */
+  const OTHER_HOSTED_REF = 'someotherprojectref1'
+
+  it('refuses an anon key from another hosted project beside a local URL', async () => {
+    const { code, out } = await runGate({
+      NEXT_PUBLIC_SUPABASE_URL:      'http://127.0.0.1:54321',
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: keyFor(OTHER_HOSTED_REF, 'anon'),
+    })
+    expect(code).toBe(1)
+    expect(out).toMatch(/carries a hosted-project ref/)
+    expect(out).toContain(OTHER_HOSTED_REF)
+  })
+
+  it('refuses a service-role key from another hosted project beside a local URL', async () => {
+    const { code, out } = await runGate({
+      SUPABASE_SERVICE_ROLE_KEY: keyFor(OTHER_HOSTED_REF, 'service_role'),
+    })
+    expect(code).toBe(1)
+    expect(out).toMatch(/carries a hosted-project ref/)
+  })
+
+  it('still names PRODUCTION specifically, rather than the generic message', async () => {
+    // The production rule must keep firing first and by name — the new check
+    // must not have swallowed it into a vaguer error.
+    const { code, out } = await runGate({
+      SUPABASE_SERVICE_ROLE_KEY: keyFor(PRODUCTION_REF, 'service_role'),
+    })
+    expect(code).toBe(1)
+    expect(out).toMatch(/SUPABASE_SERVICE_ROLE_KEY belongs to the PRODUCTION Supabase project/)
+  })
+
+  it('accepts keys with no ref claim, which is what a local stack mints', async () => {
+    const noRef = [
+      Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ iss: 'supabase-demo', role: 'anon', exp: 9999999999 })).toString('base64url'),
+      'sig',
+    ].join('.')
+    const { code, out } = await runGate({
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: noRef,
+      SUPABASE_SERVICE_ROLE_KEY:     noRef.replace('anon', 'anon'),
+    })
+    expect(code, out).toBe(0)
+  })
+
+  it('leaves a hosted UAT project reachable when the URL is NOT loopback', async () => {
+    // A future hosted UAT project is legitimate; the rule applies only to
+    // loopback runs, so it must not block that path.
+    const { code, out } = await runGate({
+      NEXT_PUBLIC_SUPABASE_URL:      `https://${OTHER_HOSTED_REF}.supabase.co`,
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: keyFor(OTHER_HOSTED_REF, 'anon'),
+      SUPABASE_SERVICE_ROLE_KEY:     keyFor(OTHER_HOSTED_REF, 'service_role'),
+    })
+    expect(code, out).toBe(0)
   })
 })
