@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolvePaytechConfig, PaytechConfigError } from '@/lib/payments/paytech-config'
 import { paytechAvailability } from '@/lib/payments/providers'
+import { confirmPaymentStatus } from '@/lib/payments/paytech-client'
 import {
   verifyPaytechIpn,
   verifySharedSecretOnly,
@@ -214,19 +215,16 @@ export async function POST(req: Request) {
     },
   })
 
-  // `fulfillable` is the authoritative gate, NOT `strength`. They differ in one
-  // case that matters: a payload can reach `signature` strength while carrying
-  // an event we do not recognise — a refund or a transfer, correctly signed.
-  // Gating on strength alone let such a notification fall through to the
-  // completion branch, which is precisely the "an unrecognised status must
-  // never drift towards completed" failure migration 062 warns about. Caught by
-  // `refuses an unknown event even when perfectly signed`.
-  if (!verification.fulfillable || verification.strength !== VERIFIED_STRENGTH) {
-    // Authentic-looking but not cryptographically tied to this amount and
-    // reference, or not an event we act on. Fail closed: record, fulfil nothing.
+  // AUTHENTICITY ONLY. This establishes that the sender knows our API secret
+  // and that the notification concerns this amount and this reference. It does
+  // NOT establish that money moved: the signed message is
+  // `amount|ref_command|api_key`, which contains no status field, so
+  // `hmac_compute` is identical for a completion and a cancellation of the
+  // same order. Settlement is decided further down, by asking PayTech.
+  if (!verification.authenticated || verification.strength !== VERIFIED_STRENGTH) {
     log.error(
       { paymentId: payment.id, strength: verification.strength, reason: verification.reason },
-      'PayTech IPN did not reach the required verification strength',
+      'PayTech IPN is not authentic for this payment',
     )
     await touchIpnReceipt({
       providerToken: token,
@@ -268,31 +266,59 @@ export async function POST(req: Request) {
     return ack('incomplete_payment')
   }
 
-  // ── 7. act ──
-  if (verification.outcome === 'cancelled') {
+  // ── 7. SETTLEMENT: ask PayTech, over a channel the payer cannot influence ──
+  //
+  // This is the fix for the XP-PAYTECH-01 defect. `type_event` is NOT part of
+  // the signed message, so the notification's own claim about the outcome is
+  // unauthenticated: a party holding one authentic notification for this order
+  // could flip `sale_canceled` to `sale_complete` and the signature would
+  // still verify. The event is therefore demoted to a HINT — it tells us a
+  // check is worth making, and nothing more.
+  //
+  // `confirmPaymentStatus()` never throws and never guesses: a transport
+  // failure, a refusal, an unparseable body and an unrecognised status all
+  // resolve to `unknown`, which fulfils nothing.
+  const settlement = await confirmPaymentStatus(token)
+
+  log.info(
+    { paymentId: payment.id, hint: verification.event, settlement: settlement.outcome },
+    'PayTech settlement confirmed server-to-server',
+  )
+
+  // The confirmed amount, where PayTech reports one, must be ours. The IPN's
+  // claimed amount was already checked; this checks the authoritative source.
+  if (settlement.amount !== null && settlement.amount !== Number(payment.amount)) {
+    log.error({ paymentId: payment.id }, 'PayTech confirmed an amount that is not the stored one')
+    await touchIpnReceipt({ providerToken: token, failureReason: 'settlement_amount_mismatch' })
+    return ack('amount_mismatch')
+  }
+
+  if (settlement.outcome === 'cancelled') {
     // Out-of-order safety: `recordTerminalFailure` refuses to touch a payment
     // that is already `completed`, so a late cancellation cannot revoke a
     // verified purchase.
     const { changed } = await recordTerminalFailure({
       providerToken: token,
       status:        'cancelled',
-      failureReason: 'provider_reported_cancellation',
+      failureReason: 'settlement_cancelled',
     })
-    log.info({ paymentId: payment.id, changed }, 'PayTech reported a cancellation')
     return ack(changed ? 'cancelled' : 'already_terminal')
   }
 
-  // Completion is reached only by an EXPLICIT 'completed' outcome, never as the
-  // remaining branch. The second half of the same defence: even if a future
-  // change let an unknown event past the gate above, it could not complete a
-  // payment here.
-  if (verification.outcome !== 'completed') {
+  if (settlement.outcome !== 'paid') {
+    // 'pending' and 'unknown' both land here. Nothing is written beyond
+    // forensics, and the provider is told we received it: a retry would ask
+    // the same question and get the same answer, and a pending transaction
+    // will produce its own notification when it settles.
+    await touchIpnReceipt({
+      providerToken: token,
+      failureReason: `settlement_${settlement.outcome}`,
+    })
     log.error(
-      { paymentId: payment.id, event: verification.event },
-      'PayTech IPN verified but carried no outcome this route acts on',
+      { paymentId: payment.id, settlement: settlement.outcome },
+      'PayTech did not confirm settlement; fulfilling nothing',
     )
-    await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_unactionable_event' })
-    return ack('unactionable')
+    return ack(`unsettled:${settlement.outcome}`)
   }
 
   // `complete_payment()` serialises on the locked payment row, so two

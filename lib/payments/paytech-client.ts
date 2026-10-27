@@ -75,6 +75,18 @@ export const PAYTECH_BASE_URL = `https://${PAYTECH_HOST}/api`
 
 export const PAYTECH_REQUEST_PAYMENT_PATH = '/payment/request-payment'
 
+/**
+ * The server-to-server settlement check — XP-PAYTECH-02.
+ *
+ * XP-PAYTECH-01 reported that PayTech publishes no way to ask the status of an
+ * existing transaction, and built the integration around that belief. THAT WAS
+ * WRONG: `GET /payment/get-status?token_payment={token}` is documented, next to
+ * `/payment/refund-payment` and the transfer endpoints. The mistake mattered,
+ * because it is the reason fulfilment leaned on a signature that does not
+ * authenticate the outcome (see `paytech-ipn.ts`).
+ */
+export const PAYTECH_GET_STATUS_PATH = '/payment/get-status'
+
 /** Default request timeout. The provider documents none, so we impose one. */
 export const PAYTECH_TIMEOUT_MS = 15_000
 
@@ -376,4 +388,164 @@ export async function requestPayment(
     env:          config.env,
     providerMode: config.providerMode,
   }
+}
+
+// ── C. Confirm settlement, server to server ─────────────────────────────────
+
+/**
+ * What PayTech says actually happened to a transaction.
+ *
+ * `unknown` is a first-class outcome, not an error: it is what the caller gets
+ * whenever the response cannot be positively interpreted, and it must never
+ * lead to fulfilment.
+ */
+export const PAYTECH_SETTLEMENTS = ['paid', 'cancelled', 'pending', 'unknown'] as const
+export type PaytechSettlementOutcome = (typeof PAYTECH_SETTLEMENTS)[number]
+
+export interface PaytechSettlement {
+  readonly outcome: PaytechSettlementOutcome
+  /** The amount PayTech reports, when it reports one. Cross-checked by the caller. */
+  readonly amount: number | null
+  /** The raw token we recognised, for operator diagnostics. Never a credential. */
+  readonly matched: string | null
+}
+
+/**
+ * Status values we are willing to ACT on, drawn only from PayTech's own
+ * documented vocabulary — the `type_event` names `sale_complete` /
+ * `sale_canceled`, and the `success` flag semantics the request-payment
+ * endpoint documents.
+ *
+ * ⚠ THE RESPONSE SHAPE OF /payment/get-status IS NOT DOCUMENTED. No source
+ * reachable from here publishes its JSON. These sets are therefore a
+ * RECOGNITION ALLOW-LIST, not an asserted contract: anything outside them
+ * resolves to `unknown`, and `unknown` never fulfils. The first real sandbox
+ * response will show which field and value PayTech actually returns; until
+ * then this function is expected to answer `unknown` and the IPN is expected
+ * to fulfil nothing. That is the designed behaviour, not a bug to loosen.
+ */
+const PAID_TOKENS = new Set(['sale_complete', 'complete', 'completed', 'success', 'paid'])
+const CANCELLED_TOKENS = new Set([
+  'sale_canceled', 'sale_cancelled', 'canceled', 'cancelled', 'failed', 'fail',
+])
+const PENDING_TOKENS = new Set(['pending', 'processing', 'in_progress'])
+
+/** Field names we will read a status from. Narrow on purpose. */
+const STATUS_FIELDS = ['type_event', 'status', 'payment_status', 'state'] as const
+
+const GetStatusResponseSchema = z.object({
+  success: SuccessSchema.optional(),
+  message: z.unknown().optional(),
+}).passthrough()
+
+function readStatusToken(body: Record<string, unknown>): string | null {
+  for (const f of STATUS_FIELDS) {
+    const v = body[f]
+    if (typeof v === 'string' && v.trim().length > 0) return v.trim().toLowerCase()
+  }
+  // Some responses nest the transaction. One level only, and only these keys.
+  for (const nest of ['data', 'transaction', 'payment']) {
+    const inner = body[nest]
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      const found = readStatusToken(inner as Record<string, unknown>)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+function readAmount(body: Record<string, unknown>): number | null {
+  for (const f of ['item_price', 'amount', 'final_item_price', 'item_price_xof']) {
+    const v = body[f]
+    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN
+    if (Number.isFinite(n) && n > 0) return n
+  }
+  for (const nest of ['data', 'transaction', 'payment']) {
+    const inner = body[nest]
+    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
+      const found = readAmount(inner as Record<string, unknown>)
+      if (found !== null) return found
+    }
+  }
+  return null
+}
+
+/**
+ * Ask PayTech, over a channel the payer cannot influence, what happened.
+ *
+ * This is the ONLY thing in the PayTech integration that may establish that
+ * money moved, and it exists because the IPN signature does not cover the
+ * outcome. It returns FACTS; it decides nothing. Comparing the amount against
+ * the stored payment row and completing the payment belong to the trusted
+ * caller, not here.
+ *
+ * It never throws for a "no" answer: a transport failure, a refusal, an
+ * unparseable body and an unrecognised status all resolve to `unknown`, so the
+ * caller has exactly one safe branch to write and cannot forget a catch.
+ */
+export async function confirmPaymentStatus(
+  token: string,
+  opts: PaytechRequestOptions = {},
+): Promise<PaytechSettlement> {
+  const nothing: PaytechSettlement = { outcome: 'unknown', amount: null, matched: null }
+
+  if (!isValidPaytechToken(token)) return nothing
+
+  let config: PaytechConfig
+  try {
+    config = opts.env ? resolvePaytechConfig(opts.env) : resolvePaytechConfig()
+  } catch {
+    return nothing
+  }
+
+  const doFetch = opts.fetchImpl ?? fetch
+  const timeoutMs = opts.timeoutMs ?? PAYTECH_TIMEOUT_MS
+  const url = `${PAYTECH_BASE_URL}${PAYTECH_GET_STATUS_PATH}`
+             + `?token_payment=${encodeURIComponent(token)}`
+
+  let res: Response
+  try {
+    res = await doFetch(url, {
+      method:  'GET',
+      headers: headersFor(config),
+      signal:  AbortSignal.timeout(timeoutMs),
+      cache:   'no-store',
+    })
+  } catch {
+    return nothing
+  }
+
+  if (!res.ok) return nothing
+
+  const contentType = res.headers.get('content-type') ?? ''
+  if (!/\bapplication\/json\b|\b\+json\b/i.test(contentType)) return nothing
+
+  let raw: unknown
+  try { raw = await res.json() } catch { return nothing }
+
+  const parsed = GetStatusResponseSchema.safeParse(raw)
+  if (!parsed.success) return nothing
+
+  const body = parsed.data as Record<string, unknown>
+
+  // A negative `success` is a refusal, whatever else the body says.
+  if (typeof body.success === 'number' && body.success !== 1) return nothing
+
+  const statusToken = readStatusToken(body)
+  if (statusToken === null) return nothing
+
+  const amount = readAmount(body)
+
+  if (PAID_TOKENS.has(statusToken)) {
+    return { outcome: 'paid', amount, matched: statusToken }
+  }
+  if (CANCELLED_TOKENS.has(statusToken)) {
+    return { outcome: 'cancelled', amount, matched: statusToken }
+  }
+  if (PENDING_TOKENS.has(statusToken)) {
+    return { outcome: 'pending', amount, matched: statusToken }
+  }
+
+  // Recognised nothing. Fail closed rather than guess which way it leans.
+  return { outcome: 'unknown', amount, matched: statusToken }
 }

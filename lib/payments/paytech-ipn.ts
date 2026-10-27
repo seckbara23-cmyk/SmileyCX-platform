@@ -9,6 +9,33 @@ import type { PaytechConfig } from '@/lib/payments/paytech-config'
  * decides only whether a notification is authentic and what it says; acting on
  * that is `payment-completion.ts`'s business.
  *
+
+ * ══ WHAT THE SIGNATURE DOES NOT AUTHENTICATE — XP-PAYTECH-02 ══════════════
+ *
+ * The documented message is `amount|ref_command|api_key`. Read that list
+ * again: it contains the amount, the order reference and the public key. It
+ * does NOT contain `type_event`, nor any status, outcome or settlement field.
+ *
+ * The consequence is sharp. For a single order, `hmac_compute` is the SAME
+ * value whether the payment completed or was cancelled, because neither fact
+ * is part of the signed message. So a valid signature proves:
+ *
+ *      the sender knows api_secret, and this notification concerns
+ *      THIS amount and THIS order reference
+ *
+ * and proves NOTHING AT ALL about whether money moved. Anyone holding one
+ * authentic notification for an order — a cancellation, say — can change
+ * `type_event` to `sale_complete` and the signature still verifies.
+ *
+ * XP-PAYTECH-01 treated a valid signature plus `type_event` as proof of
+ * payment. That was wrong, and it was exploitable. `verifyPaytechIpn()`
+ * therefore answers only "is this authentic, and about which order", and the
+ * event it returns is a HINT about what to go and check. Settlement is
+ * established exclusively by `confirmPaymentStatus()` in `paytech-client.ts`,
+ * over a channel the payer cannot influence.
+ *
+ * ══════════════════════════════════════════════════════════════════════════
+ *
  * ══ THE CENTRAL PROBLEM, STATED PLAINLY ═══════════════════════════════════
  *
  * PayDunya gives this codebase a server-to-server confirm endpoint, so
@@ -252,8 +279,12 @@ export function verifySharedSecretOnly(
 export interface IpnVerification {
   /** What the notification actually proved. Only 'signature' permits fulfilment. */
   readonly strength: IpnStrength
-  /** True only when `strength === VERIFIED_STRENGTH` and the event is known. */
-  readonly fulfillable: boolean
+  /**
+   * Authentic AND about our amount and reference AND carrying a recognised
+   * event. This is NOT authorization to fulfil — see the warning in the module
+   * header. Settlement comes from `confirmPaymentStatus()`.
+   */
+  readonly authenticated: boolean
   readonly reason: IpnRejectionReason | null
   /** The provider token, when the payload carried a usable one. */
   readonly token: string | null
@@ -286,7 +317,7 @@ export function verifyPaytechIpn(args: {
 
   const base = {
     strength: 'none' as IpnStrength,
-    fulfillable: false,
+    authenticated: false,
     token: null,
     refCommand: null,
     event: null,
@@ -353,7 +384,7 @@ export function verifyPaytechIpn(args: {
 
   return {
     strength: 'signature',
-    fulfillable: true,
+    authenticated: true,
     reason: null,
     token,
     refCommand,
