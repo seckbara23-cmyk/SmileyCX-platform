@@ -109,3 +109,28 @@ Log drain configured **before** enforcement. Alert on: auth failure spikes, admi
 8. [ ] Preview/Production database isolation proven.
 
 **Enforcement before every box is ticked is a self-inflicted outage.** On a freight platform that means stale vehicle positions and missed customs deadlines, which is materially worse than the attack most of these rules mitigate.
+
+---
+
+## 7. Effitrans rule matrix (XP-SEC-02 Phase 8)
+
+Derived from XP Client Academy's matrix, re-scoped for a back-office freight platform. **Not validated against Effitrans.** Every row stays in LOG until §6's checklist is complete.
+
+| # | Surface | Method | Match | Proposed action | Verification | Rollback |
+|---|---|---|---|---|---|---|
+| 1 | auth routes | POST | >10 req / 5 min / IP | **LOG** | a freight office shares one NAT address — expect clustering | remove rule, publish |
+| 2 | customs dossier mutations | POST/PATCH | >60 req / 5 min / **user** | **LOG** | must not fire on a clerk working a dossier queue | as above |
+| 3 | finance / invoice issuance | POST | — | **EXCLUSION, no challenge ever** | confirm invoice generation and reconciliation still complete | remove only when the module is retired |
+| 4 | HR import upload | POST | body size, type | **enforce in-app, not at the edge** | large multipart must survive; a firewall body rule would block it | relax the in-app limit |
+| 5 | document upload | POST | type allow-list | **enforce in-app** + out-of-band malware scan | quarantine bucket → async scan → promote on clean verdict | disable promotion, keep quarantine |
+| 6 | **GPS / telematics ingestion** | POST | — | **EXCLUSION from every challenge, bot check and per-IP limit** | a device fleet behind a few egress IPs looks exactly like an attack | never remove without a device-level limit in place |
+| 7 | vehicle tracking / streaming | GET/WS | — | **EXCLUSION** | long-polling and streaming tolerate edge rules badly | as above |
+| 8 | **third-party webhooks** | POST | per path | **EXCLUSION, one per inventoried path** | each needs its own documented exception | as above |
+| 9 | admin routes | ALL | any | **LOG + alert** | RBAC/RLS remain the authority | remove rule |
+| 10 | public forms | POST | bot score | **LOG** | verify server-side token checks | remove rule |
+
+**The three rows that would cause an outage if copied from XP Client Academy:** 6, 7 and 8. XP Client Academy has exactly one machine caller; Effitrans has continuous machine traffic from vehicles, partners and integrations. A per-IP limit tuned for a marketing site will drop freight telemetry, and the symptom — stale vehicle positions, missed customs deadlines — is materially worse than the attack the rule mitigates.
+
+**Rate-limit keys differ by platform.** XP Client Academy keys on IP for anonymous surfaces because its users are individuals on varied connections. Effitrans must key on **authenticated user** for back-office work and on **device identity** for telematics, because its users share office egress addresses and its devices share fleet egress addresses.
+
+**Application-layer isolation gate.** Effitrans should carry its own copy of `scripts/security/verify-uat-isolation.mjs`, with its own hard-coded production project ref and its own live-credential list (payment processor, customs filing endpoint, telematics provider). The technique that matters is reading the project ref out of the **credential itself**, not only out of the URL — a URL can look isolated while the keys beside it are production.
