@@ -20,6 +20,7 @@
     "scan:bundle": "node scripts/security/check-bundle-secrets.mjs",
     "audit:prod": "npm audit --omit=dev --audit-level=critical",
     "verify:prod-config": "node scripts/security/verify-prod-config.mjs",
+    "verify:uat-isolation": "node scripts/security/verify-uat-isolation.mjs",
     "verify": "npm run typecheck && npm run lint && npm run lint:sql && npm run test:ci && npm run scan:secrets && npm run scan:public-assets",
     "scan:public-assets": "node scripts/security/check-public-assets.mjs"
   },

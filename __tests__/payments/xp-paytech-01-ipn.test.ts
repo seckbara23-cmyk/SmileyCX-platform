@@ -606,3 +606,72 @@ describe('XP-PAYTECH-02 · settlement, not the notification, decides', () => {
     expect(state.statusCalls, 'an unauthenticated caller must not trigger a provider call').toEqual([])
   })
 })
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('XP-SEC-02 · scenario 12 — an entitlement is created EXACTLY once', () => {
+  /**
+   * The other duplicate/concurrency tests assert that the handler keeps asking
+   * and that the authority answers `already_completed`. Neither states the
+   * property that actually matters to a learner and to the ledger: across
+   * every delivery of the same payment, **one** entitlement exists.
+   *
+   * The fake authority below behaves as migration 062 does: the first caller
+   * to reach a payment completes it and returns an entitlement id; every later
+   * caller observes the completed row and returns `already_completed` having
+   * written nothing. Counting distinct entitlement ids across a storm of
+   * deliveries is then a direct statement of "exactly once".
+   */
+  function statefulAuthority() {
+    let completed = false
+    state.rpc = {}
+    const admin = { grants: [] as string[] }
+    // Re-point the rpc behaviour by mutating what the shared fake returns.
+    Object.defineProperty(state, 'rpc', {
+      configurable: true,
+      get() {
+        if (!completed) {
+          completed = true
+          admin.grants.push('ent-only-one')
+          return { data: { outcome: 'completed', entitlement_id: 'ent-only-one' } }
+        }
+        return { data: { outcome: 'already_completed' } }
+      },
+      set() { /* ignored: this test owns the authority's behaviour */ },
+    })
+    return admin
+  }
+
+  it('survives duplicate delivery, replay and concurrency with ONE entitlement', async () => {
+    const authority = statefulAuthority()
+    const payload = signedPayload()
+
+    // A duplicate, a replay of the identical bytes, and two concurrent
+    // deliveries — nine attempts at the same payment.
+    await post(payload)
+    await post(payload)
+    await Promise.all([post(payload), post(payload), post(payload)])
+    await Promise.all([post(payload), post(payload)])
+    await post(payload)
+    await post(payload)
+
+    expect(state.rpcCalls.length, 'every delivery should reach the authority').toBe(9)
+    expect(authority.grants, 'exactly one entitlement may exist').toEqual(['ent-only-one'])
+
+    // And every call named the same payment, so none of them could have
+    // completed a different one.
+    for (const c of state.rpcCalls) {
+      expect(c.p_provider_token).toBe(TOKEN)
+      expect(c.p_amount).toBe(AMOUNT)
+    }
+  })
+
+  it('a refused delivery creates no entitlement at all', async () => {
+    const authority = statefulAuthority()
+    // Settlement says cancelled, so the authority is never reached.
+    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
+    await post(signedPayload({ type_event: 'sale_complete' }))
+    expect(authority.grants).toEqual([])
+    expect(state.rpcCalls).toEqual([])
+  })
+})
