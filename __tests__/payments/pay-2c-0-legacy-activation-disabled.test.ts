@@ -190,11 +190,27 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
       for (const m of code.matchAll(/from\(\s*['"]payments['"]\s*\)/g)) {
         const window = code.slice(m.index!, m.index! + 400)
         const mutates = /\.(update|upsert|insert)\(/.test(window)
-        const completes = /['"]completed['"]/.test(window) || /completed_at/.test(window)
+        // A WRITE of 'completed', not a mention of it. XP-PAYTECH-01's
+        // `recordTerminalFailure()` filters with `.neq('status','completed')`
+        // precisely so a late cancellation cannot revoke a verified purchase —
+        // the literal appears there as a GUARD, and flagging it would punish
+        // the safety check. So the match now requires assignment shape.
+        const completes =
+          /status:\s*['"]completed['"]/.test(window) || /completed_at/.test(window)
         if (mutates && completes) offenders.push(`${f} @${m.index}`)
       }
     }
     expect(offenders, `payment-completion writer(s) found: ${offenders.join(', ')}`).toEqual([])
+  })
+
+  it('no payments status write can be `completed`, even through a variable', () => {
+    // The guard above matches literals. The one status write that uses a
+    // variable is `recordTerminalFailure()`, so its union type is pinned here:
+    // TypeScript, not a regex, is what stops 'completed' reaching it.
+    const src = strip(read('lib/payments/payment-completion.ts'))
+    expect(src).toMatch(/status:\s*'cancelled'\s*\|\s*'failed'\s*\|\s*'expired'/)
+    expect(src).not.toMatch(/status:\s*['"]completed['"]/)
+    expect(src).not.toContain('completed_at')
   })
 
   it('the ONLY payments mutation anywhere is the pending-intent insert', () => {
@@ -206,8 +222,16 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
         if (/\.(update|upsert|insert|delete)\(/.test(window)) mutators.push(f)
       }
     }
-    expect([...new Set(mutators)].sort()).toEqual(['app/actions/payment.ts'])
-    // ...and that one creates an intent, never a completion.
+    // XP-PAYTECH-01 added two more mutation sites. The list stays EXACT — an
+    // unreviewed fourth writer still fails — and each one is then pinned to
+    // what it is allowed to do.
+    expect([...new Set(mutators)].sort()).toEqual([
+      'app/actions/payment.ts',
+      'app/actions/paytech-checkout.ts',
+      'lib/payments/payment-completion.ts',
+    ])
+
+    // 1. the legacy intent writer: creates an intent, never a completion.
     const pay = strip(read('app/actions/payment.ts'))
     expect(pay).toContain("status:             'pending'")
     expect(pay).not.toMatch(/status:\s*['"]completed['"]/)
@@ -215,17 +239,37 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     // It is still gated, and still takes the price from the server.
     expect(pay).toContain('PAYMENTS_ENABLED')
     expect(pay).toContain('course.price')
+
+    // 2. the PayTech checkout: creates a pending intent and attaches the
+    //    provider token. It may reach 'processing' — an in-flight state — and
+    //    nothing terminal.
+    const checkout = strip(read('app/actions/paytech-checkout.ts'))
+    expect(checkout).toMatch(/status:\s*'pending'/)
+    expect(checkout).toMatch(/status:\s*'processing'/)
+    expect(checkout).not.toMatch(/status:\s*['"](completed|refunded)['"]/)
+    expect(checkout).not.toContain('completed_at')
+    // The price comes from the course row, never from the caller.
+    expect(checkout).toContain('course.price')
+
+    // 3. the completion chokepoint: records forensics and terminal non-paid
+    //    states. The grant itself happens inside migration 062, not here.
+    const completion = strip(read('lib/payments/payment-completion.ts'))
+    expect(completion).not.toMatch(/status:\s*['"]completed['"]/)
+    expect(completion).not.toContain('completed_at')
+    expect(completion).toMatch(/\.rpc\(\s*['"]complete_payment['"]/)
   })
 
-  it('the completion authority is 062 alone, and no application code calls it', () => {
-    // RE-EXPRESSED by PAY-2C. This used to assert that NO completion authority
-    // existed anywhere. 062 now creates it — in the DATABASE, which is the
-    // point of the slice. What must still hold is the half that protects this
-    // fix: no APPLICATION code calls it, because no trusted caller exists yet.
-    for (const f of sourceFiles()) {
-      expect(strip(read(f)), `${f} calls complete_payment`)
-        .not.toMatch(/\.rpc\(\s*['"]complete_payment['"]/)
-    }
+  it('the completion authority is 062 alone, and exactly one module calls it', () => {
+    // RE-EXPRESSED TWICE. PAY-2C moved it from "no authority exists" to "the
+    // authority is in the database, and no application code calls it, because
+    // no trusted caller exists yet". XP-PAYTECH-01 builds that trusted caller,
+    // so the invariant becomes 062's obligation 5: EXACTLY ONE chokepoint.
+    // That still forbids what this guard was written to forbid — an arbitrary
+    // module reaching the authority — and now also forbids a second one.
+    const callers = sourceFiles().filter(f =>
+      /\.rpc\(\s*['"]complete_payment['"]/.test(strip(read(f))))
+    expect(callers, `complete_payment callers: ${callers.join(', ')}`)
+      .toEqual(['lib/payments/payment-completion.ts'])
 
     // ── migration 003 is the ONE known exception, and must stay the only one ──
     //

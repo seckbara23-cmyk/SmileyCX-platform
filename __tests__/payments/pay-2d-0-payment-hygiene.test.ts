@@ -64,11 +64,21 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
     expect(existsSync(join(ROOT, STUB))).toBe(false)
   })
 
-  it('lib/payments contains only the credential boundary and the transport module', () => {
-    // PAY-2D-1 added the authorised HTTP transport. Pinned to EXACTLY these
-    // two, so a third module appearing here still fails.
+  it('lib/payments contains only the authorised modules', () => {
+    // Still pinned EXACTLY, so an unreviewed module appearing here fails. The
+    // set grew once, in XP-PAYTECH-01: a second provider's credential boundary,
+    // transport and IPN verification, plus the shared completion chokepoint and
+    // provider selection.
     const files = readdirSync(join(ROOT, 'lib/payments')).sort()
-    expect(files).toEqual(['paydunya-client.ts', 'paydunya-config.ts'])
+    expect(files).toEqual([
+      'paydunya-client.ts',
+      'paydunya-config.ts',
+      'payment-completion.ts',
+      'paytech-client.ts',
+      'paytech-config.ts',
+      'paytech-ipn.ts',
+      'providers.ts',
+    ])
   })
 
   it('no module imports @/lib/payments by any spelling', () => {
@@ -298,29 +308,43 @@ describe('PAY-2D-0 · 5. the obsolete migration-003 reference is corrected', () 
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have moved', () => {
-  it('no completion authority, caller or chokepoint was added', () => {
+  it('complete_payment has EXACTLY ONE caller, and it is the designated chokepoint', () => {
+    // This guard used to require zero callers, because no trusted caller
+    // existed. XP-PAYTECH-01 built one, so the invariant becomes migration
+    // 062's obligation 5 — exactly one module may call the authority — which is
+    // strictly stronger than "none", since it also forbids a SECOND caller
+    // appearing beside the reviewed one.
     const callers: string[] = []
     for (const f of sourceFiles()) {
       if (/\.rpc\(\s*['"]complete_payment['"]/.test(stripTs(read(f)))) callers.push(f)
     }
-    expect(callers, `complete_payment is now called by: ${callers.join(', ')}`).toEqual([])
+    expect(callers, `complete_payment is called by: ${callers.join(', ')}`)
+      .toEqual(['lib/payments/payment-completion.ts'])
   })
 
-  it('no webhook, callback or IPN handler and no completion module exists', () => {
-    // PAY-2D-1 authorised the TRANSPORT module, so its existence is no longer
-    // the signal. What must still be absent is anything that could RECEIVE a
-    // notification or COMPLETE a payment.
+  it('exactly ONE notification handler exists, and it is the reviewed PayTech IPN', () => {
+    // This required zero notification receivers before XP-PAYTECH-01. One now
+    // exists. Pinning it EXACTLY keeps the original protection: a second,
+    // unreviewed endpoint that could receive a payment notification still
+    // fails this test.
     const routes = sourceFiles(['app']).filter(f => /\/route\.tsx?$/.test(f))
-    const payment = routes.filter(r => /webhook|callback|ipn|paydunya|payment/i.test(r))
-    // app/auth/callback/route.ts is Supabase AUTH, unrelated to payments.
-    expect(payment.filter(r => !r.startsWith('app/auth/')),
-      `payment-ish routes appeared: ${payment.join(', ')}`).toEqual([])
+    const payment = routes
+      .filter(r => /webhook|callback|ipn|paydunya|paytech|payment/i.test(r))
+      // app/auth/callback/route.ts is Supabase AUTH, unrelated to payments.
+      .filter(r => !r.startsWith('app/auth/'))
+    expect(payment, `payment-ish routes: ${payment.join(', ')}`)
+      .toEqual(['app/api/payments/paytech/ipn/route.ts'])
+
     expect(existsSync(join(ROOT, 'app/api/webhooks'))).toBe(false)
+    // The completion module has its reviewed name; a stray `completion.ts`
+    // would be an unreviewed second authority.
     expect(existsSync(join(ROOT, 'lib/payments/completion.ts'))).toBe(false)
-    // And the transport module still has no caller anywhere.
+
+    // The PayDunya transport still has no caller: this slice added a provider
+    // beside it without activating it.
     const callers = sourceFiles().filter(f =>
       /from\s+['"][^'"]*paydunya-client['"]/.test(read(f)))
-    expect(callers, `the transport module is now called by: ${callers.join(', ')}`).toEqual([])
+    expect(callers, `the PayDunya transport is now called by: ${callers.join(', ')}`).toEqual([])
   })
 
   it('provider endpoints appear ONLY in the authorised transport module', () => {

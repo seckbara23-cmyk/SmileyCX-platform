@@ -374,9 +374,17 @@ describe('PAY-1B(a) · every other payment reader, and which client it uses', ()
     const service = readers.filter(r => r.client === 'service')
     expect(service.length).toBeGreaterThanOrEqual(4)
     for (const r of service) {
-      expect(['app/(admin)/admin/page.tsx', 'app/(admin)/admin/payments/page.tsx',
-              'app/(admin)/admin/payments/actions.ts', 'app/actions/payment.ts'])
-        .toContain(r.file)
+      expect([
+        'app/(admin)/admin/page.tsx', 'app/(admin)/admin/payments/page.tsx',
+        'app/(admin)/admin/payments/actions.ts', 'app/actions/payment.ts',
+        // XP-PAYTECH-01. All service-role, so 059's browser allowlist cannot
+        // break them; all named here so an unreviewed reader still fails.
+        'app/actions/paytech-checkout.ts',
+        'app/api/payments/paytech/ipn/route.ts',
+        'app/payment/success/page.tsx',
+        'app/payment/cancel/page.tsx',
+        'lib/payments/payment-completion.ts',
+      ]).toContain(r.file)
     }
   })
 

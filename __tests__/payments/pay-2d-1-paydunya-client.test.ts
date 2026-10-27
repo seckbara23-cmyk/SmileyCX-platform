@@ -654,12 +654,20 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
     }
   })
 
-  it('no IPN, webhook or callback handler was introduced', () => {
+  it('the only notification handler is the reviewed PayTech IPN', () => {
+    // Zero handlers were permitted until XP-PAYTECH-01. Exactly one exists now
+    // and it is pinned: no PayDunya webhook, no second payments endpoint, no
+    // stray completion module. The PayDunya transport still has no caller,
+    // which the next test asserts.
     expect(existsSync(join(ROOT, 'app/api/webhooks'))).toBe(false)
-    expect(existsSync(join(ROOT, 'app/api/payments'))).toBe(false)
+    expect(existsSync(join(ROOT, 'app/api/payments/paydunya'))).toBe(false)
     expect(existsSync(join(ROOT, 'lib/payments/completion.ts'))).toBe(false)
-    expect(readdirSync(join(ROOT, 'lib/payments')).sort())
-      .toEqual(['paydunya-client.ts', 'paydunya-config.ts'])
+    expect(existsSync(join(ROOT, 'app/api/payments/paytech/ipn/route.ts'))).toBe(true)
+    expect(readdirSync(join(ROOT, 'app/api/payments')).sort()).toEqual(['paytech'])
+    expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts',
+      'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'providers.ts',
+    ])
   })
 
   it('nothing imports the client yet — it has no callers', () => {

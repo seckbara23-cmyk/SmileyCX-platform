@@ -540,14 +540,17 @@ describe('PAY-2C — no caller exists yet', () => {
   const strip = (s: string) =>
     s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
 
-  it('NOTHING in the application calls complete_payment yet', () => {
-    // 062 creates the authority. The IPN slice builds the caller, behind a
-    // single chokepoint. Until then there must be no call site at all.
+  it('complete_payment has EXACTLY ONE caller: the designated chokepoint', () => {
+    // 062 creates the authority and names the caller's duties. XP-PAYTECH-01
+    // builds that caller, so "no call site at all" becomes obligation 5 —
+    // exactly one — which still fails if any other module reaches the
+    // authority, and now also fails if a second chokepoint appears.
     const callers: string[] = []
     for (const f of sourceFiles()) {
       if (/\.rpc\(\s*['"]complete_payment['"]/.test(strip(read(f)))) callers.push(f)
     }
-    expect(callers, `complete_payment is already called from: ${callers.join(', ')}`).toEqual([])
+    expect(callers, `complete_payment callers: ${callers.join(', ')}`)
+      .toEqual(['lib/payments/payment-completion.ts'])
   })
 
   it('still nothing writes payments.status = completed from application code', () => {
@@ -558,8 +561,11 @@ describe('PAY-2C — no caller exists yet', () => {
       const code = strip(read(f))
       for (const m of code.matchAll(/from\(\s*['"]payments['"]\s*\)/g)) {
         const window = code.slice(m.index!, m.index! + 400)
+        // Assignment shape, not a mention: `recordTerminalFailure()` filters
+        // with `.neq('status','completed')` so a late cancellation cannot
+        // revoke a verified purchase, and that guard must not be flagged.
         if (/\.(update|upsert|insert)\(/.test(window) &&
-            (/['"]completed['"]/.test(window) || /completed_at/.test(window))) {
+            (/status:\s*['"]completed['"]/.test(window) || /completed_at/.test(window))) {
           offenders.push(`${f} @${m.index}`)
         }
       }

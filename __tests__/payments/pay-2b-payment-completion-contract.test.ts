@@ -552,7 +552,19 @@ describe('PAY-2B — cross-artifact agreement with the deployed reader', () => {
       }
     }
     ;['app', 'components', 'lib', 'types'].forEach(walk)
-    expect(hits, `application code already references: ${hits.join(', ')}`).toEqual([])
+    // XP-PAYTECH-01 put both columns to their documented use: migration 062's
+    // obligation 6 requires the trusted caller to record `last_ipn_at` on every
+    // notification and `failure_reason` on every refusal. Only the completion
+    // chokepoint and the IPN route that calls it may touch them, so the readers
+    // are PINNED rather than merely permitted.
+    const ALLOWED = [
+      'lib/payments/payment-completion.ts:failure_reason',
+      'lib/payments/payment-completion.ts:last_ipn_at',
+      'app/api/payments/paytech/ipn/route.ts:failure_reason',
+    ]
+    const unexpected = hits.filter(h => !ALLOWED.includes(h))
+    expect(unexpected, `unapproved readers of the new columns: ${unexpected.join(', ')}`)
+      .toEqual([])
 
     // The exemption is only sound while that file stays declaration-only.
     expect(stripTs(read(EXEMPT)), `${EXEMPT} gained executable code, so its exemption is unsafe`)

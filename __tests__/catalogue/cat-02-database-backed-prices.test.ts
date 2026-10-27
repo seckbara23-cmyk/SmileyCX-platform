@@ -276,7 +276,7 @@ describe('CAT-02 · 6. SECURITY: presentation stayed presentation', () => {
     }
   })
 
-  it('payments are still inactive and PayDunya still has no caller', () => {
+  it('payments are still inactive, and completion has exactly one chokepoint', () => {
     expect(process.env.NEXT_PUBLIC_PAYMENTS_ENABLED ?? 'unset').not.toBe('true')
     if (existsSync(join(ROOT, '.env.local'))) {
       expect(read('.env.local')).not.toMatch(/^NEXT_PUBLIC_PAYMENTS_ENABLED\s*=\s*true/m)
@@ -291,11 +291,19 @@ describe('CAT-02 · 6. SECURITY: presentation stayed presentation', () => {
         if (x.isDirectory()) { walk(p); continue }
         if (!/\.tsx?$/.test(x.name)) continue
         const c = strip(read(p))
-        if (/paydunya-client/.test(c) || /\.rpc\(\s*['"]complete_payment/.test(c)) callers.push(p)
+        // Matched as an IMPORT for the transport, because the PayTech modules
+        // cite paydunya-client.ts in prose to record which of its behaviours
+        // could be reused and which could not.
+        if (/from\s+['"][^'"]*paydunya-client['"]/.test(c)
+            || /\.rpc\(\s*['"]complete_payment/.test(c)) callers.push(p)
       }
     }
     ;['app', 'components', 'lib'].forEach(walk)
-    expect(callers, `PayDunya or completion callers appeared: ${callers.join(', ')}`).toEqual([])
+    // The PayDunya transport still has no caller. Completion now has exactly
+    // one — migration 062's obligation 5 — so the chokepoint is named rather
+    // than the list being required to be empty.
+    expect(callers, `payment callers: ${callers.join(', ')}`)
+      .toEqual(['lib/payments/payment-completion.ts'])
   })
 
   it('no migration was added and 062 is byte-identical', () => {
