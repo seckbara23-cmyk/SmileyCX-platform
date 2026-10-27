@@ -481,6 +481,38 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
   it('cannot complete a payment from the checkout action', () => {
     expect(code('app/actions/paytech-checkout.ts')).not.toMatch(/complete_payment/)
   })
+
+  it('the IPN is reachable on a preview host, or no notification can ever arrive', async () => {
+    // `isAdminHost()` treats EVERY *.vercel.app host as the admin host by
+    // design, and that host bounces anything outside ADMIN_HOST_PUBLIC_PATHS
+    // to /login. Verified against a live preview: the IPN path returned a
+    // redirect to /login, so a provider notification would have arrived as an
+    // HTML login page and nothing would ever have been fulfilled.
+    //
+    // This is what makes the preview-only rollout in Phase F actually runnable,
+    // so it is pinned rather than left as a deployment quirk.
+    const { isAdminHost, isAdminHostPublicPath } = await import('@/lib/hosts')
+    expect(isAdminHost('smiley-cx-platform-abc123.vercel.app')).toBe(true)
+    expect(isAdminHostPublicPath('/api/payments/paytech/ipn')).toBe(true)
+  })
+
+  it('the exemption covers that one route, not the payments namespace', async () => {
+    // `isAdminHostPublicPath` is PREFIX-based for every entry — that is how
+    // '/auth/' and '/api/auth/' work — so the entry covers the IPN path and
+    // anything below it. Nothing is routed below it, so the reachable surface
+    // is the one handler; what matters is that no SIBLING is exposed.
+    const { isAdminHostPublicPath } = await import('@/lib/hosts')
+    for (const p of [
+      '/api/payments',
+      '/api/payments/paytech',
+      '/api/payments/paydunya/ipn',
+      '/api/payments/paytech/refund',
+      '/api/admin/upload-url',
+      '/api/media/lesson/abc/video',
+    ]) {
+      expect(isAdminHostPublicPath(p), `${p} must NOT be exposed on the admin host`).toBe(false)
+    }
+  })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
