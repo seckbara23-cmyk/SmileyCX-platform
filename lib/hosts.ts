@@ -83,6 +83,34 @@ export const ADMIN_HOST_PUBLIC_PATHS = [
   '/auth/',          // Supabase code exchange
   '/api/auth/',      // sign-out
   '/api/health',
+  // ── XP-PAYTECH-01: the payment provider's server-to-server notification ──
+  //
+  // `isAdminHost()` treats EVERY *.vercel.app host as the admin host, by
+  // design. Without this entry the PayTech IPN is redirected to /login on
+  // every preview deployment, so a notification would arrive as a 307 to an
+  // HTML login page and nothing would ever be fulfilled — which makes the
+  // controlled preview UAT this integration is gated behind impossible to
+  // run. Verified against the live preview before adding it.
+  //
+  // Exposing it is safe, and it is already necessarily public in production
+  // because PayTech must reach it from the internet:
+  //
+  //   * every request is authenticated before any database read — the
+  //     official sha256-constant check first, then an HMAC over a message
+  //     built from our own stored values, both compared in constant time —
+  //     and an unauthenticated caller gets 401 having touched nothing;
+  //   * the route additionally refuses with 503 unless PayTech is enabled on
+  //     that deployment, so it is inert wherever the provider is not
+  //     configured;
+  //   * it grants nothing by itself: completion runs through migration 062,
+  //     which is reachable only via the single chokepoint.
+  //
+  // Named as the full route rather than an `/api/payments/` prefix, so a
+  // future payments endpoint is not exposed on the admin host by accident.
+  // Note the matcher below is prefix-based for every entry, so this covers
+  // this path and anything below it; nothing is routed below it, and a test
+  // pins that no sibling payments route becomes reachable.
+  '/api/payments/paytech/ipn',
 ]
 
 export function isAdminHostPublicPath(pathname: string): boolean {

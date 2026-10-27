@@ -369,10 +369,29 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
     const raw = readFileSync(join(ROOT, 'supabase/migrations/062_atomic_payment_completion.sql'))
     expect(createHash('sha256').update(raw).digest('hex'))
       .toBe('899cd3832573383b20df4dc09003f702a860c4ccb4651caead1a0bee817f31bb')
-    expect(readdirSync(join(ROOT, 'lib/payments')).sort())
-      .toEqual(['paydunya-client.ts', 'paydunya-config.ts'])
-    const callers = sourceFiles().filter(f => /paydunya-client/.test(read(f)))
-    expect(callers, 'the payment client gained a caller').toEqual([])
+    // XP-PAYTECH-01 added a second provider: its credential boundary, its
+    // transport, its IPN verification, the shared completion chokepoint and
+    // provider selection. 062 itself is still byte-identical (asserted above),
+    // which is what "payment work stayed paused" was really protecting.
+    expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
+      'paydunya-client.ts',
+      'paydunya-config.ts',
+      'payment-completion.ts',
+      'paytech-client.ts',
+      'paytech-config.ts',
+      'paytech-ipn.ts',
+      'providers.ts',
+    ])
+    // PayDunya is still unwired: no module IMPORTS its transport. The PayTech
+    // integration deliberately did not activate the PayDunya path.
+    //
+    // Matched as an import rather than as a bare substring: the PayTech modules
+    // cite `paydunya-client.ts` in their prose, to explain which behaviours were
+    // copied and which could not be, so a substring match would flag the
+    // documentation instead of a caller.
+    const callers = sourceFiles().filter(f =>
+      /from\s+['"][^'"]*paydunya-client['"]/.test(read(f)))
+    expect(callers, `the PayDunya client gained a caller: ${callers.join(', ')}`).toEqual([])
   })
 
   it('the payment feature flag is still off and PLATFORM_MODE is still pilot locally', () => {

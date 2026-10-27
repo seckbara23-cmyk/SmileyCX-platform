@@ -659,7 +659,13 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     const hits: string[] = []
     for (const f of SHIPPED.flatMap(d => walk(join(ROOT, d)))) {
       if (TRANSPORT_RE.test(f)) continue
+      // Comments stripped. The PayTech modules EXPLAIN what PayDunya offers
+      // that PayTech does not — notably its confirm endpoint, whose absence
+      // shapes the entire PayTech verification design — so a raw match would
+      // flag the documentation of a security decision as shipped API code.
       const s = readFileSync(f, 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/(^|[^:])\/\/.*$/gm, '$1')
       for (const re of [/paydunya\.com/i, /checkout-invoice/i, /PAYDUNYA-MASTER-KEY/i,
                         /PAYDUNYA-PRIVATE-KEY/i, /PAYDUNYA-TOKEN/i]) {
         if (re.test(s)) hits.push(`${f.slice(ROOT.length + 1)} :: ${re}`)
@@ -679,14 +685,18 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
   it('no PayDunya client, webhook route or IPN handler exists', () => {
     for (const p of ['app/api/webhooks/paydunya', 'app/api/webhooks/paydunya/route.ts',
                      'app/api/webhooks', 'app/api/payments/webhook',
+                     'app/api/payments/paydunya',
                      'lib/payments/completion.ts', 'lib/payments/paydunya.ts']) {
       expect(existsSync(join(ROOT, p)), `${p} exists — that slice is not authorised`).toBe(false)
     }
-    // PAY-2D-0 deleted the obsolete index.ts stub; PAY-2D-1 added the transport
-    // module. The directory is pinned to EXACTLY these two, so a third module
-    // appearing in it -- a completion path, an IPN helper -- fails here.
-    expect(readdirSync(join(ROOT, 'lib/payments')).sort())
-      .toEqual(['paydunya-client.ts', 'paydunya-config.ts'])
+    // The directory stays pinned EXACTLY, so an unreviewed module still fails
+    // here. XP-PAYTECH-01 added the second provider's credential boundary,
+    // transport and IPN verification, plus the completion chokepoint and
+    // provider selection.
+    expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts',
+      'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'providers.ts',
+    ])
   })
 
   it('payment creation, the feature flag and the stub are all untouched', () => {
