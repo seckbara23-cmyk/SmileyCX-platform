@@ -177,6 +177,8 @@ A loopback URL now also refuses a key carrying **any** hosted-project `ref`, not
 
 `.env.uat.local` — exactly the file this UAT procedure tells an operator to create — **was not ignored**. The root `.gitignore` named env files one by one rather than using a wildcard. `.env*.local` has been added.
 
+A second gate then caught a mistake of mine. I first shipped the UAT template as a separate `.env.uat.example`, and `scan:secrets` failed: it forbids **every** committed env file except the one exempted `.env.example`. The template now lives inside `.env.example` itself. The rule was not relaxed to accommodate a convenience file.
+
 ### Blocked: the exact user action required
 
 Phase 2 stops here. `wsl --install` needs **administrator elevation**, enables **Windows optional features**, and requires a **reboot** — three of the brief's stop conditions. From an **elevated** PowerShell:
