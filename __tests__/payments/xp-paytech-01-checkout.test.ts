@@ -496,7 +496,7 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
     expect(r.error).not.toMatch(/INTERNAL|xyz/)
   })
 
-  it('derives the three callback URLs from our own site, all HTTPS', async () => {
+  it('derives the three callback URLs from the given origin, all HTTPS', async () => {
     const { paytechCallbackUrls } = await import('@/app/actions/paytech-checkout')
     const u = paytechCallbackUrls('https://www.xpclient-academy.com/')
     expect(u.ipnUrl).toBe('https://www.xpclient-academy.com/api/payments/paytech/ipn')
@@ -620,5 +620,75 @@ describe('XP-PAYTECH-01 · scenario 18 — a browser can never fulfil', () => {
     const c = code('app/payment/cancel/page.tsx')
     expect(c).not.toMatch(/\.update\(/)
     expect(c).toMatch(/completed/)
+  })
+})
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+describe('XP-PAYTECH-03 · a preview checkout must not point the provider at production', () => {
+  /**
+   * `PUBLIC_SITE_URL` is deliberately never the deployment host — it is the
+   * canonical marketing origin. Deriving the PAYMENT callbacks from it meant a
+   * preview checkout told PayTech to notify production, so a sandbox payment
+   * could never notify the deployment that created it.
+   */
+  const CANONICAL = 'https://www.xpclient-academy.com'
+
+  it('production uses the canonical origin', async () => {
+    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    expect(paytechCallbackBaseUrl({
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'smiley-cx-platform-abc.vercel.app',
+    })).toBe(CANONICAL)
+  })
+
+  it('a preview addresses ITSELF, not production', async () => {
+    const { paytechCallbackBaseUrl, paytechCallbackUrls } = await import('@/app/actions/paytech-checkout')
+    const base = paytechCallbackBaseUrl({
+      VERCEL_ENV: 'preview',
+      VERCEL_URL: 'smiley-cx-platform-abc.vercel.app',
+    })
+    expect(base).toBe('https://smiley-cx-platform-abc.vercel.app')
+    const u = paytechCallbackUrls(base)
+    expect(u.ipnUrl).toBe('https://smiley-cx-platform-abc.vercel.app/api/payments/paytech/ipn')
+    // The regression: none of the three may address the production domain.
+    for (const v of Object.values(u)) expect(v).not.toContain('xpclient-academy.com')
+  })
+
+  it('an explicit operator pin wins over everything', async () => {
+    // The knob that matters for UAT: a per-deployment URL changes on every
+    // push, while PayTech's dashboard holds fixed URLs, so the operator pins a
+    // stable origin deliberately.
+    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    expect(paytechCallbackBaseUrl({
+      PAYTECH_CALLBACK_BASE_URL: 'https://staging.xpclient-academy.com',
+      VERCEL_ENV: 'production',
+      VERCEL_URL: 'ignored.vercel.app',
+    })).toBe('https://staging.xpclient-academy.com')
+  })
+
+  it('falls back to the canonical origin locally, where there is no deployment host', async () => {
+    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    expect(paytechCallbackBaseUrl({})).toBe(CANONICAL)
+    expect(paytechCallbackBaseUrl({ VERCEL_ENV: 'development' })).toBe(CANONICAL)
+  })
+
+  it('a misconfigured pin REFUSES the checkout rather than falling back to production', async () => {
+    // Silently reverting to production would deliver a sandbox notification to
+    // the live environment. The transport requires absolute HTTPS, so a bad
+    // pin surfaces as a refused sale instead.
+    const { isValidCallbackUrl } = await import('@/lib/payments/paytech-client')
+    for (const bad of ['http://staging.test', 'staging.test', 'ftp://x.test', 'not a url']) {
+      expect(isValidCallbackUrl(`${bad}/api/payments/paytech/ipn`), bad).toBe(false)
+    }
+  })
+
+  it('keys production on VERCEL_ENV, not NODE_ENV', async () => {
+    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    // A preview build also runs with NODE_ENV=production; it must still
+    // address itself.
+    expect(paytechCallbackBaseUrl({
+      NODE_ENV: 'production', VERCEL_ENV: 'preview', VERCEL_URL: 'p.vercel.app',
+    })).toBe('https://p.vercel.app')
   })
 })

@@ -50,8 +50,56 @@ export interface PaytechCheckoutResult {
   error?: string
 }
 
-/** The three callback URLs. Absolute HTTPS, derived from our own site URL. */
-export function paytechCallbackUrls(siteUrl: string = PUBLIC_SITE_URL): {
+/**
+ * Which origin the provider should call back to — XP-PAYTECH-03.
+ *
+ * ── THE DEFECT THIS FIXES ─────────────────────────────────────────────────
+ *
+ * `PUBLIC_SITE_URL` is deliberately "never the Vercel deployment host": it is
+ * the canonical marketing origin, used for metadata, sitemaps and certificate
+ * links, and it is correct for those. Deriving the PAYMENT callbacks from it
+ * meant a PREVIEW checkout told PayTech to notify
+ * `https://www.xpclient-academy.com/...` — production. So a sandbox payment
+ * started on a preview deployment could never notify the deployment that
+ * created it, and its notification would be addressed to production instead.
+ *
+ * ── RESOLUTION ORDER ──────────────────────────────────────────────────────
+ *
+ *   1. `PAYTECH_CALLBACK_BASE_URL` — the operator's explicit pin, and the one
+ *      that actually matters for sandbox UAT. A per-deployment preview URL
+ *      changes on every push, while PayTech's merchant dashboard holds FIXED
+ *      URLs, so UAT needs a stable origin an operator chooses deliberately
+ *      (a branch alias, or a dedicated staging domain).
+ *   2. On any non-production deployment, the deployment's own host
+ *      (`VERCEL_URL`), so a preview addresses itself rather than production.
+ *   3. `PUBLIC_SITE_URL` — production, and local development.
+ *
+ * Nothing here is trusted blindly: every URL this produces is checked by
+ * `isValidCallbackUrl()` in the transport, which requires absolute HTTPS. A
+ * misconfigured pin therefore REFUSES THE CHECKOUT rather than silently
+ * falling back to production, which is the failure we want — a sale refused
+ * loudly beats a notification delivered to the wrong environment.
+ *
+ * Production is keyed on `VERCEL_ENV`, not `NODE_ENV`, because a preview build
+ * also runs with `NODE_ENV=production`.
+ */
+export function paytechCallbackBaseUrl(
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const pinned = (env.PAYTECH_CALLBACK_BASE_URL ?? '').trim()
+  if (pinned.length > 0) return pinned
+
+  if ((env.VERCEL_ENV ?? '').trim() !== 'production') {
+    const host = (env.VERCEL_URL ?? '').trim()
+    // VERCEL_URL carries a bare host with no scheme.
+    if (host.length > 0) return `https://${host}`
+  }
+
+  return PUBLIC_SITE_URL
+}
+
+/** The three callback URLs. Absolute HTTPS, enforced by the transport. */
+export function paytechCallbackUrls(siteUrl: string = paytechCallbackBaseUrl()): {
   ipnUrl: string
   successUrl: string
   cancelUrl: string
