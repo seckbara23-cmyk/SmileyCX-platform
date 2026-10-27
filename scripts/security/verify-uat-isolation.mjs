@@ -133,6 +133,48 @@ if (sources.every(([, ref]) => ref === null) && !isLoopback(url)) {
   )
 }
 
+/**
+ * A loopback URL must be paired with LOCAL credentials — XP-SEC-03.
+ *
+ * The check above only catches the PRODUCTION project. That leaves a gap: a
+ * key belonging to some OTHER hosted project — a colleague's, a staging one,
+ * a former client's — sitting beside a local URL would pass, and every
+ * request would leave the machine.
+ *
+ * A `ref` claim names a hosted Supabase project. Keys minted by the local CLI
+ * stack are not issued for a hosted project, so a credential carrying a `ref`
+ * has no business in a loopback run whichever project it names. Refusing is
+ * therefore strictly safer than the production-only rule, and it does not
+ * weaken it: the production check above still fires first and by name.
+ *
+ * ⚠ ASSUMPTION TO CONFIRM ON FIRST LOCAL START: that CLI-minted local keys
+ * carry no `ref` claim. It could not be verified here because Docker is not
+ * installed, so the stack has never run. If a legitimate local key does carry
+ * one, this refuses and the message below says exactly what to do — a false
+ * refusal that is visible and fixable, rather than a silent allow.
+ */
+if (isLoopback(url)) {
+  for (const [name, ref] of sources) {
+    if (name === 'NEXT_PUBLIC_SUPABASE_URL') continue
+    if (ref !== null && ref !== PRODUCTION_PROJECT_REF) {
+      failures.push(
+        `${name} carries a hosted-project ref ('${ref}') while the URL is loopback. `
+        + 'A local run must use the keys printed by `supabase status`. If a genuine '
+        + 'local key does carry a ref, record it in LOCAL_PROJECT_REFS in this gate '
+        + 'rather than removing this check.',
+      )
+    }
+  }
+}
+
+/**
+ * Refs that are known-good for a local stack. Empty until a real local start
+ * proves one is needed — see the assumption above. Production can never be
+ * added here: the check that rejects it runs first and is unconditional.
+ */
+const LOCAL_PROJECT_REFS = new Set()
+void LOCAL_PROJECT_REFS
+
 if (url && !isLoopback(url) && refFromUrl(url) !== PRODUCTION_PROJECT_REF) {
   notes.push(
     'NEXT_PUBLIC_SUPABASE_URL is not a loopback address. That is correct for a '

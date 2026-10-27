@@ -113,3 +113,78 @@ Never: Attack Mode, geographic blocking, or per-IP limits on machine-to-machine 
 **`uat.xpclient-academy.com` is approved in principle as the future UAT callback domain, and is deliberately NOT attached.** Attaching it would make that host publicly reachable — and because protection is `all_except_custom_domains`, exempt from SSO. That is exactly what a PayTech IPN needs, and exactly what must not exist until an isolated hosted UAT database is behind it. **Attach only after isolation is proven.**
 
 The local stack is bound to `127.0.0.1` and is never exposed publicly.
+
+---
+
+## 7. XP-SEC-03 — installation status (2026-10-27)
+
+### Workstation
+
+| | |
+|---|---|
+| OS | Windows 11 **Home**, build 26200, 64-bit |
+| RAM / free disk | 23.6 GB / 710 GB — ample |
+| HypervisorPresent | `True` |
+| **WSL** | **NOT INSTALLED** — `wsl.exe` is only the Windows shim; `wsl --status` reports the subsystem absent |
+| Docker / Docker Desktop | **NOT INSTALLED** (no binary, no install dir, no appx package) |
+| Shell elevation | **not elevated**; the account *is* in `Administrators` |
+| Node / npm | v24.11.1 / 11.6.2 |
+
+`Get-WindowsOptionalFeature` requires elevation and could not be queried.
+
+### Docker Desktop licensing — owner decision required
+
+Docker Desktop is free for a commercial organisation **only if both** conditions hold: **fewer than 250 employees AND less than $10M annual revenue**. The test is conjunctive — exceeding *either* requires a paid subscription (Pro ~$9, Team ~$15, Business ~$24 per user/month). Docker reserves the right to audit.
+
+XP Client Consulting very likely qualifies, but that depends on two facts only the owner can confirm, so it is **reported, not assumed**.
+
+**A licence-free alternative exists.** Only Docker *Desktop* carries the subscription; **Docker Engine is Apache-2.0 and free at any company size**. The Supabase CLI needs any Docker-compatible daemon, so installing Docker Engine inside a WSL2 Ubuntu distro avoids the question entirely. It costs one extra setup step and no GUI.
+
+### Supabase CLI — INSTALLED ✅
+
+`supabase@2.122.0`, pinned exactly, **devDependency only**, project-local (`node_modules/.bin/supabase`), no global install. `audit:prod` still exits 0 — the CLI is dev-only and does not touch the production dependency tree.
+
+`supabase init` succeeded: `supabase/config.toml` (416 lines) and `supabase/.gitignore` created. **The 60 existing migrations were not touched.**
+
+### ⚠ Loopback binding cannot be set in config.toml
+
+The brief cautioned against assuming all services share one IP option. They share **none**: CLI 2.122.0's generated config exposes **no `ip` key for any service** — only `port`. The services and ports are:
+
+| Service | Port | | Service | Port |
+|---|---|---|---|---|
+| API | 54321 | | Studio | 54323 |
+| Database | 54322 | | local_smtp (web UI) | 54324 |
+| DB shadow | 54320 | | Analytics | 54327 |
+| DB pooler *(disabled)* | 54329 | | | |
+
+Only `[studio]` carries an address at all, and it is `api_url`, not a bind address. Note **`[local_smtp]` has replaced Inbucket** in this CLI version.
+
+Binding is therefore decided by how the CLI publishes Docker ports, which cannot be asserted from configuration and **cannot be verified until the stack runs**. On first start, verify empirically before trusting it:
+
+```powershell
+netstat -ano | Select-String ":5432[0-9]"   # expect 127.0.0.1, NOT 0.0.0.0
+```
+
+If any service publishes on `0.0.0.0`, stop and mitigate before seeding — do **not** open a firewall rule.
+
+### Isolation gate — strengthened
+
+A loopback URL now also refuses a key carrying **any** hosted-project `ref`, not just production's. Without that, a key for some *other* hosted project — a colleague's, a staging one — would have passed beside a local URL and every request would have left the machine. The production rule still fires first and by name; 23 tests cover both.
+
+⚠ **Assumption to confirm on first local start:** that CLI-minted local keys carry no `ref` claim. It could not be verified without Docker. If a genuine local key does carry one, add it to `LOCAL_PROJECT_REFS` in the gate — **do not remove the check**.
+
+### `.gitignore` gap, found and closed
+
+`.env.uat.local` — exactly the file this UAT procedure tells an operator to create — **was not ignored**. The root `.gitignore` named env files one by one rather than using a wildcard. `.env*.local` has been added.
+
+### Blocked: the exact user action required
+
+Phase 2 stops here. `wsl --install` needs **administrator elevation**, enables **Windows optional features**, and requires a **reboot** — three of the brief's stop conditions. From an **elevated** PowerShell:
+
+```powershell
+wsl --install            # installs WSL2 + VirtualMachinePlatform, then REBOOT
+# after reboot:
+wsl --status             # expect: default version 2
+```
+
+Then either install **Docker Desktop** (licence question above) and enable its WSL2 backend, or install **Docker Engine** inside the WSL2 distro to avoid the licence entirely. Afterwards `docker run --rm hello-world` is the smoke test, and `npx supabase start` becomes possible.

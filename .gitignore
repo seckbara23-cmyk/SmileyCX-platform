@@ -15,6 +15,10 @@ dist/
 .env.development.local
 .env.test.local
 .env.production.local
+# XP-SEC-03: catch every local env file, including .env.uat.local. The list
+# above named files one by one, so a new one — exactly the kind a UAT setup
+# creates — was trackable by default.
+.env*.local
 
 # ── Vercel ────────────────────────────────────────────────────────────────────
 .vercel
