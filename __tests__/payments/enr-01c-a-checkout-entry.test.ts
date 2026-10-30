@@ -162,7 +162,7 @@ beforeEach(() => {
   touched = []
   mutations = []
   enrollForFree.mockClear()
-  delete process.env.NEXT_PUBLIC_PAYMENTS_ENABLED
+  for (const k of ['PAYTECH_CHECKOUT_ENABLED', 'PAYTECH_MODE', 'PAYTECH_TEST_API_KEY', 'PAYTECH_TEST_API_SECRET', 'VERCEL_ENV']) delete process.env[k]
 })
 afterEach(() => { process.env = { ...ORIGINAL_ENV } })
 
@@ -334,7 +334,7 @@ describe('ENR-01C-a · C5 — the unavailable-payment panel states the real pric
   it('payments-enabled still reaches the real payment UI, not the panel', async () => {
     // Proves the panel is the PAYMENTS_ENABLED=false branch and nothing wider.
     public_()
-    process.env.NEXT_PUBLIC_PAYMENTS_ENABLED = 'true'
+    Object.assign(process.env, { PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: 'k_test', PAYTECH_TEST_API_SECRET: 's_test', VERCEL_ENV: 'preview' })  // XP-PAYTECH-04: the server-side PayTech checkout switch replaces NEXT_PUBLIC_PAYMENTS_ENABLED
     fixture = { course: PAID, user: VERIFIED, profile: PROFILE, enrollment: null }
     const r = await visit(PAID.id)
     if (r.kind !== 'render') throw new Error('expected a render')

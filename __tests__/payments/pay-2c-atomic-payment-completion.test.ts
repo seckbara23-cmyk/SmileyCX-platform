@@ -75,10 +75,14 @@ describe('PAY-2C — 062 exists, alone, as one transaction', () => {
   it('062 is exactly this migration, and nothing sits above it', () => {
     const f = readdirSync(MIGRATIONS).filter(x => x.endsWith('.sql'))
     expect(f.filter(x => x.startsWith('062'))).toEqual(['062_atomic_payment_completion.sql'])
+    // XP-PAYTECH-04 authored 063, the payment state machine. It is admitted BY
+    // NAME — any other migration above 062 still fails — and its compatibility
+    // with 062 is proven by executing both on PostgreSQL in
+    // xp-paytech-ready-01-integration.test.ts.
     const above = f.filter(x => parseInt(x, 10) > 62)
-    expect(above, `migrations above 062 exist: ${above.join(', ')}`).toEqual([])
+    expect(above, `migrations above 062 exist: ${above.join(', ')}`).toEqual(['063_payment_state_machine.sql'])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(63)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 

@@ -133,10 +133,15 @@ describe('PAY-2C-0 — the admin interface offers no activation control', () => 
   it('the page no longer imports or renders the action', () => {
     expect(code).not.toContain('activateEnrollment')
     expect(code).not.toMatch(/from\s+'\.\/actions'/)
-    // No form at all on this page: a form is how the action was reachable.
-    expect(code).not.toContain('<form')
-    expect(code).not.toContain('type="submit"')
-    expect(code).not.toContain('name="paymentId"')
+    // XP-PAYTECH-04 re-expression. This read "no form at all", because a form
+    // was how the activation was reachable. The page now carries exactly two
+    // forms, and both post to the reconciliation actions — neither of which can
+    // mark a payment paid (pinned in the next describe). Every form's action is
+    // named, so a form reaching anything else still fails.
+    const actions = [...code.matchAll(/<form\s+action=\{(\w+)\}/g)].map(m => m[1]).sort()
+    expect(actions).toEqual(['closeUnpaidPaytechPayment', 'verifyPaytechPayment'])
+    expect((code.match(/<form/g) ?? []).length).toBe(2)
+    expect(code).toMatch(/from '\.\/reconcile-actions'/)
   })
 
   it('both call sites are gone — desktop and mobile', () => {
@@ -148,16 +153,19 @@ describe('PAY-2C-0 — the admin interface offers no activation control', () => 
     // assertion is about a rendered LABEL — a JSX text node that is the word
     // itself — not about the string appearing at all.
     expect(code).not.toMatch(/>\s*Activer\s*</)
-    expect(code).not.toContain('<button')
     expect(code).not.toContain('onClick')
+    // XP-PAYTECH-04: the only buttons are the two reconciliation submits.
+    expect((code.match(/<button/g) ?? []).length).toBe(2)
+    expect(code).not.toMatch(/Marquer comme pay|Valider le paiement|Confirmer le paiement/)
   })
 
   it('tells the administrator, in French, why it is gone and what to use', () => {
-    expect(raw).toMatch(/Activation manuelle des paiements indisponible/)
-    expect(raw).toMatch(/PayDunya/)
+    // XP-PAYTECH-04 (READY-A1) replaced the PayDunya wording: activation did
+    // not "return with PayDunya" — it is now provider-confirmed only.
+    expect(raw).toMatch(/Aucun paiement ne peut être marqué « payé » à la main/)
+    expect(raw).toMatch(/PayTech le confirme, de serveur à serveur/)
     expect(raw).toMatch(/Admin → Accès/)
-    // The honest reason, not a vague "coming soon": the learner got nothing.
-    expect(raw).toMatch(/sans accorder le droit d&apos;accès|n&apos;obtenait rien/)
+    expect(raw).not.toMatch(/PayDunya/)
   })
 
   it('payment VIEWING is preserved — the page still lists and totals', () => {
@@ -208,7 +216,13 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     // variable is `recordTerminalFailure()`, so its union type is pinned here:
     // TypeScript, not a regex, is what stops 'completed' reaching it.
     const src = strip(read('lib/payments/payment-completion.ts'))
-    expect(src).toMatch(/status:\s*'cancelled'\s*\|\s*'failed'\s*\|\s*'expired'/)
+    // XP-PAYTECH-04: the variable write is `recordTerminalFailure()`, now
+    // 'cancelled' | 'failed' only; closure to 'expired' is a LITERAL in the
+    // two close functions. Neither can be 'completed'.
+    expect(src).toMatch(/status:\s*'cancelled'\s*\|\s*'failed'/)
+    expect(src).not.toMatch(/status:\s*'cancelled'\s*\|\s*'failed'\s*\|\s*'completed'/)
+    const literals = [...src.matchAll(/status:\s*'([a-z]+)',/g)].map(m => m[1])   // object-literal writes, not the type
+    expect([...new Set(literals)].sort()).toEqual(['expired'])
     expect(src).not.toMatch(/status:\s*['"]completed['"]/)
     expect(src).not.toContain('completed_at')
   })
@@ -225,20 +239,17 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     // XP-PAYTECH-01 added two more mutation sites. The list stays EXACT — an
     // unreviewed fourth writer still fails — and each one is then pinned to
     // what it is allowed to do.
+    // XP-PAYTECH-04 retired the legacy intent writer, so the exact list
+    // SHRANK to two. An unreviewed third writer still fails.
     expect([...new Set(mutators)].sort()).toEqual([
-      'app/actions/payment.ts',
       'app/actions/paytech-checkout.ts',
       'lib/payments/payment-completion.ts',
     ])
 
-    // 1. the legacy intent writer: creates an intent, never a completion.
+    // 1. the legacy intent writer is a refusal that imports nothing.
     const pay = strip(read('app/actions/payment.ts'))
-    expect(pay).toContain("status:             'pending'")
-    expect(pay).not.toMatch(/status:\s*['"]completed['"]/)
-    expect(pay).not.toContain('completed_at')
-    // It is still gated, and still takes the price from the server.
-    expect(pay).toContain('PAYMENTS_ENABLED')
-    expect(pay).toContain('course.price')
+    expect(pay).not.toMatch(/^\s*import\s/m)
+    expect(pay).not.toMatch(/from\(|\.insert\(|\.update\(|\.rpc\(/)
 
     // 2. the PayTech checkout: creates a pending intent and attaches the
     //    provider token. It may reach 'processing' — an in-flight state — and
@@ -305,7 +316,7 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     // PAY-2C-0 itself authored nothing. AUDIT-SEC-01 later authored 061 — a
     // privilege slice on audit_log, which must not become a completion path.
     expect(f.filter(x => parseInt(x, 10) > 60))
-      .toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
+      .toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql'])
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     expect(m061, '061 writes a payment').not.toMatch(/public\.payments[\s\S]{0,120}completed/i)
@@ -318,7 +329,7 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     expect(m062).toMatch(/revoke all on function public\.complete_payment/)
     expect(m062).toMatch(/to service_role;/)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(63)
   })
 })
 

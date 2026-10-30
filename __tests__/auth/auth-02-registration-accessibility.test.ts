@@ -361,7 +361,9 @@ describe('AUTH-02 · 6. the registration authority is unchanged', () => {
 describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
   it('no migration was added', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(migs).toHaveLength(60)
+    // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
+    expect(migs).toHaveLength(61)
+    expect(migs).toContain('063_payment_state_machine.sql')
   })
 
   it('payment work stayed paused — 062 and the transport client are untouched', () => {
@@ -377,10 +379,15 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
+      'payment-database-guard.ts',
+      'paytech-callbacks.ts',
       'paytech-client.ts',
       'paytech-config.ts',
       'paytech-ipn.ts',
+      'paytech-reconcile.ts',
+      'paytech-settlement-contract.ts',
       'providers.ts',
+      'purchase-eligibility.ts',
     ])
     // PayDunya is still unwired: no module IMPORTS its transport. The PayTech
     // integration deliberately did not activate the PayDunya path.

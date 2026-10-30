@@ -12,7 +12,8 @@ import { COURSE_MODULES, COURSE_COPY } from '@/data/seed'
 // move was made for the lesson player under UAT-ACCESS-01. Pilot mode itself is
 // untouched -- `lib/pilot.ts` still exports it and checkout, checkout/confirm
 // and `app/actions/enrollment.ts` still read it.
-import { PLATFORM_MODE, PAYMENTS_ENABLED } from '@/lib/pilot'
+import { PLATFORM_MODE } from '@/lib/pilot'
+import { paytechCheckoutAvailability } from '@/lib/payments/providers'
 import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
 import type { Metadata } from 'next'
 
@@ -277,10 +278,12 @@ export default async function CourseDetailPage({ params }: Props) {
   const price          = Number(dbCourse.price)
   const currency       = String(dbCourse.currency)
   const isFree         = dbCourse.is_free === true
-  // Whether a learner can act on the price yet. Payments are not activated, so
-  // a paid course shows its price and says so rather than offering a checkout
-  // that cannot complete.
-  const paidPurchaseAvailable = PAYMENTS_ENABLED && !isFree
+  // Whether a learner can act on the price yet. XP-PAYTECH-04: decided on the
+  // server by the same PayTech checkout availability /checkout uses, not by a
+  // NEXT_PUBLIC flag, so the two can never disagree. Until PayTech checkout is
+  // available here, a paid course shows its price and says so rather than
+  // offering a checkout that cannot complete.
+  const paidPurchaseAvailable = paytechCheckoutAvailability().available && !isFree
   // CAT-02 — no seed fallback for displayed fields either. The `notFound()`
   // above proves `dbCourse` exists, so these could never fire; but they are the
   // same shape that produced the phantom course page, and leaving them would
@@ -550,7 +553,7 @@ export default async function CourseDetailPage({ params }: Props) {
               )}
               {/* CAT-02 — "requise avant l'achat" is only true when there IS a
                   purchase. This was gated on the deployment mode, so flipping
-                  PLATFORM_MODE to 'live' while PAYMENTS_ENABLED stayed off
+                  PLATFORM_MODE to 'live' while payments stayed off
                   would have told guests to log in to buy something nothing can
                   sell. It now follows the same `paidPurchaseAvailable` the CTA
                   does. */}
@@ -843,7 +846,7 @@ export default async function CourseDetailPage({ params }: Props) {
                 `/checkout?course=...`, bypassing the state machine above. Dead
                 under today's config, it would have woken up the moment
                 PLATFORM_MODE moved to 'live' and sent guests into a checkout
-                that PAYMENTS_ENABLED still refuses. The condition is now just
+                that checkout still refuses. The condition is now just
                 "is this a guest", and the destination is the same safe target
                 the main CTA uses, so the two cannot diverge. */}
             {!user && (

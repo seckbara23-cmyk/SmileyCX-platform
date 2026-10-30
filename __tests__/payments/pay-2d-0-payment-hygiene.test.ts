@@ -74,10 +74,15 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
+      'payment-database-guard.ts',
+      'paytech-callbacks.ts',
       'paytech-client.ts',
       'paytech-config.ts',
       'paytech-ipn.ts',
+      'paytech-reconcile.ts',
+      'paytech-settlement-contract.ts',
       'providers.ts',
+      'purchase-eligibility.ts',
     ])
   })
 
@@ -284,10 +289,12 @@ describe('PAY-2D-0 · 5. the obsolete migration-003 reference is corrected', () 
   })
 
   it('the comment states that 062 is the sole authority and this action cannot complete', () => {
-    expect(SRC).toMatch(/THIS ACTION CANNOT COMPLETE A PAYMENT/)
-    expect(SRC).toMatch(/062/)
-    expect(SRC).toMatch(/WITHDRAWN/)
-    expect(SRC).toMatch(/service_role/)
+    // XP-PAYTECH-04 retired this action into a refusal. Its comment now says
+    // so, and says where payment starts instead.
+    expect(SRC).toMatch(/RETIRED by XP-PAYTECH-04/)
+    expect(SRC).toMatch(/NOTHING IS IMPORTED/)
+    expect(SRC).toMatch(/paytech-checkout\.ts/)
+    expect(SRC).not.toMatch(/003_payment_readiness/)
   })
 
   it('and the action still, in fact, cannot complete a payment', () => {
@@ -299,10 +306,11 @@ describe('PAY-2D-0 · 5. the obsolete migration-003 reference is corrected', () 
     expect(code, 'the action writes audit rows').not.toMatch(/from\(\s*['"]audit_log['"]\s*\)/)
     expect(code, "the action marks something completed").not.toMatch(/'completed'/)
     expect(code, 'the action sets a completion timestamp').not.toMatch(/completed_at/)
-    // The one write it does perform is a pending intent, and nothing else.
+    // XP-PAYTECH-04: it performs no write at all now — stronger than the
+    // single pending insert this used to pin.
     const writes = [...code.matchAll(/\.(insert|upsert|update|delete)\(/g)].map(m => m[1])
-    expect(writes).toEqual(['insert'])
-    expect(code).toMatch(/status:\s*'pending'/)
+    expect(writes).toEqual([])
+    expect(code).not.toMatch(/^\s*import\s/m)
   })
 })
 
@@ -332,8 +340,16 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
       .filter(r => /webhook|callback|ipn|paydunya|paytech|payment/i.test(r))
       // app/auth/callback/route.ts is Supabase AUTH, unrelated to payments.
       .filter(r => !r.startsWith('app/auth/'))
+    // XP-PAYTECH-04 added the reconciliation sweep. It is NOT a notification
+    // receiver — it asks the provider, it is never told — and it authenticates
+    // every call with CRON_SECRET in constant time. Both are pinned by name, so
+    // a third payment-ish route still fails.
     expect(payment, `payment-ish routes: ${payment.join(', ')}`)
-      .toEqual(['app/api/payments/paytech/ipn/route.ts'])
+      .toEqual(['app/api/payments/paytech/ipn/route.ts', 'app/api/payments/paytech/reconcile/route.ts'])
+    const sweep = read('app/api/payments/paytech/reconcile/route.ts')
+    expect(sweep).toMatch(/CRON_SECRET/)
+    expect(sweep).toMatch(/timingSafeEqual/)
+    expect(sweep).not.toMatch(/export async function POST/)
 
     expect(existsSync(join(ROOT, 'app/api/webhooks'))).toBe(false)
     // The completion module has its reviewed name; a stray `completion.ts`
@@ -376,8 +392,10 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
 
   it('this slice added no migration, and 062 is untouched', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(migs).toHaveLength(60)
-    expect(migs.filter(f => /^06[3-9]|^0[7-9]\d|^[1-9]\d\d/.test(f)),
+    // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
+    expect(migs).toHaveLength(61)
+    expect(migs).toContain('063_payment_state_machine.sql')
+    expect(migs.filter(f => /^06[3-9]|^0[7-9]\d|^[1-9]\d\d/.test(f) && f !== '063_payment_state_machine.sql'),
       'a migration was added').toEqual([])
     // 062's byte identity, as released.
     const { createHash } = require('crypto') as typeof import('crypto')
@@ -395,10 +413,15 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
     // property the branch violated is strictly stronger than restating it: this
     // slice must not reintroduce a lesson redirect from checkout.
     expect(page, 'checkout redirects into /learn again').not.toContain('redirect(`/learn/')
-    expect(page).toMatch(/if \(!PAYMENTS_ENABLED\)/)
-    const sel = read('components/payment/PaymentMethodSelector.tsx')
-    expect(sel).toMatch(/createPaymentRecord/)
-    expect(sel, 'the selector started redirecting to a provider')
+    // XP-PAYTECH-04 is that checkout rework. The gate is server-side and the
+    // only control redirects to PayTech; the card-collecting selector is gone.
+    expect(page).toMatch(/if \(!paytechCheckoutAvailability\(\)\.available\)/)
+    const pageCode = page.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+    expect(pageCode, 'the NEXT_PUBLIC flag is read again').not.toMatch(/PAYMENTS_ENABLED/)
+    expect(existsSync(join(ROOT, 'components/payment/PaymentMethodSelector.tsx'))).toBe(false)
+    const button = read('components/payment/PaytechCheckoutButton.tsx')
+    expect(button).toMatch(/startPaytechCheckout\(\{ courseId \}\)/)
+    expect(button, 'the button started talking to PayDunya')
       .not.toMatch(/app\.paydunya\.com|response_text|invoice_url/)
   })
 })

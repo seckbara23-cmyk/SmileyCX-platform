@@ -190,7 +190,7 @@ beforeEach(() => {
   fixture = {}
   // The mode that used to cause the defect. Asserted, not assumed.
   process.env.NEXT_PUBLIC_PLATFORM_MODE = 'pilot'
-  delete process.env.NEXT_PUBLIC_PAYMENTS_ENABLED
+  for (const k of ['PAYTECH_CHECKOUT_ENABLED', 'PAYTECH_MODE', 'PAYTECH_TEST_API_KEY', 'PAYTECH_TEST_API_SECRET', 'VERCEL_ENV']) delete process.env[k]
 })
 afterEach(() => { process.env = { ...ORIGINAL_ENV } })
 
@@ -366,7 +366,7 @@ describe('CAT-02 behaviour · the CTA never promises what the gate refuses', () 
   })
 
   it('...and DOES mention it once payments are on — so the check is not vacuous', async () => {
-    process.env.NEXT_PUBLIC_PAYMENTS_ENABLED = 'true'
+    Object.assign(process.env, { PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: 'k_test', PAYTECH_TEST_API_SECRET: 's_test', VERCEL_ENV: 'preview' })  // XP-PAYTECH-04: the server-side PayTech checkout switch replaces NEXT_PUBLIC_PAYMENTS_ENABLED
     fixture = { course: PAID_COURSE, user: null }
     expect(renderedText(await renderPage(PAID_COURSE.slug))).toMatch(/avant l.achat/i)
   })
@@ -396,7 +396,7 @@ describe('CAT-02 behaviour · the CTA never promises what the gate refuses', () 
   it('once payments ARE enabled, the same learner is sent to checkout', async () => {
     // Proves the state machine both ways — otherwise "never checkout" would
     // pass trivially against a page that had simply lost the ability.
-    process.env.NEXT_PUBLIC_PAYMENTS_ENABLED = 'true'
+    Object.assign(process.env, { PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: 'k_test', PAYTECH_TEST_API_SECRET: 's_test', VERCEL_ENV: 'preview' })  // XP-PAYTECH-04: the server-side PayTech checkout switch replaces NEXT_PUBLIC_PAYMENTS_ENABLED
     fixture = { course: PAID_COURSE, user: VERIFIED, profile: ACTIVE, access: NO_ACCESS }
     const el = await renderPage(PAID_COURSE.slug)
 
@@ -405,7 +405,7 @@ describe('CAT-02 behaviour · the CTA never promises what the gate refuses', () 
   })
 
   it('the FREE course never offers checkout, even with payments enabled', async () => {
-    process.env.NEXT_PUBLIC_PAYMENTS_ENABLED = 'true'
+    Object.assign(process.env, { PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: 'k_test', PAYTECH_TEST_API_SECRET: 's_test', VERCEL_ENV: 'preview' })  // XP-PAYTECH-04: the server-side PayTech checkout switch replaces NEXT_PUBLIC_PAYMENTS_ENABLED
     fixture = { course: FREE_COURSE, user: VERIFIED, profile: ACTIVE, access: NO_ACCESS }
     expect(hrefsOf(await renderPage(FREE_COURSE.slug)).some(h => h.startsWith('/checkout')),
       'a free course was sent to payment').toBe(false)

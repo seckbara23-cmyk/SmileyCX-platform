@@ -111,6 +111,16 @@ export const ADMIN_HOST_PUBLIC_PATHS = [
   // this path and anything below it; nothing is routed below it, and a test
   // pins that no sibling payments route becomes reachable.
   '/api/payments/paytech/ipn',
+  // ── XP-PAYTECH-04: the reconciliation sweep, called by Vercel Cron ──
+  //
+  // Vercel Cron calls the production deployment through a *.vercel.app host,
+  // which `isAdminHost()` treats as the admin host, so without this entry every
+  // sweep would be redirected to /login and nothing would ever be reconciled.
+  // The route authenticates every request itself (CRON_SECRET, compared in
+  // constant time, and it refuses with 503 when the secret is not configured),
+  // answers with counts only, and can complete only what PayTech confirms.
+  // Named in full, like the IPN, so no sibling route is exposed by accident.
+  '/api/payments/paytech/reconcile',
 ]
 
 export function isAdminHostPublicPath(pathname: string): boolean {

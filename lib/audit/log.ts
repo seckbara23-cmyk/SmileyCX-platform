@@ -73,6 +73,13 @@ export type AuditEventType =
   // that are. See lib/admin/publication-audit.ts.
   | 'course.published'
   | 'course.unpublished'
+  // XP-PAYTECH-04 — operator reconciliation of PayTech payments. Neither grants
+  // access by itself: "verification requested" asks the provider, and only a
+  // provider-confirmed payment completes (through 062); "manually closed"
+  // records an operator's attestation that an attempt was NOT paid, which
+  // grants nothing and only frees the learner to try again.
+  | 'payment.verification_requested'
+  | 'payment.manually_closed'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

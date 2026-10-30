@@ -14,11 +14,12 @@ import { createAdminClient } from '@/lib/supabase/admin'
  * purchase and then walks back into `/payment/cancel`, or who simply has the
  * URL in their history, must not lose what they bought.
  *
- * The only place a payment becomes `cancelled` is the IPN route, from an
- * authenticated `sale_canceled` notification, and even there
- * `recordTerminalFailure()` refuses to touch a row that is already
- * `completed`. So a cancellation can never undo a verified purchase, whether it
- * arrives by browser or by notification, in any order.
+ * A payment becomes `cancelled` only when PayTech itself reports it so, server
+ * to server (`lib/payments/paytech-reconcile.ts`), and even then
+ * `recordTerminalFailure()` touches only a payment still in flight — and
+ * migration 063 makes `completed` final in the database. So a cancellation can
+ * never undo a verified purchase, whether it arrives by browser or by
+ * notification, in any order.
  *
  * Because of that, this page reads the stored status and — if the learner has in
  * fact already paid — says so rather than implying the purchase was lost.

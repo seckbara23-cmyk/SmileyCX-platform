@@ -1,15 +1,20 @@
 import Link from 'next/link'
 import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector'
+import PaytechCheckoutButton from '@/components/payment/PaytechCheckoutButton'
 import { formatPrice } from '@/lib/utils/cn'
-import { PAYMENTS_ENABLED } from '@/lib/pilot'
+import { paytechCheckoutAvailability } from '@/lib/payments/providers'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 
 // ENR-01C-b dropped PILOT_MODE from this page: the pilot redirect was its
-// last consumer here, and a deployment mode is not an access fact. `lib/pilot.ts`
-// is untouched and PILOT_MODE still has consumers elsewhere; PAYMENTS_ENABLED
-// stays and still gates the payment UI.
+// last consumer here, and a deployment mode is not an access fact.
+//
+// XP-PAYTECH-04 dropped PAYMENTS_ENABLED too. It was a NEXT_PUBLIC_ build-time
+// flag, so a browser-visible variable decided whether money could be taken,
+// and when true it rendered PaymentMethodSelector — a form that collected card
+// numbers and CVVs on this page and wrote a pending row nothing ever settled.
+// The decision is now `paytechCheckoutAvailability()`, evaluated on the server
+// from server-only variables, and the only control is a PayTech redirect.
 import type { Metadata } from 'next'
 
 // ENR-01C-a — three imports left with the code that used them.
@@ -160,7 +165,10 @@ export default async function CheckoutPage({ searchParams }: Props) {
   // NOTHING replaces it. This slice introduces no enrollment or entitlement
   // write of any kind.
 
-  // ── PAYMENTS_ENABLED guard ────────────────────────────────────────────────
+  // ── Can this deployment take a payment? (server-side) ─────────────────────
+  //
+  // XP-PAYTECH-04: the server-only PayTech checkout availability, not a
+  // NEXT_PUBLIC flag. When it is off, the honest "not yet" panel below is shown.
   //
   // ENR-01C-a (C5). This panel announced "Accès gratuit en cours -- La
   // plateforme est en phase pilote. L'accès aux formations est entièrement
@@ -175,7 +183,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
   // The replacement states the commercial fact from the course ROW, using the
   // same derivation and the same wording as the public detail page, and sends
   // the learner somewhere that works.
-  if (!PAYMENTS_ENABLED) {
+  if (!paytechCheckoutAvailability().available) {
     const price    = Number(course.price)
     const currency = String(course.currency)
     const isFree   = course.is_free === true
@@ -217,7 +225,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
     )
   }
 
-  // Below is the payment UI — only reached when PAYMENTS_ENABLED is true
+  // Below is the payment UI — reached only when PayTech checkout is available here.
   return (
     <div className="cx-section">
       <div className="cx-container max-w-4xl">
@@ -229,9 +237,9 @@ export default async function CheckoutPage({ searchParams }: Props) {
           {/* Payment selector */}
           <div className="cx-card p-6">
             <h2 className="text-lg font-bold text-dark mb-6">
-              Choisir un mode de paiement
+              Paiement sécurisé
             </h2>
-            <PaymentMethodSelector course={course} profile={profile} />
+            <PaytechCheckoutButton courseId={String(course.id)} />
           </div>
 
           {/* Order summary */}
@@ -267,7 +275,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
             </div>
 
             <div className="mt-4 pt-4 border-t border-black/[0.06] text-xs text-cx-gray space-y-1">
-              <p>✅ Accès immédiat après paiement</p>
+              <p>✅ Accès activé dès la confirmation du paiement</p>
               <p>✅ Contenu à vie</p>
               <p>✅ Certificat de réussite</p>
             </div>

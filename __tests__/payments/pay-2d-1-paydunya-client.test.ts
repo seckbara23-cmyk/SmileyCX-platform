@@ -665,8 +665,7 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
     expect(existsSync(join(ROOT, 'app/api/payments/paytech/ipn/route.ts'))).toBe(true)
     expect(readdirSync(join(ROOT, 'app/api/payments')).sort()).toEqual(['paytech'])
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
-      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts',
-      'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'providers.ts',
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
     ])
   })
 
@@ -687,19 +686,25 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
   })
 
   it('checkout behaviour and the payment action are untouched', () => {
+    // XP-PAYTECH-04 retired the legacy action into a refusal that imports
+    // nothing — so it certainly does not use the PayDunya client.
     const action = read('app/actions/payment.ts')
-    expect(action).toMatch(/status:\s+'pending'/)
+    expect(action).toMatch(/RETIRED by XP-PAYTECH-04/)
     expect(action, 'the action started using the provider client').not.toMatch(/paydunya-client/)
     const page = read('app/(platform)/checkout/page.tsx')
     // ENR-01C-b removed the pinned `if (PILOT_MODE)` branch (see the note in
     // pay-2d-0). Re-aimed at the invariant it was standing in for.
     expect(page, 'checkout redirects into /learn again').not.toContain('redirect(`/learn/')
-    expect(page).toMatch(/if \(!PAYMENTS_ENABLED\)/)
+    // XP-PAYTECH-04: the gate is server-side PayTech availability.
+    expect(page).toMatch(/if \(!paytechCheckoutAvailability\(\)\.available\)/)
+    expect(page, 'checkout started using the PayDunya client').not.toMatch(/paydunya/i)
   })
 
   it('no migration was added and 062 is untouched', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(migs).toHaveLength(60)
+    // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
+    expect(migs).toHaveLength(61)
+    expect(migs).toContain('063_payment_state_machine.sql')
     const { createHash } = require('crypto') as typeof import('crypto')
     const raw = readFileSync(join(ROOT, 'supabase/migrations/062_atomic_payment_completion.sql'))
     expect(createHash('sha256').update(raw).digest('hex'))

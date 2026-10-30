@@ -102,7 +102,7 @@ describe('PAY-2B — 060 exists, alone, as one transaction', () => {
     // The rule is not "nothing above 060" but "nothing above 060 disturbs the
     // payment contract 060 established".
     const above = f.filter(x => parseInt(x, 10) > 60)
-    expect(above).toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
+    expect(above).toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql'])
     // 062 is the completion authority 060 was the contract FOR. It consumes
     // 060's columns and indexes; it must not redefine them.
     const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
@@ -504,22 +504,16 @@ describe('PAY-2B — the control only this suite can run', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('PAY-2B — cross-artifact agreement with the deployed reader', () => {
-  it('the confirmation page still reads only columns 059 grants', () => {
-    // 060 adds columns the page must NOT start reading. If someone widened the
-    // projection to include one, this fails in CI rather than as a 42501 in
-    // production.
+  it('the confirmation page reads no payment column at all (XP-PAYTECH-04)', () => {
+    // This guarded the one BROWSER-ROLE payment reader against widening into
+    // a column 059 withholds. XP-PAYTECH-04 retired that reader: the page is a
+    // bare redirect to /payment/success, which reads through the service role.
+    // A page that selects nothing cannot select a new column.
     const page = read(PAGE)
-    const sel = /\.select\('([^']*)'\)/.exec(page)
-    expect(sel, 'the confirmation page has no .select()').toBeTruthy()
-    const requested = sel![1]
-    for (const c of NEW_COLUMNS) {
-      expect(requested, `the page must not read ${c}`).not.toContain(c)
-    }
-    const top = requested.replace(/\w+\([^)]*\)/g, '').split(',').map(s => s.trim()).filter(Boolean)
-    for (const c of top) {
-      expect(ALLOW_059, `the page selects ${c}, which 059 does not grant`).toContain(c)
-    }
-    expect(requested).not.toContain('*')
+    expect(page).not.toMatch(/\.select\(/)
+    expect(page).not.toMatch(/from\(\s*'payments'\s*\)/)
+    for (const c of NEW_COLUMNS) expect(page, `the page must not read ${c}`).not.toContain(c)
+    expect(page).toMatch(/redirect\('\/payment\/success'\)/)
   })
 
   it('no application code READS the new columns yet', () => {
@@ -561,6 +555,11 @@ describe('PAY-2B — cross-artifact agreement with the deployed reader', () => {
       'lib/payments/payment-completion.ts:failure_reason',
       'lib/payments/payment-completion.ts:last_ipn_at',
       'app/api/payments/paytech/ipn/route.ts:failure_reason',
+      // XP-PAYTECH-04 (READY-A1): the admin payments view SHOWS both columns —
+      // an operator could not see why a payment was refused or when PayTech
+      // last notified. Read-only, admin-only, service-role.
+      'app/(admin)/admin/payments/page.tsx:failure_reason',
+      'app/(admin)/admin/payments/page.tsx:last_ipn_at',
     ]
     const unexpected = hits.filter(h => !ALLOWED.includes(h))
     expect(unexpected, `unapproved readers of the new columns: ${unexpected.join(', ')}`)

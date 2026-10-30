@@ -348,9 +348,13 @@ describe('PAY-LAUNCH-02A — the deploy gate refuses dangerous configurations', 
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
-  it('11. the payment feature flag is untouched and remains OFF', () => {
-    const pilot = read('lib/pilot.ts')
-    expect(pilot).toMatch(/PAYMENTS_ENABLED\s*=\s*\n?\s*process\.env\.NEXT_PUBLIC_PAYMENTS_ENABLED === 'true'/)
+  it('11. the payment feature flag is RETIRED and remains OFF', () => {
+    // XP-PAYTECH-04 retired NEXT_PUBLIC_PAYMENTS_ENABLED: a browser-visible flag
+    // no longer decides whether money can be taken. It is not exported, not
+    // read by any shipped code, and still not set.
+    const pilot = read('lib/pilot.ts').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+    expect(pilot).not.toMatch(/export const PAYMENTS_ENABLED/)
+    expect(pilot).not.toMatch(/NEXT_PUBLIC_PAYMENTS_ENABLED/)
     expect(process.env.NEXT_PUBLIC_PAYMENTS_ENABLED ?? 'unset').not.toBe('true')
     if (existsSync(join(ROOT, '.env.local'))) {
       expect(read('.env.local')).not.toMatch(/^NEXT_PUBLIC_PAYMENTS_ENABLED\s*=\s*true/m)
@@ -368,11 +372,13 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     expect(files.filter(f => parseInt(f, 10) > 57))
       .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                 '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                '062_atomic_payment_completion.sql'])
-    expect(Math.max(...nums)).toBe(62)
+                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql'])
+    expect(Math.max(...nums)).toBe(63)
     // 061 went to AUDIT-SEC-01, not PAY-2C: the audit_log TRUNCATE exposure was
     // found during the PAY-2C preflight and fixed first. PAY-2C landed as 062.
-    expect(files.filter(f => f.startsWith('063')), '063 is not this slice').toEqual([])
+    // XP-PAYTECH-04 authored 063, the payment state machine — admitted by
+    // name, and held to the same no-PayDunya-material rule below.
+    expect(files.filter(f => f.startsWith('063'))).toEqual(['063_payment_state_machine.sql'])
 
     // NO payment migration may carry PayDunya API material. The TEST/LIVE
     // boundary stays in the application module this slice owns: no credential,
@@ -389,7 +395,7 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
                         '059_payment_column_select_security.sql',
                         '060_payment_completion_contract.sql',
                         '061_audit_log_privilege_hardening.sql',
-                        '062_atomic_payment_completion.sql']) {
+                        '062_atomic_payment_completion.sql', '063_payment_state_machine.sql']) {
       const sql = read(`supabase/migrations/${name}`)
       for (const forbidden of FORBIDDEN) {
         expect(sql, `${name} contains PayDunya API material: ${forbidden}`).not.toMatch(forbidden)
@@ -412,10 +418,10 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     expect(existsSync(join(ROOT, 'app/api/webhooks/paydunya'))).toBe(false)
     expect(existsSync(join(ROOT, 'app/api/webhooks'))).toBe(false)
     expect(existsSync(join(ROOT, 'lib/payments/completion.ts'))).toBe(false)
-    // The existing action still creates only a pending record, server-priced.
+    // XP-PAYTECH-04 retired the legacy action into a refusal: no record at all.
     const action = read('app/actions/payment.ts')
-    expect(action).toMatch(/if \(!PAYMENTS_ENABLED\)/)
-    expect(action).toMatch(/status:\s+'pending'/)
+    expect(action).toMatch(/RETIRED by XP-PAYTECH-04/)
+    expect(action).not.toMatch(/\.insert\(|\.update\(|from\(/)
     expect(action).not.toMatch(/PAYDUNYA|entitlement/i)
     // The confirm page still grants nothing.
     const confirm = read('app/(platform)/checkout/confirm/page.tsx')

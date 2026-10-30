@@ -79,7 +79,11 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     expect(files.filter(f => f.startsWith('061'))).toEqual(['061_audit_log_privilege_hardening.sql'])
     // PAY-2C later authored 062 (the payment completion authority).
     expect(files.filter(f => f.startsWith('062'))).toEqual(['062_atomic_payment_completion.sql'])
-    expect(files).toHaveLength(60)
+    // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
+    expect(files.filter(f => f.startsWith('063'))).toEqual(['063_payment_state_machine.sql'])
+    // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
+    expect(files).toHaveLength(61)
+    expect(files).toContain('063_payment_state_machine.sql')
     const m057 = read('supabase/migrations/057_v8_registry_reorder.sql').replace(/--[^\n]*/g, '')
     expect(m057, '057 redefines the projection').not.toMatch(/create\s+(or replace\s+)?view/i)
     expect(m057, '057 alters the position constraint').not.toMatch(/alter table/i)
