@@ -3,9 +3,10 @@
 | | |
 |---|---|
 | **Base** | `main` @ `e90746b` |
-| **Migration** | `063_payment_state_machine.sql` is applied separately from deployment, under the procedure in the file. It requires migrations through 062. |
+| **Migrations** | `063_payment_state_machine.sql` and `064_payment_exceptions.sql` are applied separately from deployment, in that order, under the procedure in each file. They require migrations through 062. |
 | **Dev dependency** | `@electric-sql/pglite` `0.3.7` (exact), so the real-PostgreSQL suite runs in CI |
 | **Evidence it builds on** | [XP-PAYTECH-READY-01-SUMMARY.md](XP-PAYTECH-READY-01-SUMMARY.md) |
+| **Late-paid workflow** | [XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md](XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md) |
 
 > **Merging this does not enable payments.**
 > * With the PayTech variables unset, checkout shows *"Inscription bientôt disponible"*.
@@ -26,6 +27,7 @@
 | 7 | **Admin view** | Correct labels for all 7 statuses; provider, mode, `failure_reason` and `last_ipn_at` columns; test sales excluded from revenue; an "À rapprocher" filter. | A1 |
 | 8 | **Small fixes** | Chokepoint parsing of 062's camelCase result; stale code comments; the *"Aucun montant n'a été débité"* overclaim; a refunded state on `/payment/success`; PGlite as a dev dependency. | F6, D1 |
 | 9 | **Settlement parser** | The guessed allow-list is removed. Settlement is read through a **written contract**, `null` until PayTech confirms it. While `null`, nothing is inferred and no status request is made. | P1, F8 |
+| 10 | **Late-paid exceptions** | A paid or conflicting report that cannot move a payment is recorded in `public.payment_exceptions`, with an administrator alert, a queue, and a way to record a refund made elsewhere. It completes nothing, grants nothing and refunds nothing. | F4 stays open: see §10 |
 
 **One new defect was found by the new tests and fixed before handover.** The concurrency test caught a race in the rebuilt checkout: an earlier attempt completing *between* the learner's access check and the in-flight lookup let checkout open a second chargeable checkout for someone who already owned the course. Access is now re-checked **after** the in-flight read (`app/actions/paytech-checkout.ts`, step 7).
 
@@ -33,7 +35,7 @@
 
 | Safeguard | How it is met | Proof (tests) |
 |---|---|---|
-| **1. No second chargeable attempt while an earlier one may have settled** | An opened attempt (token stored, URL handed out) is only replaced once the provider **reliably** reports it failed or cancelled, or after a human's manual reconciliation. If the provider says `pending`, the **same** URL is offered again. If paid, the learner goes in. If **unknown**, nothing is opened and the learner gets the order reference. An attempt never opened (no URL handed out) is closed and replaced. | `READY-F1 closed` ×5; checkout suite *"an OPENED live intent is never superseded"*; admin *"with NO contract, a human attestation closes…"* |
+| **1. No second chargeable attempt while an earlier one may have settled** | An opened attempt (token stored, URL handed out) is only replaced once the provider **reliably** reports it failed or cancelled, or after a human's manual reconciliation. If the provider says `pending`, the **same** URL is offered again. If paid, the learner goes in. If **unknown**, nothing is opened and the learner gets the order reference. An attempt never opened (no URL handed out) is closed and replaced. An open payment exception also stops a new attempt for that learner and course. | `READY-F1 closed` ×5; checkout suite *"an OPENED live intent is never superseded"*; admin *"with NO contract, a human attestation closes…"* |
 | **2. Processing continues when checkout is disabled** | `paytechProcessingAvailability()` needs only credentials and a mode matching the environment; it ignores the sales switch. The IPN, sweep and admin actions use it. | IPN *"closing CHECKOUT does not stop processing"*; sweep *"keeps reconciling when new checkout is switched off"*; provider-selection tests |
 | **3. No settlement from an undocumented or ambiguous response** | `PAYTECH_SETTLEMENT_CONTRACT = null`. With a contract, exactly one status path is read, with no fallbacks; lists must be disjoint and the echoed reference must match. A paid answer must carry the promised amount. Anything else is `unknown`. | `READY-P1 FIXED` ×7; `READY-F8 / SAFEGUARD 3` ×5; IPN *"reads ONLY the contract's status path"*, *"with NO confirmed contract nothing is inferred"* |
 | **4. Test payments cannot grant production entitlements** | Three layers. The app refuses test mode on production (both availabilities). Reconciliation refuses a test row on production. Migration 063 refuses **in the database**: a database marked `live` (the default) rejects entering `completed` with `provider_mode='test'`, so 062's whole transaction rolls back, whichever deployment performs the write. The application cannot change the marker. | `SAFEGUARD 4` ×5 (real 062 + 063); deploy-gate matrix |
@@ -50,12 +52,16 @@
 * `lib/payments/paytech-callbacks.ts`: the callback URLs and `mintReference()` (CSPRNG), moved out of the `'use server'` file.
 * `lib/payments/purchase-eligibility.ts`: a mirror of 062 §7.
 * `lib/payments/payment-database-guard.ts`: the check every payment write passes outside production.
+* `lib/payments/payment-exceptions.ts`: the only route to the exception record, the alert and the queue reader.
 * `app/api/payments/paytech/reconcile/route.ts`: the cron sweep, authenticated with `CRON_SECRET`.
 * `app/(admin)/admin/payments/reconcile-actions.ts`: verify and close; admin-only, rate-limited, audited.
+* `app/(admin)/admin/payments/exception-actions.ts` and `ExceptionQueue.tsx`: the exception decisions and queue.
+* `lib/email/templates/payment-exception.ts`: the alert, which names only the order reference.
 * `components/payment/PaytechCheckoutButton.tsx`
 * `supabase/migrations/063_payment_state_machine.sql`
+* `supabase/migrations/064_payment_exceptions.sql`
 * `vercel.json`: one daily cron, and this branch's opt-out from automatic deployment (§7).
-* `docs/payments/XP-PAYTECH-READY-01-SUMMARY.md` and this document.
+* `docs/payments/XP-PAYTECH-READY-01-SUMMARY.md`, `docs/payments/XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md` and this document.
 
 **Rewritten:**
 * `app/actions/paytech-checkout.ts`
@@ -74,7 +80,9 @@
 * `app/payment/cancel/page.tsx`
 * `lib/payments/paytech-ipn.ts`: documentation only.
 * `lib/hosts.ts`: the sweep is public on the cron host.
-* `lib/audit/log.ts`: two event types.
+* `lib/audit/log.ts`: three event types.
+* `lib/email/index.ts`: the alert sender, and a dry run now says it delivered nothing.
+* `app/(admin)/admin/page.tsx`: a banner when exceptions are open.
 * `lib/pilot.ts`: `PAYMENTS_ENABLED` retired.
 * `scripts/security/verify-prod-config.mjs`: PayTech section.
 * `.env.example`
@@ -85,7 +93,7 @@
 **Tests:**
 * Two suites rebuilt: `xp-paytech-ready-01-integration` (real PostgreSQL) and `xp-paytech-ready-01-readiness`.
 * `xp-paytech-01-checkout` and `-ipn` updated.
-* 25 earlier guard suites **re-expressed, not weakened**. Every "nothing above 062" now admits **063 by name**. Every pinned `lib/payments` listing names the five new modules. Every "exactly these writers/readers/routes" list stays exact. Where a guard pinned the retired legacy flow, it now pins the stronger property (for example, "no browser-role payment reader exists at all").
+* 25 earlier guard suites **re-expressed, not weakened**. Every "nothing above 062" now admits **063 and 064 by name**. Every pinned `lib/payments` listing names the six new modules. Every "exactly these writers/readers/routes" list stays exact. Where a guard pinned the retired legacy flow, it now pins the stronger property (for example, "no browser-role payment reader exists at all").
 
 ## 4. Migration 063: the payment state machine
 
@@ -142,6 +150,16 @@ The operator procedure is at the foot of the file. Paste the whole file into the
 
 The commented block at the foot drops the trigger, the function and the marker. It changes no row and proves payment counts unchanged. **Tested:** the integration suite uncomments and executes it, then re-applies 063.
 
+## 4a. Migration 064: payment exceptions
+
+It adds one table, ten functions and two triggers. The full behaviour is in [XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md](XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md).
+
+* **Prerequisites:** migrations through 063. Its preflight refuses to run if 062, 063, the entitlement predicate, the audit table or the expected roles are missing, or if `payments` has any trigger other than 063's.
+* **On `payments`:** one `AFTER UPDATE OF status` trigger. It adds no column, changes no privilege, and leaves 062 and 063 as they are, which the migration asserts.
+* **Privileges:** browser roles hold nothing. `service_role` may only read the table, so every write goes through a function with its checks and audit row. Those functions are `SECURITY DEFINER`, unlike 062, because that is what lets the application hold no write at all. A guard trigger also binds the table owner.
+* **Self-test:** 36 checks in its own transaction, rolled back with zero net writes.
+* **Rollback:** at the foot of the file. It refuses while any exception is open, watching or flagged after settlement, because dropping the table would destroy the record of money that may be owed. Roll back 064 before 063.
+
 ## 5. Checkout and webhook security evidence
 
 * **Authentication is unchanged:** shared-secret check before any database read, then an HMAC built from **our** stored amount and reference. A forged notification, a wrong-secret HMAC, a different signed amount or another order's reference are all refused without asking the provider (T05, T06, T07/T08).
@@ -169,6 +187,11 @@ The commented block at the foot drops the trigger, the function and the marker. 
 | Sweep, opened attempt with unknown settlement | **left untouched**, noted, counted | SWEEP, READY-F8 |
 | Admin close when PayTech says paid or pending | **refused**; the row is not touched | ADMIN |
 | Admin close with no contract | requires a reason (10–500 chars) and an attestation; audited; frees the learner; grants nothing | ADMIN |
+| Paid report on a closed payment | recorded once, counted on repeats, alerts an administrator; the payment does not move; nothing granted | XP-PAYTECH-05 |
+| Paid notification, then a manual close, in either order or at once | one open exception; the signal survives the close | XP-PAYTECH-05 |
+| Provider says paid while the row closes underneath | 062 refuses; recorded with the provider's confirmation | XP-PAYTECH-05 |
+| Report that cannot be recorded | answered **503**, so PayTech can retry | XP-PAYTECH-05 |
+| New checkout while an exception is open | refused with the reference; no provider request | XP-PAYTECH-05 |
 
 The sweep answers with **counts only**. It refuses without a `CRON_SECRET` of at least 16 characters (503) and with a wrong one (401), comparing in constant time over SHA-256 digests.
 
@@ -217,14 +240,14 @@ Review of this branch happens through CI on the pull request, so it does not nee
 
 | Gate | Command | Result |
 |---|---|---|
-| Full regression, Node 20 and Node 24 | `npx vitest run` | **2483 / 2483**, 82 files, 0 failed, on each |
-| Payment and security suites | `npx vitest run __tests__/payments __tests__/security` | **1426 / 1426**, 41 files, 0 failed |
-| Real-PostgreSQL suite (062 verbatim + 063 whole) | `xp-paytech-ready-01-integration` | **94 / 94** |
-| Readiness suite | `xp-paytech-ready-01-readiness` | **45 / 45** |
+| Full regression, Node 20 and Node 24 | `npx vitest run` | **2679 / 2679**, 82 files, 0 failed, on each |
+| Payment and security suites | `npx vitest run __tests__/payments __tests__/security` | **1622 / 1622**, 41 files, 0 failed |
+| Real-PostgreSQL suite (062 verbatim + 063 and 064 whole) | `xp-paytech-ready-01-integration` | **259 / 259** |
+| Readiness suite | `xp-paytech-ready-01-readiness` | **76 / 76** |
 | TypeScript | `npm run typecheck` | clean (exit 0) |
 | ESLint (CI's command) | `npm run lint` | exit 0 |
 | ESLint on every changed source file | `npx eslint <files>` | **0 errors**. 21 warnings on the modified files against **23** on the same files at `e90746b`; **0** on the new files. |
-| SQL lint | `npm run lint:sql` | no new issues: 61 migrations scanned |
+| SQL lint | `npm run lint:sql` | no new issues: 62 migrations scanned |
 | Secret scan | `npm run scan:secrets` | no credentials, tracked files and history |
 | Bundle scan | `npm run scan:bundle` after `npm run build` | client bundle clean: 110 files, 13 patterns |
 | Public-asset scan | `npm run scan:public-assets` | no new sensitive files: 14 formats checked |
@@ -238,10 +261,15 @@ PayTech must document the JSON that `GET /payment/get-status?token_payment=` ret
 
 ## 10. Before live payments
 
-* **Migration 063** is applied, after migrations through 062.
+* **Migrations 063 and 064** are applied, in that order, after migrations through 062.
 * **The settlement contract** is filled in one reviewed change, with PayTech's literal example as a fixture. `contractProblems()` must return `[]`.
 * **Sandbox testing** passes on a database declared `sandbox`, and the recorded notifications and status responses match the contract and the HMAC format.
 * **The provider's merchant approval** is in place.
+* **Late paid notifications (F4) are mandatory.** The workflow must be applied and exercised, and it must have an owner:
+  * the refund policy is decided, including double payments, partial refunds and access after a refund;
+  * a written refund procedure names who approves, the channel, the time limit, the learner message and the evidence kept;
+  * PayTech has confirmed how refunds work for these payments;
+  * sandbox testing covers at least one late-paid case, including a real alert email.
 * **Production configuration** is set for Production only: `PAYTECH_MODE=prod` and `PAYTECH_PROD_API_KEY`/`_SECRET`; `CRON_SECRET` (≥ 16 characters); then `PAYTECH_ALLOW_PRODUCTION=true` and `PAYTECH_CHECKOUT_ENABLED=true`. The deploy gate must pass.
 
 ## 11. Known limitations and follow-ups
@@ -250,6 +278,9 @@ PayTech must document the JSON that `GET /payment/get-status?token_payment=` ret
 * **Cron frequency.** `vercel.json` runs the sweep **daily** (`0 5 * * *`). `*/15 * * * *` is the intended live cadence. The IPN, the admin "Vérifier" button and checkout's own re-check settle payments in between.
 * **Two-session lock contention** is not exercised: PGlite has one connection. Concurrency is proven at statement interleaving, and by 062's row lock plus 063's guard.
 * **PayTech payments are stored with `method = 'card'`.** The legacy CHECK admits only `orange_money`/`wave`/`card`, and the payer chooses the instrument on PayTech. The admin view shows "PayTech" instead.
-* **A paid report on a closed payment** is not completed. It is acknowledged and needs a manual decision.
+* **A payment made after closure, with no notification, is not detected** until the settlement contract is confirmed. The sweep cannot ask before then.
+* **A recorded refund is an administrator's statement.** This system cannot verify it.
+* **Only a full refund can be recorded** until a policy for partial refunds exists. A second refund on the same payment has no structured record yet.
+* **The sweep checks up to 10 closed attempts a run**, chosen at random from the 200 most recent in the last 30 days.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

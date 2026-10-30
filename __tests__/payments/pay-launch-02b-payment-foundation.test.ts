@@ -108,7 +108,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     // slice that MAY add columns but must leave that policy set alone.
     expect(f.filter(x => parseInt(x, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
-                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql'])
+                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
@@ -141,7 +141,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(63)
+    expect(Math.max(...nums)).toBe(64)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -697,7 +697,7 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     // transport and IPN verification, plus the completion chokepoint and
     // provider selection.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
-      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
     ])
   })
 

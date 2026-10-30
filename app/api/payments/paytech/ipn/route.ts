@@ -9,6 +9,7 @@ import {
   VERIFIED_STRENGTH,
 } from '@/lib/payments/paytech-ipn'
 import { touchIpnReceipt } from '@/lib/payments/payment-completion'
+import { reportPaymentException } from '@/lib/payments/payment-exceptions'
 import {
   PAYTECH_PAYMENT_COLUMNS,
   reconcilePaytechPayment,
@@ -44,19 +45,25 @@ import { createLogger } from '@/lib/logger'
  *   6. CROSS-CHECK the payload's own claims against the row.
  *   7. RECONCILE — the provider decides; the notification never does.
  *
+ * A paid report on a payment that is already closed cannot be acted on, because
+ * 063 makes the closure final. It is recorded as a payment exception for an
+ * administrator (XP-PAYTECH-05), and it completes nothing and grants nothing.
+ *
  * ── WHAT THE STATUS CODES MEAN TO THE PROVIDER ────────────────────────────
  *
  * PayTech's retry policy is undocumented, so these are written to be correct
  * whether or not it retries — the sweep is the safety net either way:
  *
  *   200  handled: completed, already completed, reliably failed/cancelled,
- *        reliably pending, or a refusal no retry can fix (recorded in
- *        `failure_reason` for a human).
+ *        reliably pending, a refusal no retry can fix (recorded in
+ *        `failure_reason` for a human), or a report durably recorded as an
+ *        exception.
  *   401  not authentic. Nothing was read, nothing written.
  *   404  no payment carries this token.
  *   503  not resolved YET — settlement unknown (including "contract not
- *        confirmed"), a transient database fault, or processing unavailable
- *        here. Asking again is safe: every path is idempotent.
+ *        confirmed"), a transient database fault, an exception that could not
+ *        be recorded, or processing unavailable here. Asking again is safe:
+ *        every path is idempotent.
  *
  * ── LOGS CARRY NO SECRETS AND NO PERSONAL DATA ────────────────────────────
  *
@@ -151,6 +158,7 @@ function respond(result: ReconcileResult) {
     case 'unknown':          return retry(`unsettled:${result.reason}`)
     case 'refused':          return result.retryable ? retry(`refused:${result.reason}`) : ack(`refused:${result.reason}`)
     case 'ineligible':       return ack(`ineligible:${result.reason}`)
+    case 'exception_unrecorded': return retry('exception_unrecorded')
   }
 }
 
@@ -240,10 +248,15 @@ export async function POST(req: Request) {
       { paymentId: payment.id, strength: verification.strength, reason: verification.reason },
       'PayTech IPN is not authentic for this payment',
     )
-    await touchIpnReceipt({
-      providerToken: token,
-      failureReason: `ipn_${verification.reason ?? 'reference_mismatch'}`,
+    const failureReason = `ipn_${verification.reason ?? 'reference_mismatch'}`
+    await touchIpnReceipt({ providerToken: token, failureReason })
+    // It carried our credentials, so it is kept. It proves nothing and grants
+    // nothing, but on a closed payment nothing else would ever find it, and the
+    // signature format is not yet confirmed against a real notification.
+    const kept = await reportPaymentException({
+      paymentId: payment.id, signal: 'unverified_report', source: 'ipn', detail: failureReason,
     })
+    if (!kept.recorded) return retry('exception_unrecorded')
     return ack('unverified')
   }
 
@@ -252,19 +265,27 @@ export async function POST(req: Request) {
   if (claimed !== null && claimed !== Number(payment.amount)) {
     log.error({ paymentId: payment.id }, 'PayTech IPN reported an amount that is not the stored one')
     await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_amount_mismatch' })
+    const kept = await reportPaymentException({
+      paymentId: payment.id, signal: 'amount_mismatch', source: 'ipn', detail: 'ipn_amount_mismatch',
+    })
+    if (!kept.recorded) return retry('exception_unrecorded')
     return ack('amount_mismatch')
   }
   const claimedCurrency = typeof payload.currency === 'string' ? payload.currency.trim().toUpperCase() : null
   if (claimedCurrency !== null && claimedCurrency !== payment.currency) {
     log.error({ paymentId: payment.id }, 'PayTech IPN reported a currency that is not the stored one')
     await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_currency_mismatch' })
+    const kept = await reportPaymentException({
+      paymentId: payment.id, signal: 'currency_mismatch', source: 'ipn', detail: 'ipn_currency_mismatch',
+    })
+    if (!kept.recorded) return retry('exception_unrecorded')
     return ack('currency_mismatch')
   }
 
   // ── 7. reconcile: the provider decides, not the notification ──
-  // `type_event` (verification.event) is unauthenticated and is used for
-  // nothing but this log line.
-  const result = await reconcilePaytechPayment(payment, { source: 'ipn' })
+  // `type_event` (verification.event) is outside the signature. It never decides
+  // an outcome. It only decides whether a report is kept for a human to check.
+  const result = await reconcilePaytechPayment(payment, { source: 'ipn', hint: verification.event })
   log.info({ paymentId: payment.id, hint: verification.event, result: result.kind }, 'PayTech IPN reconciled')
   return respond(result)
 }

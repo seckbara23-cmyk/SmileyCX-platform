@@ -126,7 +126,7 @@ export async function closeUnpaidPaytechPayment(formData: FormData): Promise<voi
     },
   })
 
-  if (outcome.kind === 'closed') back('close_done')
+  if (outcome.kind === 'closed') back(outcome.exceptionOpened ? 'close_done_exception' : 'close_done')
   if (outcome.kind === 'resolved_by_provider') back(`verify_${outcome.result.kind}`)
   back(`close_refused_${outcome.reason}`)
 }

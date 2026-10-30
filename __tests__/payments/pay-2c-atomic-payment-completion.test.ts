@@ -80,9 +80,9 @@ describe('PAY-2C — 062 exists, alone, as one transaction', () => {
     // with 062 is proven by executing both on PostgreSQL in
     // xp-paytech-ready-01-integration.test.ts.
     const above = f.filter(x => parseInt(x, 10) > 62)
-    expect(above, `migrations above 062 exist: ${above.join(', ')}`).toEqual(['063_payment_state_machine.sql'])
+    expect(above, `migrations above 062 exist: ${above.join(', ')}`).toEqual(['063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(63)
+    expect(Math.max(...nums)).toBe(64)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 

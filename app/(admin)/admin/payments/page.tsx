@@ -1,13 +1,21 @@
 import Link from 'next/link'
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
+import {
+  countOpenPaymentExceptions,
+  paymentExceptionQueue,
+  watchedPaymentIds,
+} from '@/lib/payments/payment-exceptions'
 import { verifyPaytechPayment, closeUnpaidPaytechPayment } from './reconcile-actions'
+import ExceptionQueue from './ExceptionQueue'
 import type { Metadata } from 'next'
 
 // PAY-2C-0. `activateEnrollment` is deliberately NOT imported: it marked a
 // payment completed without the provider, and it now refuses. XP-PAYTECH-04
 // adds the only two operator actions a payment may receive — "ask PayTech" and
 // "close as unpaid after a manual check" — neither of which can mark one paid.
+// XP-PAYTECH-05 adds the exception queue, whose decisions sit on the exception
+// record and cannot mark a payment paid either.
 
 export const metadata: Metadata = { title: 'Admin — Paiements' }
 
@@ -49,7 +57,39 @@ const NOTICE: Record<string, string> = {
   verify_unknown:           'PayTech n’a pas pu donner de réponse exploitable (contrat de statut non confirmé, ou service injoignable). Rien n’a été modifié.',
   verify_refused:           'PayTech indique un paiement que la plateforme refuse d’honorer automatiquement (voir « Motif »). Décision manuelle requise — remboursement ou accès.',
   verify_ineligible:        'Ce paiement ne peut pas être vérifié automatiquement (voir « Motif »).',
+  verify_exception_unrecorded: 'PayTech a signalé un paiement qui n’a pas pu être enregistré. Rien n’a été modifié. Réessayez.',
   close_done:               'Paiement clôturé comme non abouti. L’apprenant peut relancer un paiement.',
+  close_done_exception:     'Paiement clôturé, mais une notification reçue pour cette tentative reste à vérifier : une anomalie est ouverte et l’apprenant ne peut pas relancer de paiement tant qu’elle n’est pas traitée.',
+  exception_confirm_received_done: 'Réception des fonds enregistrée. Aucun accès n’a été accordé.',
+  exception_dismiss_done:   'Anomalie classée : rien à rembourser.',
+  exception_require_refund_done: 'Remboursement marqué comme nécessaire. Rien n’a été envoyé : effectuez-le auprès de PayTech, puis enregistrez-le ici.',
+  exception_record_access_done: 'Accès rattaché à ce paiement. Aucun accès n’a été créé par cette action.',
+  exception_refund_recorded: 'Remboursement enregistré.',
+  exception_refund_recorded_access_live: 'Remboursement enregistré. L’apprenant garde un accès actif à cette formation : révoquez-le dans Accès formations si nécessaire.',
+  exception_refund_already_recorded: 'Ce remboursement était déjà enregistré.',
+  exception_refund_invalid: 'Référence, montant, devise ou date du remboursement invalide.',
+  exception_rechecked:      'PayTech a été interrogé si un contrat de statut est confirmé. Consultez l’état ci-dessous.',
+  exception_refused_exception_not_open: 'Cette anomalie n’est plus ouverte. Actualisez.',
+  exception_refused_exception_not_found: 'Anomalie introuvable.',
+  exception_refused_receipt_already_confirmed: 'La réception des fonds est déjà confirmée.',
+  exception_refused_receipt_not_confirmed: 'Confirmez d’abord la réception des fonds.',
+  exception_refused_payment_confirmed_cannot_dismiss: 'Refusé : des fonds sont confirmés reçus. Cette anomalie ne peut pas être classée sans suite.',
+  exception_refused_refund_already_decided: 'Une décision de remboursement existe déjà.',
+  exception_refused_refund_not_required: 'Marquez d’abord le remboursement comme nécessaire.',
+  exception_refused_no_live_entitlement: 'Refusé : cet apprenant n’a aucun accès actif à cette formation. Accordez-le d’abord dans Accès formations.',
+  exception_refused_refund_already_recorded: 'Refusé : un autre remboursement est déjà enregistré pour cette anomalie.',
+  exception_refused_refund_reference_reused: 'Refusé : cette référence de remboursement est déjà utilisée.',
+  exception_refused_refund_reference_invalid: 'Référence de remboursement invalide.',
+  exception_refused_refund_amount_invalid: 'Refusé : le montant doit être positif et ne pas dépasser le montant du paiement.',
+  exception_refused_refund_partial_not_supported: 'Refusé : seul un remboursement intégral peut être enregistré. Rien n’a été modifié.',
+  exception_refused_receipt_not_operator_confirmed: 'Seule une confirmation faite par un administrateur peut être annulée.',
+  exception_withdraw_receipt_done: 'Confirmation de réception annulée.',
+  exception_acknowledge_report_done: 'Signalement marqué comme vérifié. L’apprenant peut de nouveau relancer un paiement.',
+  exception_refused_no_report_to_review: 'Aucun signalement à vérifier sur cette anomalie.',
+  exception_withdraw_refund_done: 'Décision de remboursement annulée.',
+  exception_refused_refund_currency_mismatch: 'Refusé : la devise ne correspond pas au paiement.',
+  exception_refused_refund_date_invalid: 'Refusé : la date doit être comprise entre la création du paiement et aujourd’hui.',
+  exception_refused_environment_refused: 'Opération refusée sur ce déploiement : il ne peut pas agir sur cette base de données. Rien n’a été modifié.',
   close_refused_provider_says_paid:    'Clôture refusée : PayTech indique que ce paiement a abouti.',
   close_refused_provider_says_pending: 'Clôture refusée : PayTech indique que ce paiement peut encore être réglé.',
   close_refused_not_open:   'Clôture refusée : ce paiement n’est plus en cours.',
@@ -96,7 +136,12 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
   await requirePlatformAdmin()
   const params = (await searchParams) ?? {}
   const reconcileOnly = params.filter === 'reconcile'
-  const notice = params.notice ? NOTICE[params.notice] ?? null : null
+  const exceptionsOnly = params.filter === 'exceptions'
+  // A refusal this page has no words for must still be seen.
+  const notice = params.notice
+    ? NOTICE[params.notice]
+      ?? (params.notice.startsWith('exception_refused_') ? 'Décision refusée. Rien n’a été modifié. Réessayez.' : null)
+    : null
   const supabase = createAdminClient()
 
   const { data } = await supabase
@@ -117,6 +162,14 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
   const totalRevenue = completed.filter(p => p.provider_mode !== 'test').reduce((s, p) => s + Number(p.amount), 0)
   const testExcluded = completed.filter(p => p.provider_mode === 'test').length
 
+  // Absent until migration 064 is applied. The page must still render: a failed
+  // read shows as "unavailable", never as an empty queue.
+  const [openExceptions, exceptions, watched] = await Promise.all([
+    countOpenPaymentExceptions(),
+    exceptionsOnly ? paymentExceptionQueue() : Promise.resolve(null),
+    watchedPaymentIds(),
+  ])
+
   const now = Date.now()
   const all = (data ?? []) as unknown as PaymentRow[]
   const toReconcile = all.filter(p => needsReconciliation(p, now))
@@ -129,11 +182,14 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
           <h1 className="text-xl sm:text-2xl font-extrabold text-gray-900">Paiements</h1>
           <p className="text-sm text-gray-400 mt-0.5">{payments.length} transaction(s)</p>
           <div className="mt-2 flex gap-3 text-sm">
-            <Link href="/admin/payments" className={reconcileOnly ? 'text-gray-500 hover:underline' : 'font-semibold text-gray-900'}>
+            <Link href="/admin/payments" className={reconcileOnly || exceptionsOnly ? 'text-gray-500 hover:underline' : 'font-semibold text-gray-900'}>
               Toutes
             </Link>
             <Link href="/admin/payments?filter=reconcile" className={reconcileOnly ? 'font-semibold text-gray-900' : 'text-gray-500 hover:underline'}>
               À rapprocher ({toReconcile.length})
+            </Link>
+            <Link href="/admin/payments?filter=exceptions" className={exceptionsOnly ? 'font-semibold text-gray-900' : 'text-gray-500 hover:underline'}>
+              Anomalies ({openExceptions ?? '?'})
             </Link>
           </div>
         </div>
@@ -152,6 +208,15 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
         </div>
       )}
 
+      {!exceptionsOnly && (openExceptions ?? 0) > 0 && (
+        <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm text-red-800">
+          <Link href="/admin/payments?filter=exceptions" className="font-semibold underline">
+            {openExceptions} anomalie(s) de paiement à traiter
+          </Link>
+          {' '}: de l’argent a peut-être été reçu sans accès accordé.
+        </div>
+      )}
+
       <div role="note" className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
         <p className="font-semibold">Aucun paiement ne peut être marqué « payé » à la main</p>
         <p className="mt-1 text-amber-800">
@@ -163,6 +228,7 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
         </p>
       </div>
 
+      {exceptionsOnly ? <ExceptionQueue exceptions={exceptions} /> : (
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
         {payments.length === 0 ? (
           <p className="text-sm text-gray-400 text-center py-16">
@@ -207,7 +273,14 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
                         {STATUS_LABEL[p.status] ?? p.status}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-xs font-mono text-gray-500">{p.failure_reason ?? '—'}</td>
+                    <td className="px-4 py-3 text-xs font-mono text-gray-500">
+                      {p.failure_reason ?? '—'}
+                      {watched.has(p.id) && (
+                        <p role="alert" className="mt-1 font-sans font-semibold text-red-700">
+                          PayTech a notifié un paiement pour cette tentative. Vérifiez avant de clôturer.
+                        </p>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
                       <p>Créé {new Date(p.created_at).toLocaleString('fr-FR')}</p>
                       {p.last_ipn_at && <p>Notifié {new Date(p.last_ipn_at).toLocaleString('fr-FR')}</p>}
@@ -250,6 +323,7 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
           </table>
         )}
       </div>
+      )}
     </div>
   )
 }

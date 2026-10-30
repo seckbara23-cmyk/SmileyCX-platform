@@ -7,7 +7,7 @@ This is the summary of the audit behind [XP-PAYTECH-04](XP-PAYTECH-04-PULL-REQUE
 
 ## Findings
 
-| ID | Finding | Status after XP-PAYTECH-04 |
+| ID | Finding | Status |
 |---|---|---|
 | C1 | Checkout was not connected to PayTech | Closed |
 | C2 | The legacy checkout form could collect card details | Closed: the form is deleted |
@@ -19,7 +19,7 @@ This is the summary of the audit behind [XP-PAYTECH-04](XP-PAYTECH-04-PULL-REQUE
 | E1 | Test and live modes were not separated by environment | Closed |
 | E3 | A callback override was accepted in production | Closed |
 | F3 | Checkout and completion applied different eligibility rules | Closed |
-| F4 | A payment marked closed cannot complete if the provider later reports it paid | Mitigated: a payment closes only on a reliable provider answer. A later paid report on a closed payment is not completed and needs a manual decision |
+| F4 | A payment marked closed can still be paid at the provider, with nothing granted and no alert | **Open: mandatory blocker before live payments.** A workflow is built in [XP-PAYTECH-05](XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md), but it is not applied, not exercised with PayTech, and the refund policy is undecided |
 | A1 | The admin view mislabelled payment states | Closed |
 | K1 | One switch controlled both new sales and existing payments | Closed |
 | X1 | Abandoned payment intents never expired | Closed |
@@ -51,5 +51,6 @@ All fifteen run against the real checkout action, notification route and complet
 ## What this evidence does not prove
 
 * How PayTech actually behaves. The provider is simulated.
+* That a late payment would be found without a notification. That needs the settlement contract.
 * How a deployed system behaves. These tests run locally.
 * How two separate database sessions contend for a lock. PGlite has one connection.

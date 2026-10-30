@@ -362,8 +362,10 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
   it('no migration was added', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(61)
+    expect(migs).toHaveLength(62)
     expect(migs).toContain('063_payment_state_machine.sql')
+    // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
+    expect(migs).toContain('064_payment_exceptions.sql')
   })
 
   it('payment work stayed paused — 062 and the transport client are untouched', () => {
@@ -379,7 +381,7 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
-      'payment-database-guard.ts',
+      'payment-database-guard.ts', 'payment-exceptions.ts',
       'paytech-callbacks.ts',
       'paytech-client.ts',
       'paytech-config.ts',

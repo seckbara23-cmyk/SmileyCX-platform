@@ -6,9 +6,10 @@
  * Everything runs against the real modules. The only stubs are `fetch`, the
  * admin Supabase client for the admin page render, and the admin session guard.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync, readdirSync, statSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { createHash } from 'node:crypto'
 import { join, relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
@@ -27,18 +28,28 @@ function sourceFiles(dir: string): string[] {
 }
 const APP_SOURCES = [...sourceFiles('app'), ...sourceFiles('components'), ...sourceFiles('lib')]
 
-const H = vi.hoisted(() => ({ rows: [] as Record<string, unknown>[] }))
+const H = vi.hoisted(() => ({
+  rows: [] as Record<string, unknown>[],
+  /** How the exception table answers: normally, with an error, or as a HEAD request on a missing table. */
+  exceptionTable: 'ok' as 'ok' | 'error' | 'missing_head',
+}))
 vi.mock('@/lib/auth/session', () => ({ requirePlatformAdmin: async () => ({ id: 'admin' }) }))
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
-    from: () => {
+    from: (table: string) => {
       let completedOnly = false
       const chain: Record<string, unknown> = {
-        select: () => chain, order: () => chain, limit: () => chain,
+        select: () => chain, order: () => chain, limit: () => chain, in: () => chain, is: () => chain, not: () => chain,
         eq: (c: string, v: string) => { if (c === 'status' && v === 'completed') completedOnly = true; return chain },
-        then: (res: (_v: unknown) => unknown) => Promise.resolve({
-          data: completedOnly ? H.rows.filter(r => r.status === 'completed') : H.rows, error: null,
-        }).then(res),
+        then: (res: (_v: unknown) => unknown) => Promise.resolve(
+          table === 'payment_exceptions' && H.exceptionTable === 'error'
+            ? { data: null, error: { message: 'relation does not exist' }, count: null }
+            : table === 'payment_exceptions' && H.exceptionTable === 'missing_head'
+              ? { data: null, error: null, count: null }
+              : table === 'payment_exceptions'
+                ? { data: [], error: null, count: 0 }
+                : { data: completedOnly ? H.rows.filter(r => r.status === 'completed') : H.rows, error: null },
+        ).then(res),
       }
       return chain
     },
@@ -443,5 +454,347 @@ describe('vercel.json — this branch does not create a preview deployment', () 
 
   it('still declares the sweep', () => {
     expect(config.crons).toEqual([{ path: '/api/payments/paytech/reconcile', schedule: '0 5 * * *' }])
+  })
+})
+
+describe('XP-PAYTECH-05 — the exception workflow cannot complete, grant or refund', () => {
+  const MODULE = stripComments(read('lib/payments/payment-exceptions.ts'))
+  const ACTIONS = stripComments(read('app/(admin)/admin/payments/exception-actions.ts'))
+  const SQL = read('supabase/migrations/064_payment_exceptions.sql').replace(/--[^\n]*/g, '')
+
+  it('the module never completes a payment and never writes access', () => {
+    expect(MODULE).not.toMatch(/complete_payment/)
+    expect(MODULE).not.toMatch(/from\('(entitlements|enrollments)'\)\s*\.(insert|update|upsert|delete)/)
+    expect(ACTIONS).not.toMatch(/complete_payment/)
+    expect(ACTIONS).not.toMatch(/from\('(entitlements|enrollments|payments)'\)/)
+  })
+
+  it('migration 064 writes no access and calls no completion', () => {
+    expect(SQL).not.toMatch(/(insert\s+into|update|delete\s+from|truncate)\s+(table\s+)?public\.(entitlements|enrollments)\b/i)
+    expect(SQL).not.toMatch(/(perform|select|:=)\s+public\.complete_payment\s*\(/i)
+    // Outside the self-test's scratch rows, the only payment writes are the two moves 063 permits.
+    const raw = read('supabase/migrations/064_payment_exceptions.sql')
+    const live = raw.slice(raw.indexOf('══ 1. THE RECORD'), raw.indexOf('══ 6. SELF-TEST')).replace(/--[^\n]*/g, '')
+    expect(live.match(/update\s+public\.payments\b[^;]*;/gi)).toEqual([
+      "update public.payments set status = 'failed', failure_reason = 'exception_refund_confirmed' where id = v_pay.id;",
+      "update public.payments set status = 'refunded' where id = v_pay.id;",
+    ])
+    expect(live).not.toMatch(/(insert\s+into|delete\s+from)\s+public\.payments\b/i)
+  })
+
+  it('the application holds no write on the exception table, and the module writes only through functions', () => {
+    const live = SQL.slice(SQL.indexOf('create table public.payment_exceptions'))
+    expect(live).toMatch(/revoke all on public\.payment_exceptions from public, anon, authenticated, service_role;\s*grant select on public\.payment_exceptions to service_role;/)
+    expect(MODULE).not.toMatch(/from\('payment_exceptions'\)\s*\.(insert|update|upsert|delete)/)
+  })
+
+  it('no shipped code can ask a provider for a refund', () => {
+    for (const f of APP_SOURCES) {
+      expect(stripComments(read(f)), f).not.toMatch(/refund-payment|\/payment\/refund/)
+    }
+  })
+
+  it('only the exception module calls the exception functions', () => {
+    for (const f of APP_SOURCES) {
+      if (f === 'lib/payments/payment-exceptions.ts') continue
+      expect(stripComments(read(f)), f).not.toMatch(/rpc\(\s*['"]payment_exception/)
+    }
+  })
+
+  it('each action checks the administrator, then the database, before anything else', () => {
+    const names = [...ACTIONS.matchAll(/export async function (\w+)/g)].map(m => m[1]).sort()
+    expect(names).toEqual([
+      'acknowledgeExceptionReport', 'confirmExceptionReceipt', 'dismissException', 'recheckException',
+      'recordExceptionAccess', 'recordExceptionRefund', 'requireExceptionRefund',
+      'withdrawExceptionReceipt', 'withdrawExceptionRefund',
+    ])
+    for (const body of [
+      ACTIONS.slice(ACTIONS.indexOf('async function decision(')),
+      ACTIONS.slice(ACTIONS.indexOf('export async function recordExceptionRefund(')),
+      ACTIONS.slice(ACTIONS.indexOf('export async function recheckException(')),
+    ]) {
+      const admin = body.indexOf('requirePlatformAdmin()')
+      const guard = body.indexOf('paymentDatabaseAuthority()')
+      expect(admin).toBeGreaterThan(-1)
+      expect(admin).toBeLessThan(guard)
+      expect(guard).toBeLessThan(body.indexOf('rateLimitDb('))
+    }
+  })
+
+  it('every write in the module first asks the database guard', () => {
+    for (const fn of ['reportPaymentException', 'sendPendingExceptionAlerts', 'escalateStaleWatching', 'decidePaymentException', 'recordPaymentExceptionRefund']) {
+      const body = MODULE.slice(MODULE.indexOf(`export async function ${fn}(`))
+      expect(body.indexOf('paymentDatabaseAuthority()'), fn).toBeGreaterThan(-1)
+      expect(body.indexOf('paymentDatabaseAuthority()'), fn).toBeLessThan(body.indexOf('createAdminClient()'))
+    }
+  })
+
+  it('vercel.json keeps both protections for this branch', () => {
+    const config = JSON.parse(read('vercel.json')) as { git: { deploymentEnabled: Record<string, boolean> }; ignoreCommand: string }
+    expect(config.git.deploymentEnabled).toEqual({ 'feat/xp-paytech-04-checkout-reconciliation': false })
+    expect(config.ignoreCommand).toContain('feat/xp-paytech-04-checkout-reconciliation')
+  })
+})
+
+describe('XP-PAYTECH-05 — the alert carries the reference and nothing else', () => {
+  it('in both formats, and escapes what it prints', async () => {
+    const { paymentExceptionEmailHtml, paymentExceptionEmailText } = await import('@/lib/email/templates/payment-exception')
+    expect(paymentExceptionEmailText({ reference: 'SCX-REF-1' })).toContain('SCX-REF-1')
+    expect(paymentExceptionEmailHtml({ reference: 'SCX-REF-1' })).toContain('SCX-REF-1')
+    expect(paymentExceptionEmailHtml({ reference: '<b>x' })).not.toContain('<b>x')
+    expect(Object.keys({ reference: '' } satisfies import('@/lib/email/templates/payment-exception').PaymentExceptionEmailData)).toEqual(['reference'])
+  })
+
+  it('says what the alert does, without claiming a state it cannot know', async () => {
+    const { paymentExceptionEmailText, paymentExceptionEmailHtml } = await import('@/lib/email/templates/payment-exception')
+    // The record may concern a completed payment, where access HAS been granted.
+    for (const out of [paymentExceptionEmailText({ reference: 'R' }), paymentExceptionEmailHtml({ reference: 'R' })]) {
+      expect(out).toMatch(/Cette alerte n'accorde aucun accès et n'effectue aucun remboursement/)
+      expect(out).not.toMatch(/Aucun accès n'a été accordé/)
+    }
+  })
+
+  it('a dry run reports that it delivered nothing, so an alert stays due', async () => {
+    vi.stubEnv('EMAIL_DRY_RUN', 'true')
+    vi.resetModules()
+    const { sendPaymentExceptionAlert } = await import('@/lib/email')
+    expect(await sendPaymentExceptionAlert('owner@example.test', { reference: 'R' })).toEqual({ success: true, dryRun: true })
+    vi.unstubAllEnvs()
+    vi.resetModules()
+  })
+})
+
+describe('XP-PAYTECH-05 — the admin queue', () => {
+  const view = (over: Record<string, unknown> = {}) => ({
+    id: '30000000-0000-4000-8000-000000000001', paymentId: '40000000-0000-4000-8000-000000000001',
+    state: 'open', firstSignal: 'paid_hint', lastSignal: 'paid_hint', detail: null, reportCount: 2,
+    firstReportedAt: '2026-10-01T00:00:00Z', lastReportedAt: '2026-10-02T00:00:00Z',
+    paymentReceived: 'reported', accessState: 'not_granted', refundState: 'not_assessed',
+    refundExternalReference: null, refundAmount: null, refundCurrency: null, refundConfirmedAt: null,
+    resolution: null, resolvedAt: null, alertSentAt: null, postSettlementReportAt: null,
+    payment: { reference: 'SCX-REF-1', status: 'expired', amount: 45000, currency: 'XOF', providerMode: 'live' },
+    learner: { name: 'Awa', email: 'awa@example.test' }, courseTitle: 'Fondamentaux',
+    accessLive: false, otherCompletedReference: null, ...over,
+  })
+  const render = async (exceptions: unknown) => {
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { default: ExceptionQueue } = await import('@/app/(admin)/admin/payments/ExceptionQueue')
+    return renderToStaticMarkup(ExceptionQueue({ exceptions: exceptions as never }))
+  }
+
+  it('shows the four facts apart', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', accessLive: true })])
+    for (const label of ['Paiement reçu', 'Accès accordé', 'Remboursement requis', 'Remboursement confirmé']) expect(html).toContain(label)
+    expect(html).toContain('Confirmé par PayTech')
+    expect(html).toContain('Accès actif, autre origine')
+  })
+
+  it('an unproven report offers a check and a dismissal, and no refund or access', async () => {
+    const html = await render([view()])
+    expect(html).toContain('Signalé, non prouvé')
+    expect(html).toContain('Confirmer la réception des fonds')
+    expect(html).toContain('Classer : rien à rembourser')
+    expect(html).not.toContain('Un remboursement est nécessaire')
+    expect(html).not.toContain('Enregistrer le remboursement effectué')
+    expect(html).not.toContain('L’accès a été accordé pour ce paiement')
+  })
+
+  it('confirmed money can no longer be dismissed on a closed payment', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_operator' })])
+    expect(html).not.toContain('Classer : rien à rembourser')
+    expect(html).not.toContain('Confirmer la réception des fonds')
+    expect(html).toContain('Un remboursement est nécessaire')
+    expect(html).toContain('L’accès a été accordé pour ce paiement')
+    expect(html).toContain('Ceci n’accorde rien')
+  })
+
+  it('a completed payment under question can be cleared, and has no access decision', async () => {
+    const html = await render([view({
+      paymentReceived: 'confirmed_by_provider', lastSignal: 'cancel_hint',
+      payment: { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' },
+    })])
+    expect(html).toContain('Classer : rien à rembourser')
+    expect(html).toContain('ce paiement reste valable')
+    expect(html).not.toContain('L’accès a été accordé pour ce paiement')
+  })
+
+  it('a required refund offers the record form, which says it happened elsewhere', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_operator', refundState: 'required' })])
+    expect(html).toContain('Enregistrer le remboursement effectué')
+    expect(html).toContain('confirmé en dehors de la plateforme')
+    expect(html).not.toContain('Un remboursement est nécessaire')
+    expect(html).toContain('Annuler la décision de remboursement')
+    // Only a full refund can be recorded until a policy exists.
+    expect(html).not.toContain('partiel')
+    expect(html).not.toContain('name="partial"')
+  })
+
+  it('an administrator can withdraw their own confirmation, and not PayTech\'s', async () => {
+    expect(await render([view({ paymentReceived: 'confirmed_by_operator' })])).toContain('Annuler ma confirmation de réception')
+    expect(await render([view({ paymentReceived: 'confirmed_by_provider' })])).not.toContain('Annuler ma confirmation de réception')
+    expect(await render([view({ paymentReceived: 'confirmed_by_operator', refundState: 'required' })])).not.toContain('Annuler ma confirmation de réception')
+  })
+
+  it('names an unproven report for what it is', async () => {
+    const html = await render([view({ lastSignal: 'unverified_report', paymentReceived: 'not_established', detail: 'ipn_signature_mismatch' })])
+    expect(html).toContain('signature n’a pas pu être vérifiée')
+    expect(html).toContain('Non établi')
+  })
+
+  it('a resolved record offers nothing and shows the refund', async () => {
+    const html = await render([view({
+      state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', paymentReceived: 'confirmed_by_operator',
+      refundExternalReference: 'PT-REFUND-0001', refundAmount: 45000, refundCurrency: 'XOF', refundConfirmedAt: '2026-10-03T00:00:00Z',
+      resolvedAt: '2026-10-03T00:00:00Z',
+    })])
+    expect(html).toContain('PT-REFUND-0001')
+    expect(html).not.toContain('Vérifier à nouveau')
+    expect(html).not.toContain('<form')
+  })
+
+  it('a paid report after settlement is unmissable, and its only action changes no settled fact', async () => {
+    const html = await render([view({
+      state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', paymentReceived: 'confirmed_by_operator',
+      refundExternalReference: 'PT-REFUND-0001', refundAmount: 45000, refundCurrency: 'XOF', refundConfirmedAt: '2026-10-03T00:00:00Z',
+      resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z',
+    })])
+    expect(html).toContain('un second paiement réel')
+    expect(html).toContain('Marquer ce signalement comme vérifié')
+    expect(html).not.toContain('Vérifier à nouveau')
+    expect(html).not.toContain('Enregistrer le remboursement effectué')
+  })
+
+  it('flags a possible double payment', async () => {
+    expect(await render([view({ otherCompletedReference: 'SCX-OTHER' })])).toMatch(/Paiement possible en double[\s\S]*SCX-OTHER/)
+  })
+
+  it('an unreadable queue never looks like an empty one', async () => {
+    expect(await render(null)).toMatch(/n’a pas pu être lue/)
+    expect(await render([])).toContain('Aucune anomalie ouverte')
+  })
+
+  it('is a server component, and the page authorises before it reads', () => {
+    expect(read('app/(admin)/admin/payments/ExceptionQueue.tsx')).not.toMatch(/['"]use client['"]/)
+    const page = stripComments(read('app/(admin)/admin/payments/page.tsx'))
+    expect(page.indexOf('requirePlatformAdmin()')).toBeLessThan(page.indexOf('countOpenPaymentExceptions()'))
+    const dashboard = stripComments(read('app/(admin)/admin/page.tsx'))
+    expect(dashboard.indexOf('requirePlatformAdmin()')).toBeLessThan(dashboard.indexOf('countOpenPaymentExceptions()'))
+  })
+
+  describe('the payments page before migration 064 is applied', () => {
+    const page = async (searchParams?: Record<string, string>) => {
+      H.rows = []
+      const { renderToStaticMarkup } = await import('react-dom/server')
+      const { default: AdminPaymentsPage } = await import('@/app/(admin)/admin/payments/page')
+      return renderToStaticMarkup(await AdminPaymentsPage(searchParams ? { searchParams: Promise.resolve(searchParams) } : {}))
+    }
+    const anomalies = (html: string) => /Anomalies \(([^)]*)\)/.exec(html.replace(/<!-- -->/g, ''))?.[1]
+    afterEach(() => { H.exceptionTable = 'ok' })
+
+    it('shows a real zero only when the table answered zero', async () => {
+      expect(anomalies(await page())).toBe('0')
+    })
+
+    it.each(['error', 'missing_head'] as const)('on %s it still renders, and says it does not know', async (mode) => {
+      H.exceptionTable = mode
+      expect(anomalies(await page())).toBe('?')
+    })
+
+    it('the queue says it could not be read, rather than looking empty', async () => {
+      H.exceptionTable = 'error'
+      expect(await page({ filter: 'exceptions' })).toMatch(/n’a pas pu être lue/)
+    })
+  })
+
+  it('a refusal the page has no words for is still shown', async () => {
+    H.rows = []
+    const { renderToStaticMarkup } = await import('react-dom/server')
+    const { default: AdminPaymentsPage } = await import('@/app/(admin)/admin/payments/page')
+    const html = renderToStaticMarkup(await AdminPaymentsPage({ searchParams: Promise.resolve({ notice: 'exception_refused_unknown_error' }) }))
+    expect(html).toContain('Décision refusée')
+    const plain = renderToStaticMarkup(await AdminPaymentsPage({ searchParams: Promise.resolve({ notice: 'not_a_real_notice' }) }))
+    expect(plain).not.toContain('Décision refusée')
+  })
+})
+
+describe('XP-PAYTECH-05 — the public documents', () => {
+  const PUBLIC = [
+    'docs/payments/XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md',
+    'docs/payments/XP-PAYTECH-04-PULL-REQUEST.md',
+    'docs/payments/XP-PAYTECH-READY-01-SUMMARY.md',
+    'supabase/migrations/064_payment_exceptions.sql',
+    'lib/payments/payment-exceptions.ts',
+    'app/(admin)/admin/payments/exception-actions.ts',
+    'app/(admin)/admin/payments/ExceptionQueue.tsx',
+    'lib/email/templates/payment-exception.ts',
+  ]
+
+  it('no longer call F4 mitigated, and name it a blocker', () => {
+    const summary = read('docs/payments/XP-PAYTECH-READY-01-SUMMARY.md')
+    const f4 = summary.split('\n').find(l => l.startsWith('| F4 |'))!
+    expect(f4).not.toMatch(/mitigated/i)
+    expect(f4).toMatch(/Open: mandatory blocker/)
+    const pr = read('docs/payments/XP-PAYTECH-04-PULL-REQUEST.md')
+    const before = pr.slice(pr.indexOf('## 10. Before live payments'), pr.indexOf('## 11. Known limitations'))
+    expect(before).toMatch(/Late paid notifications \(F4\) are mandatory/)
+    expect(before).toMatch(/refund policy/)
+  })
+
+  it('state that nothing here is live or proven with the provider', () => {
+    const doc = read('docs/payments/XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md')
+    expect(doc).toMatch(/Not live/)
+    expect(doc).toMatch(/has not been applied to any hosted database/)
+    expect(doc).toMatch(/cannot be detected until the settlement contract is confirmed/)
+  })
+
+  it('disclose no infrastructure identifier or private record', () => {
+    const FORBIDDEN = [
+      /[a-z]{20}\.supabase\.co/, /\bprj_[A-Za-z0-9]/, /\bteam_[A-Za-z0-9]/, /vercel\.app/,
+      /C:\\/, /same database/i, /shares? (one|a) database/i,
+    ]
+    // Digests, on purpose. A list of the private identifiers would itself publish
+    // them, and this repository is public. Each word of each file is hashed and
+    // compared, so this file can be scanned along with everything else.
+    const PRIVATE_WORDS = new Set([
+      'c263ecbbabde04b0425376024da146da48eeb6a927a24f7628d641cb330fe189',
+      '29243a205260ab94b838664a4eb018ce0f2ba4a851d44b2d5fd24c766596e605',
+      '2eda8fde4af3d9017965b8e10a63d524514df5066a11f3df649763fbdf9128b2',
+      '377edee54d4c27c9e10e3bc0d6308552c056c2de0b6e2b09498b247b9f7b04a5',
+      '5136e3864eff6f5dd498f29ec864fd1ca6a97932da2d7f49ceccfb10475dd0b7',
+      'd5f19b52b6b2ffcda7c214694f4de26001a4b06e1f9bed76777ab48ce24d35de',
+    ])
+    // Runs of words too, so that a private path or address is caught whatever joins it.
+    const PRIVATE_PHRASES = new Set([
+      'b8fd7d3f577893bb668f40713df37181e30ec493ec83a22bcf125048de907ab4',
+      'bb279daed3f1741b1ec28d2400e037288d414f6bfebb3525a748acd3548c8391',
+    ])
+    const words = (s: string) => s.toLowerCase().match(/[a-z0-9]+/g) ?? []
+    const digest = (w: string) => createHash('sha256').update(w).digest('hex')
+    const walk = (dir: string): string[] => readdirSync(join(ROOT, dir)).flatMap(name => {
+      const rel = `${dir}/${name}`
+      return statSync(join(ROOT, rel)).isDirectory() ? walk(rel) : [rel]
+    })
+    const SCANNED = [...new Set([
+      ...PUBLIC,
+      ...walk('docs/payments'),
+      ...walk('lib/payments'),
+      ...walk('app/(admin)/admin/payments'),
+      ...walk('app/api/payments'),
+      '__tests__/payments/xp-paytech-ready-01-integration.test.ts',
+      '__tests__/payments/xp-paytech-ready-01-readiness.test.ts',
+    ])]
+    for (const f of SCANNED) {
+      const src = read(f)
+      for (const re of PUBLIC.includes(f) ? FORBIDDEN : [FORBIDDEN[0], FORBIDDEN[1], FORBIDDEN[2]]) {
+        expect(src, `${f} matches ${re}`).not.toMatch(re)
+      }
+      const ws = words(src)
+      const unique = [...new Set(ws)]
+      // A commit hash may be quoted in full: compare its short form as well.
+      const hit = unique.find(w => PRIVATE_WORDS.has(digest(w)) || (/^[0-9a-f]{8,40}$/.test(w) && PRIVATE_WORDS.has(digest(w.slice(0, 7)))))
+      expect(hit === undefined, `${f} contains a private identifier`).toBe(true)
+      const pairs = ws.flatMap((w, i) => [`${w} ${ws[i + 1] ?? ''}`, `${w} ${ws[i + 1] ?? ''} ${ws[i + 2] ?? ''}`])
+      expect(pairs.some(p => PRIVATE_PHRASES.has(digest(p))), `${f} contains a private path or address`).toBe(false)
+    }
   })
 })

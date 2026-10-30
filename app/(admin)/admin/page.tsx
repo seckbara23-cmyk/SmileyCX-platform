@@ -1,5 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import { requirePlatformAdmin } from '@/lib/auth/session'
+import { countOpenPaymentExceptions } from '@/lib/payments/payment-exceptions'
 import Link from 'next/link'
 import { Users, BookOpen, CreditCard, Award, TrendingUp, ArrowRight } from 'lucide-react'
 import type { Metadata } from 'next'
@@ -41,6 +42,9 @@ export default async function AdminDashboardPage() {
   const { data: revData } = await supabase.from('payments').select('amount').eq('status', 'completed')
   const totalRevenue = revData?.reduce((sum: number, p: { amount: number }) => sum + p.amount, 0) ?? 0
 
+  // XP-PAYTECH-05. Money may have been received with nothing granted.
+  const openExceptions = await countOpenPaymentExceptions()
+
   const stats = [
     { icon: Users,      label: 'Utilisateurs',     value: userCount ?? 0,                     color: 'text-primary bg-primary/10',    href: '/admin/users' },
     { icon: BookOpen,   label: 'Formations actives',value: courseCount ?? 0,                   color: 'text-secondary bg-secondary/10', href: '/admin/courses' },
@@ -56,6 +60,15 @@ export default async function AdminDashboardPage() {
           <p className="text-cx-gray text-sm">Vue d&apos;ensemble de la plateforme XP Client Academy</p>
         </div>
       </div>
+
+      {(openExceptions ?? 0) > 0 && (
+        <div role="alert" className="mb-6 rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm text-red-800">
+          <Link href="/admin/payments?filter=exceptions" className="font-semibold underline">
+            {openExceptions} anomalie(s) de paiement à traiter
+          </Link>
+          {' '}: de l&apos;argent a peut-être été reçu sans accès accordé.
+        </div>
+      )}
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">

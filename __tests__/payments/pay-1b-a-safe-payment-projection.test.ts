@@ -121,9 +121,9 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
     expect(files.filter(f => parseInt(f, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
                 '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql',
-                '063_payment_state_machine.sql'])
+                '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(63)
+    expect(Math.max(...nums)).toBe(64)
 
     const strip = (p: string) => read(p).replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     const m059 = strip('supabase/migrations/059_payment_column_select_security.sql')
@@ -152,6 +152,14 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
     for (const stmt of stmts063) {
       expect(stmt, '063 changes a privilege on public.payments')
         .toMatch(/on public\.payment_environment\b|on function public\.payments_transition_guard\(\)/i)
+    }
+    // XP-PAYTECH-05's 064: on its own table and functions — again never on
+    // public.payments, so 059's browser allowlist is untouched.
+    const stmts064 = strip('supabase/migrations/064_payment_exceptions.sql').match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []
+    expect(stmts064.length).toBeGreaterThan(0)
+    for (const stmt of stmts064) {
+      expect(stmt, '064 changes a privilege on public.payments')
+        .toMatch(/on public\.payment_exceptions\b|on function public\.payment_exception/i)
     }
   })
 })
@@ -205,6 +213,7 @@ describe('PAY-1B(a) · every payment reader, and which client it uses', () => {
         'app/payment/success/page.tsx',
         'app/payment/cancel/page.tsx',
         'lib/payments/payment-completion.ts',
+        'lib/payments/payment-exceptions.ts',
         'lib/payments/paytech-reconcile.ts',
       ], `${r.file} is an unreviewed payment reader`).toContain(r.file)
     }

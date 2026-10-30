@@ -102,7 +102,7 @@ describe('PAY-2B — 060 exists, alone, as one transaction', () => {
     // The rule is not "nothing above 060" but "nothing above 060 disturbs the
     // payment contract 060 established".
     const above = f.filter(x => parseInt(x, 10) > 60)
-    expect(above).toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql'])
+    expect(above).toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     // 062 is the completion authority 060 was the contract FOR. It consumes
     // 060's columns and indexes; it must not redefine them.
     const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')

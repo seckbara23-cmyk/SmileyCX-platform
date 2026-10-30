@@ -30,6 +30,11 @@ import {
   verificationEmailText,
   type VerificationEmailData,
 } from './templates/verification'
+import {
+  paymentExceptionEmailHtml,
+  paymentExceptionEmailText,
+  type PaymentExceptionEmailData,
+} from './templates/payment-exception'
 
 const log = createLogger('email')
 
@@ -60,6 +65,8 @@ function getResend(): Resend {
 interface SendResult {
   success: boolean
   error?:  string
+  /** Nothing left this process. A caller that must know delivery happened checks this. */
+  dryRun?: boolean
 }
 
 async function sendEmail(params: {
@@ -70,7 +77,7 @@ async function sendEmail(params: {
 }): Promise<SendResult> {
   if (DRY_RUN) {
     log.info({ to: params.to, subject: params.subject }, '[DRY RUN] Email not sent')
-    return { success: true }
+    return { success: true, dryRun: true }
   }
 
   try {
@@ -107,6 +114,19 @@ export async function sendWelcomeEmail(
     subject: 'Bienvenue sur XP Client Academy !',
     html:    welcomeEmailHtml(data),
     text:    welcomeEmailText(data),
+  })
+}
+
+/** To an allowlisted administrator only. Carries the order reference and nothing else. */
+export async function sendPaymentExceptionAlert(
+  to: string,
+  data: PaymentExceptionEmailData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: `Paiement à vérifier — ${data.reference}`,
+    html:    paymentExceptionEmailHtml(data),
+    text:    paymentExceptionEmailText(data),
   })
 }
 

@@ -52,6 +52,7 @@ import { paymentDatabaseAuthority } from '@/lib/payments/payment-database-guard'
 import { mintReference, paytechCallbackUrls } from '@/lib/payments/paytech-callbacks'
 import { purchaseBlocker } from '@/lib/payments/purchase-eligibility'
 import { closeUnopenedAttempt } from '@/lib/payments/payment-completion'
+import { paymentExceptionBlock } from '@/lib/payments/payment-exceptions'
 import {
   PAYTECH_PAYMENT_COLUMNS,
   reconcilePaytechPayment,
@@ -94,6 +95,7 @@ const MSG = {
   failed:       "L'initialisation du paiement a échoué. Veuillez réessayer.",
   provider:     'Le service de paiement est momentanément indisponible. Veuillez réessayer.',
   inProgress:   'Un paiement est déjà en cours pour cette formation. Réessayez dans un instant.',
+  exception:    "Un paiement précédent pour cette formation est en cours de vérification. Aucun nouveau paiement n'a été créé. Contactez-nous en indiquant la référence ci-dessous.",
 } as const
 
 export async function startPaytechCheckout(input: {
@@ -149,6 +151,16 @@ export async function startPaytechCheckout(input: {
   if (blocker) {
     log.warn({ courseId, blocker }, 'PayTech checkout refused: completion would be refused')
     return { error: MSG.conflict }
+  }
+
+  // ── 5b. might an earlier, closed attempt have been paid? ──
+  // Safeguard 1: another chargeable attempt could take the money twice. Checked
+  // before the in-flight read, so it also stops the SAME checkout being re-offered.
+  const held = await paymentExceptionBlock(user.id, courseId)
+  if (held.unreadable) return { error: MSG.failed }
+  if (held.reference) {
+    log.warn({ courseId }, 'PayTech checkout refused: an open payment exception concerns this course')
+    return { error: MSG.exception, reference: held.reference }
   }
 
   // ── 6. an attempt already in flight? ──
@@ -216,6 +228,9 @@ export async function startPaytechCheckout(input: {
   const recheck = await resolveCourseAccessById(courseId)
   if (recheck.allowed) return { accessUrl }
   if (await purchaseBlocker(user.id, courseId)) return { error: MSG.conflict }
+  const heldNow = await paymentExceptionBlock(user.id, courseId)
+  if (heldNow.unreadable) return { error: MSG.failed }
+  if (heldNow.reference) return { error: MSG.exception, reference: heldNow.reference }
 
   return openAttempt({ userId: user.id, course: { id: courseId, title: String(course.title), price } })
 }
@@ -291,6 +306,15 @@ async function openAttempt(args: {
     // paid against this attempt. Close it so it cannot block the next click.
     await closeUnopenedAttempt({ paymentId, failureReason: `provider_request_${reason}` })
     return { error: MSG.provider }
+  }
+
+  // The provider call can take many seconds, and a report on an earlier attempt may
+  // have landed meanwhile. No URL has been handed out yet, so nothing can be paid
+  // against this attempt, and it can still be closed safely.
+  const heldAfter = await paymentExceptionBlock(args.userId, args.course.id)
+  if (heldAfter.unreadable || heldAfter.reference) {
+    await closeUnopenedAttempt({ paymentId, failureReason: 'superseded_by_exception' })
+    return heldAfter.reference ? { error: MSG.exception, reference: heldAfter.reference } : { error: MSG.failed }
   }
 
   // Persist the correlation key BEFORE handing out the URL — compare-and-set,

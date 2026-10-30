@@ -310,8 +310,10 @@ describe('CAT-02 · 6. SECURITY: presentation stayed presentation', () => {
   it('no migration was added and 062 is byte-identical', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(61)
+    expect(migs).toHaveLength(62)
     expect(migs).toContain('063_payment_state_machine.sql')
+    // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
+    expect(migs).toContain('064_payment_exceptions.sql')
     const { createHash } = require('crypto') as typeof import('crypto')
     const raw = readFileSync(join(ROOT, 'supabase/migrations/062_atomic_payment_completion.sql'))
     expect(createHash('sha256').update(raw).digest('hex'))

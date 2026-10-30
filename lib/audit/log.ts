@@ -80,6 +80,10 @@ export type AuditEventType =
   // grants nothing and only frees the learner to try again.
   | 'payment.verification_requested'
   | 'payment.manually_closed'
+  // XP-PAYTECH-05 — a decision on a payment exception that the database REFUSED.
+  // Accepted decisions are audited by migration 064 in the same transaction, as
+  // `payment.exception_*`. None of them grants access or moves money.
+  | 'payment.exception_decision_refused'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

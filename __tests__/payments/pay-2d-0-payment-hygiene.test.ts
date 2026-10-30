@@ -74,7 +74,7 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
-      'payment-database-guard.ts',
+      'payment-database-guard.ts', 'payment-exceptions.ts',
       'paytech-callbacks.ts',
       'paytech-client.ts',
       'paytech-config.ts',
@@ -393,9 +393,12 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
   it('this slice added no migration, and 062 is untouched', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(61)
+    expect(migs).toHaveLength(62)
     expect(migs).toContain('063_payment_state_machine.sql')
-    expect(migs.filter(f => /^06[3-9]|^0[7-9]\d|^[1-9]\d\d/.test(f) && f !== '063_payment_state_machine.sql'),
+    // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
+    expect(migs).toContain('064_payment_exceptions.sql')
+    expect(migs.filter(f => /^06[3-9]|^0[7-9]\d|^[1-9]\d\d/.test(f)
+      && f !== '063_payment_state_machine.sql' && f !== '064_payment_exceptions.sql'),
       'a migration was added').toEqual([])
     // 062's byte identity, as released.
     const { createHash } = require('crypto') as typeof import('crypto')

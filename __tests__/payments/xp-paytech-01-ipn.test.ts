@@ -115,6 +115,13 @@ vi.mock('@/lib/payments/payment-database-guard', () => ({
   paymentDatabaseAuthority: async () => ({ allowed: true, reason: null }),
 }))
 
+// The exception record is proved on real SQL in the integration suite.
+vi.mock('@/lib/payments/payment-exceptions', () => ({
+  reportPaymentException: async () => ({ recorded: true }),
+  sendPendingExceptionAlerts: async () => 0,
+  hasOpenPaymentException: async () => false,
+}))
+
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
     from() {
