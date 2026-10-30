@@ -36,29 +36,20 @@ import type { PaytechConfig } from '@/lib/payments/paytech-config'
  *
  * ══════════════════════════════════════════════════════════════════════════
  *
- * ══ THE CENTRAL PROBLEM, STATED PLAINLY ═══════════════════════════════════
+ * ══ WHY A SIGNATURE IS STILL CHECKED ═════════════════════════════════════
  *
- * PayDunya gives this codebase a server-to-server confirm endpoint, so
- * `paydunya-client.ts` can establish that money moved over a channel the
- * learner cannot touch, and the IPN is reduced to a hint. PayTech gives us
- * neither of those comforts:
+ * Settlement comes from PayTech's status endpoint, read through the confirmed
+ * contract (`paytech-settlement-contract.ts`, XP-PAYTECH-04) — never from this
+ * module. The checks here exist so that an unauthenticated caller cannot make
+ * us touch a row or call the provider, and so a notification about a
+ * different amount or order is refused before anything is asked.
  *
- *   * NO VERIFICATION ENDPOINT. Nothing in paytech.sn/doc, the official
- *     integration guide (doc.paytech.sn/PayTech.pdf) or the community PHP SDK
- *     documents any way to ask PayTech the status of an existing transaction.
- *     So the IPN is not a hint here — it is the only evidence that exists.
- *
- *   * THE OFFICIAL VERIFICATION METHOD IS NOT A SIGNATURE. The official guide
- *     says to verify a notification "en comparant le hash en sha256 de sa clé
- *     API et clé secrète avec les deux clés que nous lui avons envoyées" —
- *     i.e. compare `sha256(api_key)` and `sha256(api_secret)` against the
- *     `api_key_sha256` and `api_secret_sha256` fields in the payload.
- *
- *     Those two values are CONSTANTS. They are identical in every notification
- *     this merchant will ever receive, they cover none of the payload, and
- *     anyone who observes one notification can replay it forever or forge a
- *     new one with any amount they like. It is the same category of mistake as
- *     PayDunya's `hash`, which migration 062 documents at length.
+ *   * THE OFFICIAL "CLASSIC" METHOD IS NOT A SIGNATURE. PayTech's guide says to
+ *     compare `sha256(api_key)` and `sha256(api_secret)` against the
+ *     `api_key_sha256` and `api_secret_sha256` fields. Those are CONSTANTS:
+ *     identical in every notification, covering none of the payload. It is
+ *     checked first, because it needs no database read, and treated as
+ *     necessary but never sufficient.
  *
  * ══ WHAT WE DO ABOUT IT ═══════════════════════════════════════════════════
  *
@@ -82,11 +73,9 @@ import type { PaytechConfig } from '@/lib/payments/paytech-config'
  *
  * ══ RESIDUAL RISK — READ BEFORE ENABLING LIVE PAYMENTS ════════════════════
  *
- *   * `hmac_compute` is documented by PayTech's current developer
- *     documentation but NOT by the official integration PDF, which predates
- *     it. The exact message format is therefore CONFIRMED BY ONE SOURCE ONLY
- *     and must be validated against a real sandbox notification before live
- *     payments are enabled. Until then `VERIFIED_STRENGTH` gates fulfilment.
+ *   * `hmac_compute` must be validated against a real sandbox notification
+ *     before live payments. A mismatch fails CLOSED: the notification is refused, and the
+ *     reconciliation sweep still settles the payment from the provider.
  *
  *   * The signature carries NO nonce and NO timestamp, so it cannot establish
  *     freshness. A captured notification stays valid forever. Replay is

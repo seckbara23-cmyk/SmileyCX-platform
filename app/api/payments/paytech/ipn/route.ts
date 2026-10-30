@@ -1,72 +1,74 @@
 import { NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolvePaytechConfig, PaytechConfigError } from '@/lib/payments/paytech-config'
-import { paytechAvailability } from '@/lib/payments/providers'
-import { confirmPaymentStatus } from '@/lib/payments/paytech-client'
+import { paytechProcessingAvailability } from '@/lib/payments/providers'
+import { paymentDatabaseAuthority } from '@/lib/payments/payment-database-guard'
 import {
   verifyPaytechIpn,
   verifySharedSecretOnly,
   VERIFIED_STRENGTH,
 } from '@/lib/payments/paytech-ipn'
+import { touchIpnReceipt } from '@/lib/payments/payment-completion'
+import { reportPaymentException } from '@/lib/payments/payment-exceptions'
 import {
-  completeVerifiedPayment,
-  recordTerminalFailure,
-  touchIpnReceipt,
-} from '@/lib/payments/payment-completion'
+  PAYTECH_PAYMENT_COLUMNS,
+  reconcilePaytechPayment,
+  type PaytechPaymentRow,
+  type ReconcileResult,
+} from '@/lib/payments/paytech-reconcile'
 import { createLogger } from '@/lib/logger'
 
 /**
- * PayTech IPN — XP-PAYTECH-01 Phase D.
+ * PayTech IPN — XP-PAYTECH-01 Phase D, rebuilt on reconciliation by XP-PAYTECH-04.
  *
- * `POST /api/payments/paytech/ipn`, the URL already registered in the PayTech
- * merchant dashboard. This is the ONLY path in the application that can cause a
- * course entitlement to be granted by a payment, and it reaches that outcome
- * through exactly one module: `lib/payments/payment-completion.ts`.
+ * `POST /api/payments/paytech/ipn`. A notification is a HINT that something
+ * happened to one payment. It is authenticated, correlated to a row we hold,
+ * cross-checked against that row — and then handed to the same
+ * reconciliation procedure the sweep and the admin use, which asks PayTech,
+ * under the confirmed contract, what actually happened.
  *
  * ── A BROWSER CAN NEVER REACH THIS OUTCOME ────────────────────────────────
  *
- * `/payment/success` reads the database and renders whatever it finds. It calls
- * nothing here, completes nothing, and cannot. A learner who crafts a success
- * redirect, or replays one, changes no row. That separation is the point of
- * Phase E and it is asserted by test.
+ * `/payment/success` reads the database and renders what it finds. It calls
+ * nothing here and completes nothing.
  *
  * ── THE ORDER OF CHECKS IS LOAD-BEARING ───────────────────────────────────
  *
  *   1. METHOD. Only POST exists; everything else is 405.
- *   2. PROVIDER ENABLED. A deployment where PayTech is not offered does not
- *      process PayTech notifications either, or a preview flag would become a
- *      production fulfilment path.
- *   3. SHARED SECRET, BEFORE ANY LOOKUP. The official sha256-constant check
- *      needs only our credentials. Running it first means an unauthenticated
- *      caller cannot probe which provider tokens exist.
- *   4. CORRELATE on `provider_token`, the UNIQUE replay key (migration 060).
- *   5. SIGNATURE, against the stored row. The HMAC message is built from the
- *      row's own amount and reference, so a notification claiming a different
- *      amount cannot verify.
- *   6. INDEPENDENT CROSS-CHECK. The payload's own claimed amount is compared
- *      against the row too. The signature already covers our amount, so this
- *      catches the different failure of a provider that signs one value and
- *      reports another.
- *   7. ONLY THEN fulfil, and only for `sale_complete`.
+ *   2. PROCESSING AVAILABLE. Credentials resolve and the mode belongs to this
+ *      environment. NOT the sales switch: closing checkout must never strand
+ *      a payment already taken (XP-PAYTECH-04 safeguard 2).
+ *   3. SHARED SECRET, BEFORE ANY LOOKUP, so an unauthenticated caller cannot
+ *      probe which tokens exist.
+ *   4. CORRELATE on `provider_token`, the UNIQUE replay key (060).
+ *   5. SIGNATURE, built from the stored row's amount and reference.
+ *   6. CROSS-CHECK the payload's own claims against the row.
+ *   7. RECONCILE — the provider decides; the notification never does.
+ *
+ * A paid report on a payment that is already closed cannot be acted on, because
+ * 063 makes the closure final. It is recorded as a payment exception for an
+ * administrator (XP-PAYTECH-05), and it completes nothing and grants nothing.
  *
  * ── WHAT THE STATUS CODES MEAN TO THE PROVIDER ────────────────────────────
  *
- * PayTech retries, so the response is a control signal rather than decoration:
+ * PayTech's retry policy is undocumented, so these are written to be correct
+ * whether or not it retries — the sweep is the safety net either way:
  *
- *   200  handled — including an idempotent repeat, and including a refusal that
- *        retrying cannot fix. Acking a mismatch is deliberate: a retry loop
- *        would add noise without changing the outcome, and the refusal is
- *        recorded in `failure_reason` for reconciliation instead.
+ *   200  handled: completed, already completed, reliably failed/cancelled,
+ *        reliably pending, a refusal no retry can fix (recorded in
+ *        `failure_reason` for a human), or a report durably recorded as an
+ *        exception.
  *   401  not authentic. Nothing was read, nothing written.
  *   404  no payment carries this token.
- *   503  transient — the one retryable refusal (`entitlement_race`), or our own
- *        unavailability. Retrying this one genuinely can succeed.
+ *   503  not resolved YET — settlement unknown (including "contract not
+ *        confirmed"), a transient database fault, an exception that could not
+ *        be recorded, or processing unavailable here. Asking again is safe:
+ *        every path is idempotent.
  *
  * ── LOGS CARRY NO SECRETS AND NO PERSONAL DATA ────────────────────────────
  *
- * Never the provider token (it is the replay key), never `client_phone`, never
- * an email, never a credential or a hash of one, and never the raw payload. The
- * payment id and a machine-readable reason are enough to find the row.
+ * Never the provider token, `client_phone`, an email, a credential or a hash
+ * of one, and never the raw payload.
  */
 
 // node:crypto is required for the signature check, so this cannot run on edge.
@@ -83,13 +85,20 @@ function ack(detail: string) {
   return NextResponse.json({ received: true, detail }, { status: 200 })
 }
 
+/** Not resolved yet — please come back. */
+function retry(detail: string) {
+  return NextResponse.json(
+    { error: 'retry', detail },
+    { status: 503, headers: { 'Retry-After': '300' } },
+  )
+}
+
 /**
  * Parse a notification body.
  *
- * PayTech's documentation shows JSON while its PHP example posts
- * `application/x-www-form-urlencoded`, so both are accepted. Form values are
- * all strings, which is why every reader in `paytech-ipn.ts` tolerates string
- * forms of numbers and booleans.
+ * PayTech's documentation shows JSON while its PHP example and plugins read
+ * form fields, so both are accepted. Form values are all strings, which is why
+ * every reader in `paytech-ipn.ts` tolerates string forms.
  */
 async function parseBody(req: Request): Promise<Record<string, unknown> | null> {
   const declared = Number(req.headers.get('content-length') ?? '0')
@@ -115,8 +124,6 @@ async function parseBody(req: Request): Promise<Record<string, unknown> | null> 
     return Object.fromEntries(new URLSearchParams(raw))
   }
 
-  // No usable content type: try JSON, then form. A provider that omits the
-  // header should not cost us the notification.
   try {
     const parsed = JSON.parse(raw)
     if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
@@ -139,11 +146,27 @@ function claimedAmount(payload: Record<string, unknown>): number | null {
   return null
 }
 
+/** How a reconciliation result is answered to the provider. */
+function respond(result: ReconcileResult) {
+  switch (result.kind) {
+    case 'completed':        return ack('completed')
+    case 'already_completed':return ack('already_completed')
+    case 'failed':           return ack('failed')
+    case 'cancelled':        return ack('cancelled')
+    case 'already_terminal': return ack('already_terminal')
+    case 'pending':          return ack('unsettled:pending')
+    case 'unknown':          return retry(`unsettled:${result.reason}`)
+    case 'refused':          return result.retryable ? retry(`refused:${result.reason}`) : ack(`refused:${result.reason}`)
+    case 'ineligible':       return ack(`ineligible:${result.reason}`)
+    case 'exception_unrecorded': return retry('exception_unrecorded')
+  }
+}
+
 export async function POST(req: Request) {
-  // ── 2. is PayTech processed on this deployment at all? ──
-  const availability = paytechAvailability()
+  // ── 2. may this deployment process PayTech payments? ──
+  const availability = paytechProcessingAvailability()
   if (!availability.available) {
-    log.warn({ blockedBy: availability.blockedBy }, 'PayTech IPN received but provider is not enabled')
+    log.warn({ blockedBy: availability.blockedBy }, 'PayTech IPN received but processing is unavailable')
     return NextResponse.json({ error: 'unavailable' }, { status: 503 })
   }
 
@@ -151,7 +174,6 @@ export async function POST(req: Request) {
   try {
     config = resolvePaytechConfig()
   } catch (err) {
-    // Availability already proved the credentials resolve, so this is defensive.
     const why = err instanceof PaytechConfigError ? 'config_invalid' : 'unexpected'
     log.error({ why }, 'PayTech IPN could not resolve configuration')
     return NextResponse.json({ error: 'unavailable' }, { status: 503 })
@@ -169,6 +191,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
 
+  // After the shared-secret check, so an unauthenticated request reads nothing.
+  if (!(await paymentDatabaseAuthority()).allowed) {
+    return NextResponse.json({ error: 'unavailable' }, { status: 503 })
+  }
+
   const token = typeof payload.token === 'string' ? payload.token.trim() : ''
   if (token.length === 0) {
     log.warn('PayTech IPN carried no token')
@@ -176,10 +203,9 @@ export async function POST(req: Request) {
   }
 
   // ── 4. correlate on the UNIQUE replay key ──
-  const admin = createAdminClient()
-  const { data: payment, error: lookupError } = await admin
+  const { data, error: lookupError } = await createAdminClient()
     .from('payments')
-    .select('id, user_id, course_id, amount, currency, reference, status, provider, provider_mode')
+    .select(PAYTECH_PAYMENT_COLUMNS)
     .eq('provider_token', token)
     .maybeSingle()
 
@@ -187,8 +213,8 @@ export async function POST(req: Request) {
     log.error('PayTech IPN could not read the payment row')
     return NextResponse.json({ error: 'unavailable' }, { status: 503 })
   }
+  const payment = data as PaytechPaymentRow | null
   if (!payment) {
-    // Authenticated but unknown. Not retryable: no payment will appear later.
     log.warn('PayTech IPN referenced a token no payment carries')
     return NextResponse.json({ error: 'unknown_transaction' }, { status: 404 })
   }
@@ -196,172 +222,77 @@ export async function POST(req: Request) {
   // Every notification is recorded, successful or not (obligation 6).
   await touchIpnReceipt({ providerToken: token })
 
-  // The row must actually be a PayTech row. A token collision across providers
-  // is implausible, but fulfilling a PayDunya payment on a PayTech signature
-  // would be a provider-confusion bug, so it is refused explicitly.
-  if (payment.provider !== null && payment.provider !== 'paytech') {
+  if (payment.provider !== 'paytech') {
     log.error({ paymentId: payment.id }, 'PayTech IPN matched a payment from another provider')
     await touchIpnReceipt({ providerToken: token, failureReason: 'provider_confusion' })
     return ack('provider_mismatch')
   }
 
   // ── 5. the signature, against OUR stored values ──
+  // AUTHENTICITY ONLY: the signed message is `amount|ref_command|api_key`,
+  // which contains no outcome. It never proves that money moved.
   const verification = verifyPaytechIpn({
     payload,
     config,
-    expected: {
-      amount:     Number(payment.amount),
-      refCommand: String(payment.reference),
-    },
+    expected: { amount: Number(payment.amount), refCommand: String(payment.reference) },
   })
 
-  // AUTHENTICITY ONLY. This establishes that the sender knows our API secret
-  // and that the notification concerns this amount and this reference. It does
-  // NOT establish that money moved: the signed message is
-  // `amount|ref_command|api_key`, which contains no status field, so
-  // `hmac_compute` is identical for a completion and a cancellation of the
-  // same order. Settlement is decided further down, by asking PayTech.
-  if (!verification.authenticated || verification.strength !== VERIFIED_STRENGTH) {
+  // `authenticated` also requires a SALE event (sale_complete / sale_canceled).
+  // Refunds and transfers are delivered to other URLs; a signed notification
+  // of any other kind is not for this endpoint and is refused, even though the
+  // provider — not the event — would decide the outcome.
+  if (!verification.authenticated
+      || verification.strength !== VERIFIED_STRENGTH
+      || verification.refCommand !== String(payment.reference)) {
     log.error(
       { paymentId: payment.id, strength: verification.strength, reason: verification.reason },
       'PayTech IPN is not authentic for this payment',
     )
-    await touchIpnReceipt({
-      providerToken: token,
-      failureReason: `ipn_${verification.reason ?? 'unverified'}`,
+    const failureReason = `ipn_${verification.reason ?? 'reference_mismatch'}`
+    await touchIpnReceipt({ providerToken: token, failureReason })
+    // It carried our credentials, so it is kept. It proves nothing and grants
+    // nothing, but on a closed payment nothing else would ever find it, and the
+    // signature format is not yet confirmed against a real notification.
+    const kept = await reportPaymentException({
+      paymentId: payment.id, signal: 'unverified_report', source: 'ipn', detail: failureReason,
     })
+    if (!kept.recorded) return retry('exception_unrecorded')
     return ack('unverified')
   }
 
-  // ── 6. the independent cross-check ──
-  // The signature already proves the provider signed OUR amount. This catches
-  // the different failure of a provider that signs one value and reports
-  // another, which no amount of signing would reveal on its own.
+  // ── 6. the independent cross-checks ──
   const claimed = claimedAmount(payload)
   if (claimed !== null && claimed !== Number(payment.amount)) {
     log.error({ paymentId: payment.id }, 'PayTech IPN reported an amount that is not the stored one')
     await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_amount_mismatch' })
+    const kept = await reportPaymentException({
+      paymentId: payment.id, signal: 'amount_mismatch', source: 'ipn', detail: 'ipn_amount_mismatch',
+    })
+    if (!kept.recorded) return retry('exception_unrecorded')
     return ack('amount_mismatch')
   }
-
-  const claimedCurrency = typeof payload.currency === 'string' ? payload.currency.trim() : null
+  const claimedCurrency = typeof payload.currency === 'string' ? payload.currency.trim().toUpperCase() : null
   if (claimedCurrency !== null && claimedCurrency !== payment.currency) {
     log.error({ paymentId: payment.id }, 'PayTech IPN reported a currency that is not the stored one')
     await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_currency_mismatch' })
+    const kept = await reportPaymentException({
+      paymentId: payment.id, signal: 'currency_mismatch', source: 'ipn', detail: 'ipn_currency_mismatch',
+    })
+    if (!kept.recorded) return retry('exception_unrecorded')
     return ack('currency_mismatch')
   }
 
-  if (verification.refCommand !== String(payment.reference)) {
-    // The signature covers our reference, so this should be unreachable; it is
-    // asserted anyway because correlation errors are the expensive kind.
-    log.error({ paymentId: payment.id }, 'PayTech IPN reference did not match the stored reference')
-    await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_reference_mismatch' })
-    return ack('reference_mismatch')
-  }
-
-  // A payment with no learner or no course cannot be fulfilled coherently.
-  if (!payment.user_id || !payment.course_id) {
-    log.error({ paymentId: payment.id }, 'PayTech IPN matched an incomplete payment row')
-    await touchIpnReceipt({ providerToken: token, failureReason: 'payment_identity_incomplete' })
-    return ack('incomplete_payment')
-  }
-
-  // ── 7. SETTLEMENT: ask PayTech, over a channel the payer cannot influence ──
-  //
-  // This is the fix for the XP-PAYTECH-01 defect. `type_event` is NOT part of
-  // the signed message, so the notification's own claim about the outcome is
-  // unauthenticated: a party holding one authentic notification for this order
-  // could flip `sale_canceled` to `sale_complete` and the signature would
-  // still verify. The event is therefore demoted to a HINT — it tells us a
-  // check is worth making, and nothing more.
-  //
-  // `confirmPaymentStatus()` never throws and never guesses: a transport
-  // failure, a refusal, an unparseable body and an unrecognised status all
-  // resolve to `unknown`, which fulfils nothing.
-  const settlement = await confirmPaymentStatus(token)
-
-  log.info(
-    { paymentId: payment.id, hint: verification.event, settlement: settlement.outcome },
-    'PayTech settlement confirmed server-to-server',
-  )
-
-  // The confirmed amount, where PayTech reports one, must be ours. The IPN's
-  // claimed amount was already checked; this checks the authoritative source.
-  if (settlement.amount !== null && settlement.amount !== Number(payment.amount)) {
-    log.error({ paymentId: payment.id }, 'PayTech confirmed an amount that is not the stored one')
-    await touchIpnReceipt({ providerToken: token, failureReason: 'settlement_amount_mismatch' })
-    return ack('amount_mismatch')
-  }
-
-  if (settlement.outcome === 'cancelled') {
-    // Out-of-order safety: `recordTerminalFailure` refuses to touch a payment
-    // that is already `completed`, so a late cancellation cannot revoke a
-    // verified purchase.
-    const { changed } = await recordTerminalFailure({
-      providerToken: token,
-      status:        'cancelled',
-      failureReason: 'settlement_cancelled',
-    })
-    return ack(changed ? 'cancelled' : 'already_terminal')
-  }
-
-  if (settlement.outcome !== 'paid') {
-    // 'pending' and 'unknown' both land here. Nothing is written beyond
-    // forensics, and the provider is told we received it: a retry would ask
-    // the same question and get the same answer, and a pending transaction
-    // will produce its own notification when it settles.
-    await touchIpnReceipt({
-      providerToken: token,
-      failureReason: `settlement_${settlement.outcome}`,
-    })
-    log.error(
-      { paymentId: payment.id, settlement: settlement.outcome },
-      'PayTech did not confirm settlement; fulfilling nothing',
-    )
-    return ack(`unsettled:${settlement.outcome}`)
-  }
-
-  // `complete_payment()` serialises on the locked payment row, so two
-  // concurrent notifications for the same token cannot both fulfil: the second
-  // observes 'completed' and returns `already_completed`.
-  const outcome = await completeVerifiedPayment({
-    provider:          'paytech',
-    providerMode:      config.providerMode,
-    providerToken:     token,
-    providerReference: String(payment.reference),
-    reference:         String(payment.reference),
-    amount:            Number(payment.amount),
-    currency:          String(payment.currency),
-  })
-
-  if (outcome.kind === 'already_completed') {
-    // A SUCCESS. Acking it is what stops the provider redelivering (obligation 8).
-    log.info({ paymentId: payment.id }, 'PayTech IPN was a duplicate of a completed payment')
-    return ack('already_completed')
-  }
-
-  if (outcome.kind === 'refused') {
-    await touchIpnReceipt({ providerToken: token, failureReason: outcome.reason })
-    log.error(
-      { paymentId: payment.id, reason: outcome.reason, retryable: outcome.retryable },
-      'payment completion refused',
-    )
-    // Only the retryable one asks the provider to come back.
-    return outcome.retryable
-      ? NextResponse.json({ error: 'retry' }, { status: 503 })
-      : ack(`refused:${outcome.reason}`)
-  }
-
-  log.info({ paymentId: payment.id }, 'payment completed and entitlement granted')
-  return ack('completed')
+  // ── 7. reconcile: the provider decides, not the notification ──
+  // `type_event` (verification.event) is outside the signature. It never decides
+  // an outcome. It only decides whether a report is kept for a human to check.
+  const result = await reconcilePaytechPayment(payment, { source: 'ipn', hint: verification.event })
+  log.info({ paymentId: payment.id, hint: verification.event, result: result.kind }, 'PayTech IPN reconciled')
+  return respond(result)
 }
 
 /**
- * Everything that is not POST.
- *
- * Next.js already answers an undeclared method with 405, but declaring these
- * makes the refusal explicit and testable rather than incidental — and makes it
- * obvious that a GET to this path can never fulfil anything.
+ * Everything that is not POST. Declared so the refusal is explicit and
+ * testable: a GET to this path can never fulfil anything.
  */
 export async function GET() {
   return NextResponse.json({ error: 'method_not_allowed' }, { status: 405 })

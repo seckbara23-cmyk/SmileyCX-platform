@@ -108,7 +108,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     // slice that MAY add columns but must leave that policy set alone.
     expect(f.filter(x => parseInt(x, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
-                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
+                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
@@ -141,7 +141,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(64)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -553,11 +553,14 @@ describe('PAY-1 · 6/7/8. T1: no browser role may mutate a payment', () => {
       .not.toMatch(/from '@\/lib\/supabase\/server'/)
     // The listing page still reads payments, and still only with the admin client.
     expect(read('app/(admin)/admin/payments/page.tsx')).toMatch(/createAdminClient/)
-    // Payment CREATION is untouched by PAY-2C-0 and still on the admin client.
-    const create = read('app/actions/payment.ts')
+    // XP-PAYTECH-04 retired the legacy creation action (it imports nothing
+    // now). Payment creation lives in the PayTech checkout action, still on
+    // the admin client, still never 'completed'.
+    const legacy = read('app/actions/payment.ts')
+    expect(legacy, 'the retired action constructs a client').not.toMatch(/createAdminClient|createClient/)
+    const create = read('app/actions/paytech-checkout.ts')
     expect(create, 'payment creation must stay on the admin client').toMatch(/createAdminClient/)
-    expect(create).toMatch(/\.from\('payments'\)\s*\n?\s*\.insert/)
-    // ...and it remains the ONLY payments mutation in the codebase.
+    expect(create).not.toMatch(/from '@\/lib\/supabase\/server'[\s\S]*\.from\('payments'\)[\s\S]{0,40}supabase/)
     expect(create).not.toMatch(/status:\s*'completed'/)
   })
 
@@ -694,16 +697,18 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     // transport and IPN verification, plus the completion chokepoint and
     // provider selection.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
-      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts',
-      'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'providers.ts',
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
     ])
   })
 
   it('payment creation, the feature flag and the stub are all untouched', () => {
+    // XP-PAYTECH-04 retired the legacy creation action into a refusal. The
+    // property this pinned — the legacy action wires no provider — holds
+    // trivially: it imports nothing and writes nothing.
     const create = read('app/actions/payment.ts')
-    expect(create).toMatch(/if \(!PAYMENTS_ENABLED\)/)
-    expect(create).toMatch(/status:\s+'pending'/)
-    expect(create, 'PAY-1 must not wire a provider into checkout creation')
+    expect(create).toMatch(/RETIRED by XP-PAYTECH-04/)
+    expect(create, 'the retired action writes').not.toMatch(/\.insert\(|\.update\(|from\(/)
+    expect(create, 'PAY-1 must not wire a provider into the legacy action')
       .not.toMatch(/PAYDUNYA|provider_mode|provider_token|entitlement_id/i)
     expect(process.env.NEXT_PUBLIC_PAYMENTS_ENABLED ?? 'unset').not.toBe('true')
     if (existsSync(join(ROOT, '.env.local'))) {
@@ -759,13 +764,13 @@ describe('PAY-1 · the gates recorded for after this slice', () => {
     // its columns before 059 withdraws the table-wide grant — so now that the
     // projection has shipped, that is what it checks: the reader is explicit,
     // it withholds both columns 059 withholds, and 059 itself is still to come.
+    // XP-PAYTECH-04 retired the reader entirely: the page is a redirect and
+    // selects nothing, so neither withheld column can be projected.
     const confirm = read('app/(platform)/checkout/confirm/page.tsx')
-    expect(confirm, 'the broad SELECT came back').not.toMatch(/\.select\('\*/)
-    expect(confirm).toMatch(/\.select\('id, reference, amount, currency, status, courses\(title\)'\)/)
-    for (const withheld of ['provider_token', 'metadata']) {
-      expect(confirm.match(/\.select\('([^']*)'\)/)?.[1], `${withheld} is still projected`)
-        .not.toContain(withheld)
-    }
+    expect(confirm, 'the broad SELECT came back').not.toMatch(/\.select\(/)
+    expect(confirm, 'provider_token is read').not.toContain('provider_token')
+    // `metadata` here is Next's route export; a PAYMENT metadata read would be a dereference.
+    expect(confirm, 'payment metadata is read').not.toMatch(/payment\??\.metadata|data\??\.metadata/)
     // THE ORDERING IS NOW COMPLETE. This used to assert 059 did not exist
     // yet — the application step had to come first. It has, and PAY-1B(b) has
     // since authored 059, so what remains to assert is that 059 withholds

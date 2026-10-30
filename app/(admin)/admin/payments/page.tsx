@@ -1,151 +1,329 @@
+import Link from 'next/link'
 import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
+import {
+  countOpenPaymentExceptions,
+  paymentExceptionQueue,
+  watchedPaymentIds,
+} from '@/lib/payments/payment-exceptions'
+import { verifyPaytechPayment, closeUnpaidPaytechPayment } from './reconcile-actions'
+import ExceptionQueue from './ExceptionQueue'
 import type { Metadata } from 'next'
 
-// PAY-2C-0. `activateEnrollment` is deliberately NOT imported any more. It used
-// to mark a payment completed and create an ENROLLMENT, which since XPA-6B
-// authorizes nothing — the learner paid, the payment read "Confirmé", and the
-// course stayed shut. This page now reads payments and nothing else; the action
-// itself refuses, so a stale page cannot complete a payment either.
+// PAY-2C-0. `activateEnrollment` is deliberately NOT imported: it marked a
+// payment completed without the provider, and it now refuses. XP-PAYTECH-04
+// adds the only two operator actions a payment may receive — "ask PayTech" and
+// "close as unpaid after a manual check" — neither of which can mark one paid.
+// XP-PAYTECH-05 adds the exception queue, whose decisions sit on the exception
+// record and cannot mark a payment paid either.
 
 export const metadata: Metadata = { title: 'Admin — Paiements' }
 
-export default async function AdminPaymentsPage() {
+/** Every status 060 admits, labelled. XP-PAYTECH-READY-01 A1: these used to fall through to "Remboursé". */
+const STATUS_LABEL: Record<string, string> = {
+  completed:  'Confirmé',
+  pending:    'En attente',
+  processing: 'En cours',
+  failed:     'Échoué',
+  cancelled:  'Annulé',
+  expired:    'Expiré',
+  refunded:   'Remboursé',
+}
+
+const STATUS_COLOR: Record<string, string> = {
+  completed:  'bg-green-100 text-green-700',
+  pending:    'bg-yellow-100 text-yellow-700',
+  processing: 'bg-blue-100 text-blue-700',
+  failed:     'bg-red-100 text-red-600',
+  cancelled:  'bg-gray-100 text-gray-600',
+  expired:    'bg-gray-100 text-gray-600',
+  refunded:   'bg-purple-100 text-purple-700',
+}
+
+const METHOD_LABEL: Record<string, string> = {
+  orange_money: 'Orange Money',
+  wave:         'Wave',
+  card:         'Carte',
+}
+
+/** Fixed operator messages, keyed by the code the actions redirect with. Nothing is reflected. */
+const NOTICE: Record<string, string> = {
+  verify_completed:         'PayTech a confirmé le paiement : il est enregistré et l’accès est accordé.',
+  verify_already_completed: 'Ce paiement était déjà confirmé.',
+  verify_failed:            'PayTech indique un échec : le paiement est clôturé.',
+  verify_cancelled:         'PayTech indique une annulation : le paiement est clôturé.',
+  verify_already_terminal:  'Ce paiement était déjà clôturé.',
+  verify_pending:           'PayTech indique un paiement en attente : rien n’a été modifié.',
+  verify_unknown:           'PayTech n’a pas pu donner de réponse exploitable (contrat de statut non confirmé, ou service injoignable). Rien n’a été modifié.',
+  verify_refused:           'PayTech indique un paiement que la plateforme refuse d’honorer automatiquement (voir « Motif »). Décision manuelle requise — remboursement ou accès.',
+  verify_ineligible:        'Ce paiement ne peut pas être vérifié automatiquement (voir « Motif »).',
+  verify_exception_unrecorded: 'PayTech a signalé un paiement qui n’a pas pu être enregistré. Rien n’a été modifié. Réessayez.',
+  close_done:               'Paiement clôturé comme non abouti. L’apprenant peut relancer un paiement.',
+  close_done_exception:     'Paiement clôturé, mais une notification reçue pour cette tentative reste à vérifier : une anomalie est ouverte et l’apprenant ne peut pas relancer de paiement tant qu’elle n’est pas traitée.',
+  exception_confirm_received_done: 'Réception des fonds enregistrée. Aucun accès n’a été accordé.',
+  exception_dismiss_done:   'Anomalie classée : rien à rembourser.',
+  exception_require_refund_done: 'Remboursement marqué comme nécessaire. Rien n’a été envoyé : effectuez-le auprès de PayTech, puis enregistrez-le ici.',
+  exception_record_access_done: 'Accès rattaché à ce paiement. Aucun accès n’a été créé par cette action.',
+  exception_refund_recorded: 'Remboursement enregistré.',
+  exception_refund_recorded_access_live: 'Remboursement enregistré. L’apprenant garde un accès actif à cette formation : révoquez-le dans Accès formations si nécessaire.',
+  exception_refund_already_recorded: 'Ce remboursement était déjà enregistré.',
+  exception_refund_invalid: 'Référence, montant, devise ou date du remboursement invalide.',
+  exception_rechecked:      'PayTech a été interrogé si un contrat de statut est confirmé. Consultez l’état ci-dessous.',
+  exception_refused_exception_not_open: 'Cette anomalie n’est plus ouverte. Actualisez.',
+  exception_refused_exception_not_found: 'Anomalie introuvable.',
+  exception_refused_receipt_already_confirmed: 'La réception des fonds est déjà confirmée.',
+  exception_refused_receipt_not_confirmed: 'Confirmez d’abord la réception des fonds.',
+  exception_refused_payment_confirmed_cannot_dismiss: 'Refusé : des fonds sont confirmés reçus. Cette anomalie ne peut pas être classée sans suite.',
+  exception_refused_refund_already_decided: 'Une décision de remboursement existe déjà.',
+  exception_refused_refund_not_required: 'Marquez d’abord le remboursement comme nécessaire.',
+  exception_refused_no_live_entitlement: 'Refusé : cet apprenant n’a aucun accès actif à cette formation. Accordez-le d’abord dans Accès formations.',
+  exception_refused_refund_already_recorded: 'Refusé : un autre remboursement est déjà enregistré pour cette anomalie.',
+  exception_refused_refund_reference_reused: 'Refusé : cette référence de remboursement est déjà utilisée.',
+  exception_refused_refund_reference_invalid: 'Référence de remboursement invalide.',
+  exception_refused_refund_amount_invalid: 'Refusé : le montant doit être positif et ne pas dépasser le montant du paiement.',
+  exception_refused_refund_partial_not_supported: 'Refusé : seul un remboursement intégral peut être enregistré. Rien n’a été modifié.',
+  exception_refused_receipt_not_operator_confirmed: 'Seule une confirmation faite par un administrateur peut être annulée.',
+  exception_withdraw_receipt_done: 'Confirmation de réception annulée.',
+  exception_acknowledge_report_done: 'Signalement marqué comme vérifié. L’apprenant peut de nouveau relancer un paiement.',
+  exception_refused_no_report_to_review: 'Aucun signalement à vérifier sur cette anomalie.',
+  exception_withdraw_refund_done: 'Décision de remboursement annulée.',
+  exception_refused_refund_currency_mismatch: 'Refusé : la devise ne correspond pas au paiement.',
+  exception_refused_refund_date_invalid: 'Refusé : la date doit être comprise entre la création du paiement et aujourd’hui.',
+  exception_refused_environment_refused: 'Opération refusée sur ce déploiement : il ne peut pas agir sur cette base de données. Rien n’a été modifié.',
+  close_refused_provider_says_paid:    'Clôture refusée : PayTech indique que ce paiement a abouti.',
+  close_refused_provider_says_pending: 'Clôture refusée : PayTech indique que ce paiement peut encore être réglé.',
+  close_refused_not_open:   'Clôture refusée : ce paiement n’est plus en cours.',
+  close_refused_ineligible: 'Clôture refusée : ce paiement ne relève pas de PayTech.',
+  close_refused_race:       'Clôture refusée : le paiement a changé entre-temps. Actualisez.',
+  close_reason_required:    'Indiquez un motif (10 caractères minimum).',
+  close_attestation_required: 'Cochez la confirmation de vérification dans le tableau de bord PayTech.',
+  environment_refused:      'Opération refusée sur ce déploiement : il ne peut pas agir sur cette base de données. Rien n’a été modifié.',
+  close_refused_environment_refused: 'Opération refusée sur ce déploiement : il ne peut pas agir sur cette base de données. Rien n’a été modifié.',
+  rate_limited:             'Trop de demandes. Réessayez dans quelques minutes.',
+  not_found:                'Paiement introuvable.',
+  invalid:                  'Demande invalide.',
+}
+
+interface Props { searchParams?: Promise<{ filter?: string; notice?: string }> }
+
+interface PaymentRow {
+  id: string
+  amount: number | string
+  currency: string
+  method: string
+  status: string
+  reference: string
+  provider: string | null
+  provider_mode: string | null
+  failure_reason: string | null
+  last_ipn_at: string | null
+  created_at: string
+  completed_at: string | null
+  profiles: { full_name: string | null; email: string } | null
+  courses: { title: string } | null
+}
+
+const STALE_MS = 30 * 60 * 1000
+
+/** Needs a human: stale in flight, or carrying a refusal or an unresolved check. */
+function needsReconciliation(p: PaymentRow, now: number): boolean {
+  if (p.provider !== 'paytech') return false
+  const inFlight = p.status === 'pending' || p.status === 'processing'
+  return (inFlight && now - new Date(p.created_at).getTime() > STALE_MS) || p.failure_reason !== null
+}
+
+export default async function AdminPaymentsPage({ searchParams }: Props) {
   await requirePlatformAdmin()
+  const params = (await searchParams) ?? {}
+  const reconcileOnly = params.filter === 'reconcile'
+  const exceptionsOnly = params.filter === 'exceptions'
+  // A refusal this page has no words for must still be seen.
+  const notice = params.notice
+    ? NOTICE[params.notice]
+      ?? (params.notice.startsWith('exception_refused_') ? 'Décision refusée. Rien n’a été modifié. Réessayez.' : null)
+    : null
   const supabase = createAdminClient()
 
-  const { data: payments } = await supabase
+  const { data } = await supabase
     .from('payments')
-    .select('id, amount, currency, method, status, reference, created_at, completed_at, profiles(full_name, email), courses(title)')
+    .select('id, amount, currency, method, status, reference, provider, provider_mode, failure_reason, last_ipn_at, created_at, completed_at, profiles(full_name, email), courses(title)')
     .order('created_at', { ascending: false })
-    .limit(100)
+    .limit(200)
 
   const { data: revData } = await supabase
     .from('payments')
-    .select('amount')
+    .select('amount, provider_mode')
     .eq('status', 'completed')
 
-  const totalRevenue = revData?.reduce((sum, p) => sum + Number(p.amount), 0) ?? 0
+  // Revenue is money that moved in LIVE mode (or a pre-provider manual sale).
+  // A test-mode completion is never revenue — and migration 063 refuses one in
+  // a live database anyway.
+  const completed = (revData ?? []) as { amount: number | string; provider_mode: string | null }[]
+  const totalRevenue = completed.filter(p => p.provider_mode !== 'test').reduce((s, p) => s + Number(p.amount), 0)
+  const testExcluded = completed.filter(p => p.provider_mode === 'test').length
 
-  const statusColor: Record<string, string> = {
-    completed:  'bg-green-100 text-green-700',
-    pending:    'bg-yellow-100 text-yellow-700',
-    processing: 'bg-blue-100 text-blue-700',
-    failed:     'bg-red-100 text-red-600',
-    refunded:   'bg-gray-100 text-gray-500',
-  }
+  // Absent until migration 064 is applied. The page must still render: a failed
+  // read shows as "unavailable", never as an empty queue.
+  const [openExceptions, exceptions, watched] = await Promise.all([
+    countOpenPaymentExceptions(),
+    exceptionsOnly ? paymentExceptionQueue() : Promise.resolve(null),
+    watchedPaymentIds(),
+  ])
 
-  const methodLabel: Record<string, string> = {
-    orange_money: 'Orange Money',
-    wave:         'Wave',
-    card:         'Carte',
-  }
+  const now = Date.now()
+  const all = (data ?? []) as unknown as PaymentRow[]
+  const toReconcile = all.filter(p => needsReconciliation(p, now))
+  const payments = reconcileOnly ? toReconcile : all.slice(0, 100)
 
   return (
-    <div className="p-4 sm:p-6 max-w-6xl mx-auto space-y-6">
+    <div className="p-4 sm:p-6 max-w-7xl mx-auto space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-extrabold text-gray-900">Paiements</h1>
-          <p className="text-sm text-gray-400 mt-0.5">{payments?.length ?? 0} transaction(s)</p>
+          <p className="text-sm text-gray-400 mt-0.5">{payments.length} transaction(s)</p>
+          <div className="mt-2 flex gap-3 text-sm">
+            <Link href="/admin/payments" className={reconcileOnly || exceptionsOnly ? 'text-gray-500 hover:underline' : 'font-semibold text-gray-900'}>
+              Toutes
+            </Link>
+            <Link href="/admin/payments?filter=reconcile" className={reconcileOnly ? 'font-semibold text-gray-900' : 'text-gray-500 hover:underline'}>
+              À rapprocher ({toReconcile.length})
+            </Link>
+            <Link href="/admin/payments?filter=exceptions" className={exceptionsOnly ? 'font-semibold text-gray-900' : 'text-gray-500 hover:underline'}>
+              Anomalies ({openExceptions ?? '?'})
+            </Link>
+          </div>
         </div>
         <div className="text-right">
           <p className="text-2xl font-extrabold text-gray-900">{totalRevenue.toLocaleString('fr-FR')} FCFA</p>
-          <p className="text-xs text-gray-400">Revenus confirmés</p>
+          <p className="text-xs text-gray-400">Revenus confirmés (mode réel)</p>
+          {testExcluded > 0 && (
+            <p className="text-xs text-amber-600 mt-0.5">{testExcluded} paiement(s) de test exclu(s)</p>
+          )}
         </div>
       </div>
 
-      {/* PAY-2C-0. Stated on the page, not only in the code, because the person
-          who used to press "Activer" needs to know why it is gone and what to
-          do instead. */}
-      <div
-        role="status"
-        className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900"
-      >
-        <p className="font-semibold">Activation manuelle des paiements indisponible</p>
+      {notice && (
+        <div role="status" className="rounded-2xl border border-blue-200 bg-blue-50 px-5 py-3 text-sm text-blue-900">
+          {notice}
+        </div>
+      )}
+
+      {!exceptionsOnly && (openExceptions ?? 0) > 0 && (
+        <div role="alert" className="rounded-2xl border border-red-200 bg-red-50 px-5 py-3 text-sm text-red-800">
+          <Link href="/admin/payments?filter=exceptions" className="font-semibold underline">
+            {openExceptions} anomalie(s) de paiement à traiter
+          </Link>
+          {' '}: de l’argent a peut-être été reçu sans accès accordé.
+        </div>
+      )}
+
+      <div role="note" className="rounded-2xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-900">
+        <p className="font-semibold">Aucun paiement ne peut être marqué « payé » à la main</p>
         <p className="mt-1 text-amber-800">
-          Le bouton « Activer » a été retiré : il marquait le paiement comme confirmé
-          et créait une inscription, sans accorder le droit d&apos;accès à la formation.
-          L&apos;apprenant payait et n&apos;obtenait rien. L&apos;activation sera rétablie avec
-          l&apos;intégration sécurisée PayDunya, qui confirmera chaque paiement auprès du
-          prestataire avant d&apos;accorder l&apos;accès.
-        </p>
-        <p className="mt-1 text-amber-800">
-          Pour accorder un accès dès maintenant, utilisez{' '}
-          <span className="font-semibold">Admin → Accès</span> : la demande y est
-          vérifiée, tracée et limitée en débit.
+          Un paiement n&apos;est confirmé que lorsque PayTech le confirme, de serveur à serveur.
+          « Vérifier » interroge PayTech ; « Clôturer » enregistre, après vérification dans le
+          tableau de bord PayTech, qu&apos;un paiement n&apos;a pas abouti — cela n&apos;accorde rien
+          et permet seulement à l&apos;apprenant de réessayer. Pour accorder un accès sans paiement,
+          utilisez <span className="font-semibold">Admin → Accès</span>.
         </p>
       </div>
 
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-        {!payments?.length ? (
-          <p className="text-sm text-gray-400 text-center py-16">Aucun paiement pour l&apos;instant.</p>
+      {exceptionsOnly ? <ExceptionQueue exceptions={exceptions} /> : (
+      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
+        {payments.length === 0 ? (
+          <p className="text-sm text-gray-400 text-center py-16">
+            {reconcileOnly ? 'Aucun paiement à rapprocher.' : 'Aucun paiement pour l’instant.'}
+          </p>
         ) : (
-          <div className="divide-y divide-gray-50">
-            <div className="hidden sm:grid sm:grid-cols-[1fr_1fr_100px_100px_110px_120px_100px] gap-3 px-5 py-3 bg-gray-50 text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <span>Client</span>
-              <span>Formation</span>
-              <span>Montant</span>
-              <span>Méthode</span>
-              <span>Statut</span>
-              <span>Date</span>
-              <span>Actions</span>
-            </div>
-
-            {payments.map(p => {
-              const user   = p.profiles as unknown as { full_name: string | null; email: string } | null
-              const course = p.courses  as unknown as { title: string } | null
-              return (
-                <div key={p.id} className="hover:bg-gray-50/60 transition-colors">
-                  <div className="hidden sm:grid sm:grid-cols-[1fr_1fr_100px_100px_110px_120px_100px] gap-3 px-5 py-3.5 items-center">
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-gray-800 truncate">{user?.full_name || user?.email || '—'}</p>
-                      <p className="text-xs text-gray-400 font-mono truncate">{p.reference}</p>
-                    </div>
-                    <span className="text-sm text-gray-600 truncate">{course?.title || '—'}</span>
-                    <span className="text-sm font-semibold text-gray-800">{Number(p.amount).toLocaleString('fr-FR')} {p.currency}</span>
-                    <span className="text-xs text-gray-500">{methodLabel[p.method] || p.method}</span>
-                    <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${statusColor[p.status] ?? 'bg-gray-100 text-gray-500'}`}>
-                      {p.status === 'completed' ? 'Confirmé' : p.status === 'pending' ? 'En attente' : p.status === 'processing' ? 'En cours' : p.status === 'failed' ? 'Échoué' : 'Remboursé'}
-                    </span>
-                    <span className="text-xs text-gray-400">{new Date(p.created_at).toLocaleDateString('fr-FR')}</span>
-                    <div className="flex gap-1">
-                      {p.status === 'pending' && (
-                        <span
-                          className="text-xs px-2 py-1 bg-gray-100 text-gray-400 rounded"
-                          title="Indisponible : l'activation manuelle accordait une inscription sans droit d'accès. En attente de l'intégration sécurisée PayDunya."
-                        >
-                          Indisponible
-                        </span>
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-50 text-xs font-bold text-gray-400 uppercase tracking-wider">
+              <tr>
+                <th className="px-4 py-3 text-left">Client / Référence</th>
+                <th className="px-4 py-3 text-left">Formation</th>
+                <th className="px-4 py-3 text-left">Montant</th>
+                <th className="px-4 py-3 text-left">Prestataire</th>
+                <th className="px-4 py-3 text-left">Statut</th>
+                <th className="px-4 py-3 text-left">Motif</th>
+                <th className="px-4 py-3 text-left">Dates</th>
+                <th className="px-4 py-3 text-left">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {payments.map(p => {
+                const actionable = p.provider === 'paytech' && (p.status === 'pending' || p.status === 'processing')
+                return (
+                  <tr key={p.id} className="align-top hover:bg-gray-50/60">
+                    <td className="px-4 py-3">
+                      <p className="font-medium text-gray-800">{p.profiles?.full_name || p.profiles?.email || '—'}</p>
+                      <p className="text-xs text-gray-400 font-mono">{p.reference}</p>
+                    </td>
+                    <td className="px-4 py-3 text-gray-600">{p.courses?.title || '—'}</td>
+                    <td className="px-4 py-3 font-semibold text-gray-800 whitespace-nowrap">
+                      {Number(p.amount).toLocaleString('fr-FR')} {p.currency}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-600">
+                      {p.provider === 'paytech' ? 'PayTech' : p.provider ?? (METHOD_LABEL[p.method] ?? p.method)}
+                      {p.provider_mode === 'test' && (
+                        <span className="ml-1 rounded bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700">TEST</span>
                       )}
-                    </div>
-                  </div>
-
-                  {/* Mobile */}
-                  <div className="sm:hidden px-4 py-3.5">
-                    <div className="flex items-start justify-between gap-2">
-                      <div>
-                        <p className="text-sm font-medium text-gray-800">{user?.full_name || user?.email}</p>
-                        <p className="text-xs text-gray-400">{course?.title}</p>
-                      </div>
-                      <div className="text-right shrink-0">
-                        <p className="text-sm font-semibold text-gray-800">{Number(p.amount).toLocaleString('fr-FR')} FCFA</p>
-                        <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${statusColor[p.status] ?? 'bg-gray-100 text-gray-500'}`}>
-                          {p.status}
-                        </span>
-                        {p.status === 'pending' && (
-                          <span className="mt-1 inline-block text-xs px-2 py-1 bg-gray-100 text-gray-400 rounded">
-                            Indisponible
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
+                      {p.provider_mode === 'live' && <span className="ml-1 text-gray-400">réel</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`text-xs font-semibold px-2.5 py-0.5 rounded-full ${STATUS_COLOR[p.status] ?? 'bg-gray-100 text-gray-500'}`}>
+                        {STATUS_LABEL[p.status] ?? p.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-xs font-mono text-gray-500">
+                      {p.failure_reason ?? '—'}
+                      {watched.has(p.id) && (
+                        <p role="alert" className="mt-1 font-sans font-semibold text-red-700">
+                          PayTech a notifié un paiement pour cette tentative. Vérifiez avant de clôturer.
+                        </p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                      <p>Créé {new Date(p.created_at).toLocaleString('fr-FR')}</p>
+                      {p.last_ipn_at && <p>Notifié {new Date(p.last_ipn_at).toLocaleString('fr-FR')}</p>}
+                      {p.completed_at && <p>Confirmé {new Date(p.completed_at).toLocaleString('fr-FR')}</p>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {actionable ? (
+                        <div className="flex flex-col gap-2 min-w-[14rem]">
+                          <form action={verifyPaytechPayment}>
+                            <input type="hidden" name="paymentId" value={p.id} />
+                            <button type="submit" className="text-xs px-2 py-1 rounded bg-blue-600 text-white hover:bg-blue-700">
+                              Vérifier auprès de PayTech
+                            </button>
+                          </form>
+                          <details>
+                            <summary className="cursor-pointer text-xs text-gray-500">Clôturer comme non abouti…</summary>
+                            <form action={closeUnpaidPaytechPayment} className="mt-2 flex flex-col gap-1.5">
+                              <input type="hidden" name="paymentId" value={p.id} />
+                              <textarea name="reason" required minLength={10} maxLength={500} rows={2}
+                                placeholder="Motif (vérification effectuée, échange avec l’apprenant…)"
+                                className="text-xs border rounded p-1" />
+                              <label className="flex items-start gap-1.5 text-xs text-gray-600">
+                                <input type="checkbox" name="attest" value="yes" required />
+                                J&apos;ai vérifié dans le tableau de bord PayTech que ce paiement n&apos;a pas abouti.
+                              </label>
+                              <button type="submit" className="text-xs px-2 py-1 rounded bg-gray-700 text-white hover:bg-gray-800">
+                                Clôturer
+                              </button>
+                            </form>
+                          </details>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-gray-300">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
         )}
       </div>
+      )}
     </div>
   )
 }

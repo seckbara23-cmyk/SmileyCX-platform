@@ -73,10 +73,10 @@ describe('CAT-ARCH-02 — 057 exists, alone, as one transaction', () => {
     expect(f.filter(x => parseInt(x, 10) > 57))
       .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                 '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                '062_atomic_payment_completion.sql'])
+                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     for (const later of ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                          '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                         '062_atomic_payment_completion.sql']) {
+                         '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql']) {
       const m = read('supabase/migrations/' + later).replace(/--[^\n]*/g, '')
       for (const t of ['course_codes', 'catalogues', 'courses', 'modules', 'lessons']) {
         expect(m, `${later} writes public.${t}`)
@@ -84,7 +84,7 @@ describe('CAT-ARCH-02 — 057 exists, alone, as one transaction', () => {
       }
     }
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(64)
     expect(new Set(nums).size).toBe(nums.length)
   })
 

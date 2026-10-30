@@ -77,6 +77,10 @@ vi.mock('@/lib/auth/course-access', () => ({
   resolveCourseAccessById: async () => state.access,
 }))
 
+vi.mock('@/lib/payments/payment-database-guard', () => ({
+  paymentDatabaseAuthority: async () => ({ allowed: true, reason: null }),
+}))
+
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
     from(table: string) {
@@ -88,6 +92,9 @@ vi.mock('@/lib/supabase/admin', () => ({
         in:     () => { isPendingLookup = true; return chain },
         eq:     () => chain,
         neq:    () => chain,
+        is:     () => chain,
+        not:    () => chain,
+        lt:     () => chain,
         update: (patch: Record<string, unknown>) => { state.updates.push(patch); return chain },
         insert: (patch: Record<string, unknown>) => { state.inserted.push(patch); return chain },
         maybeSingle: async () => {
@@ -100,7 +107,9 @@ vi.mock('@/lib/supabase/admin', () => ({
             : { data: { id: 'pay-1' }, error: null },
         then: (res: (v: unknown) => unknown) =>
           Promise.resolve(
-            state.updateFails ? { data: null, error: { message: 'update failed' } } : { data: [{ id: 'pay-1' }], error: null },
+            // XP-PAYTECH-04: checkout reads the learner's entitlements before taking money.
+            table === 'entitlements' ? { data: [], error: null }
+            : state.updateFails ? { data: null, error: { message: 'update failed' } } : { data: [{ id: 'pay-1' }], error: null },
           ).then(res),
       }
       return chain
@@ -119,7 +128,7 @@ beforeEach(() => {
   state.insertFails = false
   state.updateFails = false
 
-  vi.stubEnv('PAYTECH_ENABLED', 'true')
+  vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', 'true')
   vi.stubEnv('PAYTECH_MODE', 'test')
   vi.stubEnv('PAYTECH_TEST_API_KEY', API_KEY)
   vi.stubEnv('PAYTECH_TEST_API_SECRET', API_SECRET)
@@ -194,33 +203,57 @@ describe('XP-PAYTECH-01 · configuration boundary', () => {
   })
 })
 
-describe('XP-PAYTECH-01 · provider selection (Phase F)', () => {
+describe('XP-PAYTECH-01 · provider selection (Phase F, split by XP-PAYTECH-04)', () => {
   const full = {
-    PAYTECH_ENABLED: 'true', PAYTECH_MODE: 'test',
+    PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test',
     PAYTECH_TEST_API_KEY: API_KEY, PAYTECH_TEST_API_SECRET: API_SECRET,
   }
+  const prod = {
+    PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'prod', VERCEL_ENV: 'production',
+    PAYTECH_PROD_API_KEY: API_KEY, PAYTECH_PROD_API_SECRET: API_SECRET,
+  }
 
-  it('is unavailable unless PAYTECH_ENABLED is exactly true', async () => {
-    const { paytechAvailability } = await import('@/lib/payments/providers')
+  it('new checkouts are unavailable unless PAYTECH_CHECKOUT_ENABLED is exactly true', async () => {
+    const { paytechCheckoutAvailability } = await import('@/lib/payments/providers')
     for (const v of [undefined, '', 'false', 'TRUE', '1', 'yes']) {
-      const env = { ...full, PAYTECH_ENABLED: v } as Record<string, string | undefined>
-      expect(paytechAvailability(env).available, String(v)).toBe(false)
+      const env = { ...full, PAYTECH_CHECKOUT_ENABLED: v } as Record<string, string | undefined>
+      expect(paytechCheckoutAvailability(env).available, String(v)).toBe(false)
     }
-    expect(paytechAvailability(full).available).toBe(true)
+    expect(paytechCheckoutAvailability(full).available).toBe(true)
+    // The retired switch enables nothing.
+    expect(paytechCheckoutAvailability({ ...full, PAYTECH_CHECKOUT_ENABLED: undefined, PAYTECH_ENABLED: 'true' }).available)
+      .toBe(false)
   })
 
   it('is unavailable when credentials do not resolve, even if enabled', async () => {
-    const { paytechAvailability } = await import('@/lib/payments/providers')
-    const r = paytechAvailability({ PAYTECH_ENABLED: 'true' })
+    const { paytechCheckoutAvailability } = await import('@/lib/payments/providers')
+    const r = paytechCheckoutAvailability({ PAYTECH_CHECKOUT_ENABLED: 'true' })
     expect(r.available).toBe(false)
     expect(r.blockedBy).toMatch(/credentials/)
   })
 
   it('needs a SECOND explicit approval in production', async () => {
-    const { paytechAvailability } = await import('@/lib/payments/providers')
-    const prod = { ...full, VERCEL_ENV: 'production' }
-    expect(paytechAvailability(prod).available).toBe(false)
-    expect(paytechAvailability({ ...prod, PAYTECH_ALLOW_PRODUCTION: 'true' }).available).toBe(true)
+    const { paytechCheckoutAvailability } = await import('@/lib/payments/providers')
+    expect(paytechCheckoutAvailability(prod).available).toBe(false)
+    expect(paytechCheckoutAvailability({ ...prod, PAYTECH_ALLOW_PRODUCTION: 'true' }).available).toBe(true)
+  })
+
+  it('XP-PAYTECH-04: test mode is refused in production, live mode everywhere else', async () => {
+    const { paytechCheckoutAvailability, paytechProcessingAvailability } = await import('@/lib/payments/providers')
+    const testInProd = { ...full, VERCEL_ENV: 'production', PAYTECH_ALLOW_PRODUCTION: 'true' }
+    expect(paytechCheckoutAvailability(testInProd).available).toBe(false)
+    expect(paytechProcessingAvailability(testInProd).available).toBe(false)
+    const liveInPreview = { ...prod, VERCEL_ENV: 'preview' }
+    expect(paytechCheckoutAvailability(liveInPreview).available).toBe(false)
+    expect(paytechProcessingAvailability(liveInPreview).available).toBe(false)
+  })
+
+  it('XP-PAYTECH-04: closing checkout never stops processing payments already taken', async () => {
+    const { paytechCheckoutAvailability, paytechProcessingAvailability } = await import('@/lib/payments/providers')
+    const closed = { ...full, PAYTECH_CHECKOUT_ENABLED: undefined } as Record<string, string | undefined>
+    expect(paytechCheckoutAvailability(closed).available).toBe(false)
+    expect(paytechProcessingAvailability(closed).available).toBe(true)
+    expect(paytechProcessingAvailability({ ...prod, PAYTECH_CHECKOUT_ENABLED: undefined }).available).toBe(true)
   })
 
   it('keys production on VERCEL_ENV, not NODE_ENV (a preview is also NODE_ENV=production)', async () => {
@@ -249,8 +282,8 @@ describe('XP-PAYTECH-01 · scenario 17 — PayDunya regression', () => {
     }
     expect(paydunyaAvailability(base).available).toBe(true)
     // Turning PayTech off, or on, changes nothing about PayDunya.
-    expect(paydunyaAvailability({ ...base, PAYTECH_ENABLED: 'true' }).available).toBe(true)
-    expect(paydunyaAvailability({ ...base, PAYTECH_ENABLED: '' }).available).toBe(true)
+    expect(paydunyaAvailability({ ...base, PAYTECH_CHECKOUT_ENABLED: 'true' }).available).toBe(true)
+    expect(paydunyaAvailability({ ...base, PAYTECH_CHECKOUT_ENABLED: '' }).available).toBe(true)
   })
 
   it('no PayDunya module imports anything from PayTech', () => {
@@ -264,10 +297,13 @@ describe('XP-PAYTECH-01 · scenario 17 — PayDunya regression', () => {
     expect(paydunyaConfigError({ PAYDUNYA_MODE: 'test' })).toMatch(/3 credentials/)
   })
 
-  it('the legacy payment action is untouched and still cannot complete', () => {
+  it('the legacy payment action is a refusal and still cannot complete', () => {
+    // XP-PAYTECH-04 retired it. Its message now points the learner to PayTech,
+    // but it calls nothing: no import, no client, no provider.
     const c = code('app/actions/payment.ts')
     expect(c).not.toMatch(/complete_payment/)
-    expect(c).not.toMatch(/paytech/i)
+    expect(c).not.toMatch(/^\s*import\s/m)
+    expect(c).not.toMatch(/requestPayment|provider_token|paytech-client|from\(/)
   })
 })
 
@@ -356,24 +392,40 @@ describe('XP-PAYTECH-01 · the transport layer', () => {
     }
     // Transport failure, bad token and an unconfigured provider all resolve to
     // `unknown` rather than rejecting.
+    // XP-PAYTECH-04: the reading is a CONTRACT, and with none confirmed no
+    // request is even made. A fixture contract exercises the transport paths.
+    const contract = {
+      confirmedBy: 'TEST FIXTURE — not a PayTech statement', successPath: 'success',
+      request: { method: 'GET', path: '/payment/get-status', tokenParam: 'token_payment' },
+      statusPath: 'payment.status', paid: ['completed'], failed: ['failed'], cancelled: ['canceled'],
+      pending: ['pending'], amountPath: null, currencyPath: null, referencePath: null,
+    } as const
+    const target = { token: 'paytech_tok_ABCDEFGH', refCommand: 'SCX-REF-1' }
+    const spy = vi.fn(async () => { throw new Error('down') }) as unknown as typeof fetch
     for (const [label, call] of [
-      ['transport throws', () => confirmPaymentStatus('paytech_tok_ABCDEFGH', {
-        env, fetchImpl: (async () => { throw new Error('down') }) as unknown as typeof fetch,
-      })],
-      ['malformed token', () => confirmPaymentStatus('../../etc/passwd', { env })],
-      ['no config', () => confirmPaymentStatus('paytech_tok_ABCDEFGH', { env: {} })],
+      ['no contract confirmed', () => confirmPaymentStatus(target, { env, fetchImpl: spy, contract: null })],
+      ['transport throws', () => confirmPaymentStatus(target, { env, contract, fetchImpl: spy })],
+      ['malformed token', () => confirmPaymentStatus({ ...target, token: '../../etc/passwd' }, { env, contract })],
+      ['no config', () => confirmPaymentStatus(target, { env: {}, contract })],
     ] as const) {
       const r = await call()
       expect(r.outcome, label).toBe('unknown')
     }
+    // The unconfirmed call made no request; only the transport case did.
+    expect(spy).toHaveBeenCalledTimes(1)
   })
 
   it('the IPN decides settlement from the provider, never from type_event', () => {
-    const c = code('app/api/payments/paytech/ipn/route.ts')
-    expect(c).toMatch(/confirmPaymentStatus\(/)
-    // The outcome used to come off the notification. It must not any more.
-    expect(c).not.toMatch(/verification\.outcome/)
-    expect(c).toMatch(/settlement\.outcome !== 'paid'/)
+    // XP-PAYTECH-04: the IPN hands the payment to the shared reconciliation
+    // procedure, which asks the provider and switches on ITS answer.
+    const route = code('app/api/payments/paytech/ipn/route.ts')
+    expect(route).toMatch(/reconcilePaytechPayment\(payment/)
+    expect(route).not.toMatch(/verification\.outcome/)
+    expect(route).not.toMatch(/completeVerifiedPayment|recordTerminalFailure\(/)
+    const reconcile = code('lib/payments/paytech-reconcile.ts')
+    expect(reconcile).toMatch(/confirmPaymentStatus\(/)
+    expect(reconcile).toMatch(/switch \(settlement\.outcome\)/)
+    expect(reconcile).not.toMatch(/type_event|verification/)
   })
 
   it('never reaches the database or the completion authority', () => {
@@ -416,7 +468,7 @@ describe('XP-PAYTECH-01 · checkout eligibility', () => {
   })
 
   it('scenario 16 — refuses when PayTech is not available here', async () => {
-    vi.stubEnv('PAYTECH_ENABLED', '')
+    vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', '')
     const r = await start()
     expect(r.error).toMatch(/pas disponible/i)
     expect(state.inserted).toEqual([])
@@ -452,7 +504,11 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
 
   it('takes the price from the database, never from the caller', async () => {
     await start()
-    expect(state.inserted[0]).toMatchObject({ amount: 45_000, currency: 'XOF', status: 'pending' })
+    expect(state.inserted[0]).toMatchObject({
+      amount: 45_000, currency: 'XOF', status: 'pending',
+      // XP-PAYTECH-04: provider identity is written at creation, never later.
+      provider: 'paytech', provider_mode: 'test',
+    })
     const c = code('app/actions/paytech-checkout.ts')
     // The action's input type carries a course id and nothing else.
     expect(c).toMatch(/startPaytechCheckout\(input: \{\s*courseId: string\s*\}\)/)
@@ -463,7 +519,9 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
     const r = await start()
     expect(r.redirectUrl).toBe('https://paytech.sn/payment/checkout/abc')
     const tokenWrite = state.updates.find(u => 'provider_token' in u)
-    expect(tokenWrite).toMatchObject({ provider: 'paytech', provider_mode: 'test', status: 'processing' })
+    expect(tokenWrite).toMatchObject({ provider_token: 'paytech_tok_ABCDEFGH', status: 'processing' })
+    expect(tokenWrite, 'provider identity is write-once (063)').not.toHaveProperty('provider')
+    expect(tokenWrite).not.toHaveProperty('provider_mode')
   })
 
   it('refuses to redirect when the token could not be stored', async () => {
@@ -475,18 +533,53 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
     expect(r.error).toBeTruthy()
   })
 
-  it('reuses a live intent instead of creating a second one', async () => {
-    state.pending = { id: 'pay-existing', reference: 'SCX-OLD-REF', amount: 45_000, status: 'pending' }
+  // XP-PAYTECH-04 (READY-F1/F2). These two used to pin "reuse the live intent
+  // and call PayTech again" — which re-sent the same ref_command and
+  // overwrote the token. They now pin the replacement rules.
+  const longAgo = () => new Date(Date.now() - 10 * 60 * 1000).toISOString()
+
+  it('an OPENED live intent is never superseded on a guess — no second chargeable checkout', async () => {
+    state.pending = {
+      id: 'pay-existing', reference: 'SCX-OLD-REF', amount: 45_000, currency: 'XOF', status: 'processing',
+      provider: 'paytech', provider_mode: 'test', provider_token: 'paytech_tok_EXISTING1',
+      user_id: USER_ID, course_id: COURSE_ID, created_at: longAgo(),
+    }
+    const fetchSpy = vi.fn(async () => state.fetchResponse())
+    vi.stubGlobal('fetch', fetchSpy)
     const r = await start()
-    expect(state.inserted, '058 allows one live intent per learner per course').toEqual([])
+    expect(r.redirectUrl).toBeUndefined()
+    expect(r.error).toMatch(/vérification/i)
+    expect(r.reference).toBe('SCX-OLD-REF')
+    expect(state.inserted, 'a second attempt was created').toEqual([])
+    expect(state.updates.find(u => 'provider_token' in u), 'the stored token was overwritten').toBeUndefined()
+    // No contract is confirmed, so not even a status request was made — and
+    // certainly no new checkout.
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('an UNOPENED live intent is closed and replaced at the current price', async () => {
+    state.pending = {
+      id: 'pay-existing', reference: 'SCX-OLD-REF', amount: 30_000, currency: 'XOF', status: 'pending',
+      provider: 'paytech', provider_mode: 'test', provider_token: null,
+      user_id: USER_ID, course_id: COURSE_ID, created_at: longAgo(),
+    }
+    const r = await start()
+    expect(state.updates[0]).toMatchObject({ status: 'expired', failure_reason: 'superseded_unopened' })
+    expect(state.inserted[0]).toMatchObject({ amount: 45_000, status: 'pending' })
+    expect(state.inserted[0].reference).not.toBe('SCX-OLD-REF')
     expect(r.redirectUrl).toBeTruthy()
   })
 
-  it('refuses to re-price a live intent whose course price has since changed', async () => {
-    state.pending = { id: 'pay-existing', reference: 'SCX-OLD-REF', amount: 30_000, status: 'pending' }
+  it('an unopened intent still inside its initialisation window is left alone', async () => {
+    state.pending = {
+      id: 'pay-existing', reference: 'SCX-OLD-REF', amount: 45_000, currency: 'XOF', status: 'pending',
+      provider: 'paytech', provider_mode: 'test', provider_token: null,
+      user_id: USER_ID, course_id: COURSE_ID, created_at: new Date().toISOString(),
+    }
     const r = await start()
-    expect(r.error).toMatch(/tarif/i)
-    expect(state.updates.find(u => 'provider_token' in u)).toBeUndefined()
+    expect(r.error).toMatch(/initialisation/i)
+    expect(state.inserted).toEqual([])
+    expect(state.updates).toEqual([])
   })
 
   it('never leaks a provider message to the learner', async () => {
@@ -497,7 +590,7 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
   })
 
   it('derives the three callback URLs from the given origin, all HTTPS', async () => {
-    const { paytechCallbackUrls } = await import('@/app/actions/paytech-checkout')
+    const { paytechCallbackUrls } = await import('@/lib/payments/paytech-callbacks')
     const u = paytechCallbackUrls('https://www.xpclient-academy.com/')
     expect(u.ipnUrl).toBe('https://www.xpclient-academy.com/api/payments/paytech/ipn')
     expect(u.successUrl).toBe('https://www.xpclient-academy.com/payment/success')
@@ -542,11 +635,14 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
       '/api/payments/paytech',
       '/api/payments/paydunya/ipn',
       '/api/payments/paytech/refund',
+      '/api/payments/paytech/reconcil',
       '/api/admin/upload-url',
       '/api/media/lesson/abc/video',
     ]) {
       expect(isAdminHostPublicPath(p), `${p} must NOT be exposed on the admin host`).toBe(false)
     }
+    // XP-PAYTECH-04: the cron sweep is the one other route, named in full.
+    expect(isAdminHostPublicPath('/api/payments/paytech/reconcile')).toBe(true)
   })
 })
 
@@ -577,13 +673,16 @@ describe('XP-PAYTECH-01 · migration 062 obligation 5 — ONE chokepoint', () =>
     expect(code(CHOKEPOINT)).toMatch(/already_completed/)
   })
 
-  it('only entitlement_race is retryable (obligation 7)', async () => {
+  it('only the transient refusals are retryable (obligation 7)', async () => {
+    // XP-PAYTECH-04 added unknown_error: no structured reason means a fault,
+    // not a disagreement, and 062 wrote nothing — asking again is safe.
     const { isRetryable } = await import('@/lib/payments/payment-completion')
     expect(isRetryable('entitlement_race')).toBe(true)
+    expect(isRetryable('unknown_error')).toBe(true)
     for (const r of [
       'amount_mismatch', 'currency_mismatch', 'reference_mismatch', 'provider_mismatch',
       'provider_mode_mismatch', 'entitlement_conflict', 'entitlement_revoked_requires_decision',
-      'status_not_completable', 'payment_not_found',
+      'status_not_completable', 'payment_not_found', 'test_payment_in_live_database',
     ]) {
       expect(isRetryable(r), r).toBe(false)
     }
@@ -635,7 +734,7 @@ describe('XP-PAYTECH-03 · a preview checkout must not point the provider at pro
   const CANONICAL = 'https://www.xpclient-academy.com'
 
   it('production uses the canonical origin', async () => {
-    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    const { paytechCallbackBaseUrl } = await import('@/lib/payments/paytech-callbacks')
     expect(paytechCallbackBaseUrl({
       VERCEL_ENV: 'production',
       VERCEL_URL: 'smiley-cx-platform-abc.vercel.app',
@@ -643,7 +742,7 @@ describe('XP-PAYTECH-03 · a preview checkout must not point the provider at pro
   })
 
   it('a preview addresses ITSELF, not production', async () => {
-    const { paytechCallbackBaseUrl, paytechCallbackUrls } = await import('@/app/actions/paytech-checkout')
+    const { paytechCallbackBaseUrl, paytechCallbackUrls } = await import('@/lib/payments/paytech-callbacks')
     const base = paytechCallbackBaseUrl({
       VERCEL_ENV: 'preview',
       VERCEL_URL: 'smiley-cx-platform-abc.vercel.app',
@@ -655,20 +754,28 @@ describe('XP-PAYTECH-03 · a preview checkout must not point the provider at pro
     for (const v of Object.values(u)) expect(v).not.toContain('xpclient-academy.com')
   })
 
-  it('an explicit operator pin wins over everything', async () => {
+  it('an explicit operator pin wins on every NON-production deployment', async () => {
     // The knob that matters for UAT: a per-deployment URL changes on every
     // push, while PayTech's dashboard holds fixed URLs, so the operator pins a
     // stable origin deliberately.
-    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    const { paytechCallbackBaseUrl } = await import('@/lib/payments/paytech-callbacks')
     expect(paytechCallbackBaseUrl({
       PAYTECH_CALLBACK_BASE_URL: 'https://staging.xpclient-academy.com',
-      VERCEL_ENV: 'production',
+      VERCEL_ENV: 'preview',
       VERCEL_URL: 'ignored.vercel.app',
     })).toBe('https://staging.xpclient-academy.com')
   })
 
+  it('XP-PAYTECH-04 (READY-E3): production IGNORES the pin — its notifications reach production', async () => {
+    const { paytechCallbackBaseUrl } = await import('@/lib/payments/paytech-callbacks')
+    expect(paytechCallbackBaseUrl({
+      PAYTECH_CALLBACK_BASE_URL: 'https://some-preview.vercel.app',
+      VERCEL_ENV: 'production',
+    })).toBe(CANONICAL)
+  })
+
   it('falls back to the canonical origin locally, where there is no deployment host', async () => {
-    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    const { paytechCallbackBaseUrl } = await import('@/lib/payments/paytech-callbacks')
     expect(paytechCallbackBaseUrl({})).toBe(CANONICAL)
     expect(paytechCallbackBaseUrl({ VERCEL_ENV: 'development' })).toBe(CANONICAL)
   })
@@ -684,7 +791,7 @@ describe('XP-PAYTECH-03 · a preview checkout must not point the provider at pro
   })
 
   it('keys production on VERCEL_ENV, not NODE_ENV', async () => {
-    const { paytechCallbackBaseUrl } = await import('@/app/actions/paytech-checkout')
+    const { paytechCallbackBaseUrl } = await import('@/lib/payments/paytech-callbacks')
     // A preview build also runs with NODE_ENV=production; it must still
     // address itself.
     expect(paytechCallbackBaseUrl({

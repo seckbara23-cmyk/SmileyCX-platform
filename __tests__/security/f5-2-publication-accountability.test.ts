@@ -462,8 +462,8 @@ describe('F-5.2 — migration numbering governance holds', () => {
                 '056_catalogue_display_order.sql', '057_v8_registry_reorder.sql',
                 '058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                 '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                '062_atomic_payment_completion.sql'])
-    expect(Math.max(...nums)).toBe(62)
+                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
+    expect(Math.max(...nums)).toBe(64)
     // F-5.2's subject is publication accountability. None of the later
     // migrations may publish, unpublish, or re-flag a course behind its back.
     for (const later of f.filter(x => parseInt(x, 10) > 53)) {

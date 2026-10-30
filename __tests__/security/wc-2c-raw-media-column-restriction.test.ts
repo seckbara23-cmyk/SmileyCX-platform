@@ -96,7 +96,7 @@ describe('WC-2C — migration 055 exists, alone, as one transaction', () => {
     expect(above).toEqual(['056_catalogue_display_order.sql', '057_v8_registry_reorder.sql',
                            '058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                            '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                           '062_atomic_payment_completion.sql'])
+                           '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     for (const later of above) {
       const s = readFileSync(join(ROOT, 'supabase/migrations', later), 'utf8')
       expect(s, `${later} grants on lessons`).not.toMatch(/grant[\s\S]{0,200}on public\.lessons/i)

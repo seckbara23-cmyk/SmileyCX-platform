@@ -248,9 +248,9 @@ describe('UAT-EXERCISE-CATEGORY-FK-01 — the database contract is untouched', (
     // this suite exists to protect.
     const LATER = ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                    '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                   '062_atomic_payment_completion.sql']
+                   '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql']
     expect(files.filter(f => parseInt(f, 10) > 57)).toEqual(LATER)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(64)
     for (const later of LATER) {
       const s = readFileSync(join(DIR, later), 'utf8').replace(/--[^\n]*/g, '')
       for (const t of ['exercises', 'exercise_categories', 'exercise_items',

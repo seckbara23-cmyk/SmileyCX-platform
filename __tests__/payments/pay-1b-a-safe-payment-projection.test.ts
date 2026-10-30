@@ -2,29 +2,24 @@
 /**
  * PAY-LAUNCH-02C / PAY-1B(a) — the safe payment read projection.
  *
- * ── WHY THIS SLICE EXISTS, AND WHY IT IS APPLICATION-ONLY ─────────────────
+ * ── WHY THIS SLICE EXISTED ────────────────────────────────────────────────
  *
- * RLS decides ROWS, not COLUMNS. `payments_own` confines the checkout
- * confirmation page to the caller's own payment rows, but `authenticated`
- * holds table-wide SELECT, so `select('*')` returned EVERY column of that row.
- * After migration 058 that is 17 columns including the free-form `metadata`
- * jsonb and `provider_token`, which PAY-2 will start writing.
+ * RLS decides ROWS, not COLUMNS. `payments_own` confined the checkout
+ * confirmation page to the caller's own payment rows, but `authenticated` held
+ * table-wide SELECT, so `select('*')` returned every column of that row —
+ * including the free-form `metadata` jsonb and `provider_token`. Migration 059
+ * converted that into an explicit column allowlist excluding both, and
+ * PAY-1B(a) made the page name its columns first so 059 could not break it.
  *
- * Migration 059 converts that table-wide SELECT into an explicit column
- * allowlist excluding both. Under column-level grants `select('*')` FAILS with
- * 42501 rather than narrowing — 055 says so in its own section 1 — so the
- * application must name its columns BEFORE 059 lands, or 059 breaks this page
- * the moment PLATFORM_MODE leaves 'pilot'. That ordering is the whole content
- * of PAY-1B(a): one projection, no database change.
+ * ── WHAT CHANGED IN XP-PAYTECH-04 ─────────────────────────────────────────
  *
- * ── WHAT THIS SUITE PROVES ────────────────────────────────────────────────
- *
- * It reads source text, which is the right authority for a projection: the
- * question is what the page ASKS FOR, and that is a property of the file. The
- * projection is additionally validated against migration 058's OWN pinned
- * 17-column list — so if the two ever disagree, this fails rather than
- * discovering it at 42501 time — and against the allowlist 059 is specified to
- * grant, so the ordering guarantee is checked and not merely intended.
+ * `/checkout/confirm` was the end of the retired legacy flow. It no longer
+ * reads a payment at all: it redirects to `/payment/success`, which reads the
+ * signed-in learner's own orders through the service role with a named
+ * projection. So the property PAY-1B(a) protected now holds more strongly:
+ * there is NO browser-role payment reader anywhere in shipped code, and the
+ * two columns 059 withholds can reach no browser by any route. This suite
+ * asserts exactly that, plus 059's compatibility with every later migration.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs'
@@ -32,12 +27,10 @@ import { join } from 'path'
 
 const ROOT = process.cwd()
 const read = (p: string) => readFileSync(join(ROOT, p), 'utf8').replace(/\r\n/g, '\n')
+const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
 
 const PAGE = 'app/(platform)/checkout/confirm/page.tsx'
-const SRC = read(PAGE)
-/** Comments blanked, so a comment can never satisfy an assertion. */
-const CODE = SRC.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
-
+const CODE = strip(read(PAGE))
 const MIG058 = 'supabase/migrations/058_payment_provider_foundation.sql'
 
 /** Every `.from('payments').select('…')` in a file, with its receiver. */
@@ -49,27 +42,6 @@ function paymentSelects(src: string): { recv: string; select: string }[] {
   return out
 }
 
-/** Split a PostgREST select list at top level, so `courses(title)` stays whole. */
-function splitSelect(sel: string): string[] {
-  const parts: string[] = []
-  let depth = 0, cur = ''
-  for (const ch of sel) {
-    if (ch === '(') depth++
-    if (ch === ')') depth--
-    if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = '' ; continue }
-    cur += ch
-  }
-  if (cur.trim()) parts.push(cur.trim())
-  return parts
-}
-
-const selects = paymentSelects(CODE)
-const PARTS = selects.length === 1 ? splitSelect(selects[0].select) : []
-/** Plain payment columns (not an embedded relation). */
-const COLUMNS = PARTS.filter(p => !p.includes('('))
-/** Embedded relations, e.g. `courses(title)`. */
-const EMBEDS = PARTS.filter(p => p.includes('('))
-
 // ── migration 058's own pinned post-apply column list ──────────────────────
 const PAYMENTS_17 = (() => {
   const sql = read(MIG058)
@@ -77,137 +49,36 @@ const PAYMENTS_17 = (() => {
   return candidates.find(c => c.length === 17) ?? []
 })()
 
-/** What migration 059 is specified to withhold from the browser roles. */
+/** What migration 059 withholds from the browser roles. */
 const EXCLUDED_BY_059 = ['provider_token', 'metadata'] as const
 const PLANNED_059_ALLOWLIST = PAYMENTS_17.filter(c => !(EXCLUDED_BY_059 as readonly string[]).includes(c))
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('PAY-1B(a) · 1-2. the payment reader is explicit, not a wildcard', () => {
-  it('058\'s pinned 17-column list was located (the basis for every check below)', () => {
+describe('PAY-1B(a) · 1-2. the confirmation page reads no payment at all (XP-PAYTECH-04)', () => {
+  it('058\'s pinned 17-column list was located (the basis for the 059 checks below)', () => {
     expect(PAYMENTS_17).toHaveLength(17)
     expect(PAYMENTS_17).toContain('provider_token')
     expect(PAYMENTS_17).toContain('metadata')
     expect(PLANNED_059_ALLOWLIST).toHaveLength(15)
   })
 
-  it('1. no select(\'*\') remains in the payment confirmation reader', () => {
-    expect(selects, 'expected exactly one payment select on this page').toHaveLength(1)
-    expect(selects[0].select, 'the projection still contains a wildcard').not.toMatch(/\*/)
-    expect(CODE).not.toMatch(/\.select\(\s*'\*/)
-    // Nor the older form it replaced.
-    expect(CODE).not.toContain("'*, courses(title, slug)'")
+  it('1. no payment query of any kind remains on the page — wildcard or explicit', () => {
+    expect(CODE).not.toMatch(/from\(\s*'payments'\s*\)/)
+    expect(CODE).not.toMatch(/\.select\(/)
+    expect(CODE).not.toMatch(/supabase|createClient|createAdminClient/)
   })
 
-  it('2. the projection is an explicit list of named columns', () => {
-    expect(COLUMNS.length).toBeGreaterThan(0)
-    for (const c of COLUMNS) {
-      expect(c, `not a bare column name: ${JSON.stringify(c)}`).toMatch(/^[a-z][a-z0-9_]*$/)
-    }
-    // No renames, casts or embedded wildcards hiding a wide read.
-    for (const p of PARTS) expect(p).not.toMatch(/\*|:|->/)
-    expect(selects[0].select).toBe('id, reference, amount, currency, status, courses(title)')
+  it('2. it is a redirect to the honest status page, forwarding nothing', () => {
+    const redirects = [...CODE.matchAll(/redirect\(([^)]*)\)/g)].map(m => m[1].trim())
+    expect(redirects).toEqual(["'/payment/success'"])
+    // The old `?payment=<id>` is not forwarded: /payment/success scopes by the
+    // signed-in learner, never by an id from the URL.
+    expect(CODE).not.toMatch(/searchParams|paymentId/)
   })
 
-  it('exactly ONE payment query — no second reader was introduced', () => {
-    expect((CODE.match(/from\(\s*'payments'\s*\)/g) ?? [])).toHaveLength(1)
-    expect((CODE.match(/\.single\(\)/g) ?? [])).toHaveLength(1)
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
-describe('PAY-1B(a) · 3-5. what is excluded, and what is retained', () => {
-  it('3. provider_token is excluded', () => {
-    expect(COLUMNS).not.toContain('provider_token')
-    expect(selects[0].select).not.toContain('provider_token')
-    // And the page never reads it by any route.
+  it('3-4. provider_token and metadata cannot be read here by any route', () => {
     expect(CODE).not.toContain('provider_token')
-  })
-
-  it('4. metadata is excluded', () => {
-    expect(COLUMNS).not.toContain('metadata')
-    expect(selects[0].select).not.toContain('metadata')
-    // Scoped to the payment object: this page legitimately exports Next's own
-    // route `metadata`, which has nothing to do with payments.metadata.
-    expect(CODE, 'the page reads metadata off the payment').not.toMatch(/payment\??\.metadata/)
-    expect(CODE).not.toMatch(/data\??\.metadata/)
-    // Every lowercase `metadata` on the page is the Next route export — stated
-    // as a property rather than a count, so it stays true if the file grows.
-    expect(CODE).toMatch(/export const metadata: Metadata/)
-    const lines = CODE.split('\n').filter(l => /\bmetadata\b/.test(l))
-    for (const l of lines) {
-      expect(l.trim(), `a non-route-export use of metadata: ${l.trim()}`)
-        .toMatch(/^export const metadata: Metadata/)
-    }
-  })
-
-  it('no other reconciliation or provider field is pulled in', () => {
-    for (const c of ['provider', 'provider_mode', 'provider_reference', 'entitlement_id',
-                     'company_id', 'user_id', 'created_at', 'completed_at', 'method']) {
-      expect(COLUMNS, `${c} is not required for rendering`).not.toContain(c)
-    }
-  })
-
-  it('5. every field the page renders is still selected', () => {
-    // Derived from the page itself: each `payment.<field>` it dereferences.
-    const used = [...new Set([...CODE.matchAll(/payment\??\.([a-z_]+)/g)].map(m => m[1]))].sort()
-    expect(used, 'the page reads a field this test does not know about')
-      .toEqual(['amount', 'currency', 'reference', 'status'])
-    for (const f of used) expect(COLUMNS, `${f} is rendered but not selected`).toContain(f)
-    // Plus the row identity, which the caller already supplied in the URL.
-    expect(COLUMNS).toContain('id')
-    expect(COLUMNS).toEqual(['id', 'reference', 'amount', 'currency', 'status'])
-  })
-
-  it('the course relation is preserved, projecting only the title it renders', () => {
-    expect(EMBEDS).toEqual(['courses(title)'])
-    // The title is still read off a SINGLE embedded object. The `unknown` hop
-    // is a static-inference gap, not a shape change: supabase-js types a
-    // many-to-one embed as an array without generated `Database` types, while
-    // PostgREST returns one object (verified GET-only against the live
-    // database). The fallback courseName makes a wrong guess cosmetic.
-    expect(CODE).toMatch(/\(data\.courses as unknown as \{ title: string \}\)\.title/)
-    expect(CODE).toMatch(/if \(data\?\.courses\)/)
-    expect(CODE).toMatch(/let courseName = 'Votre formation XP Client'/)
-    // `slug` was selected and never read; it is gone.
-    expect(selects[0].select).not.toContain('slug')
-    expect(CODE).not.toContain('slug')
-  })
-})
-
-// ═══════════════════════════════════════════════════════════════════════════
-describe('PAY-1B(a) · 6. rendering behaviour is unchanged', () => {
-  it('the three presentation branches still derive from status alone', () => {
-    expect(CODE).toMatch(/const status = payment\?\.status/)
-    expect(CODE).toMatch(/const isConfirmed = status === 'completed'/)
-    expect(CODE).toMatch(/const isFailed = status === 'failed'/)
-    expect(CODE).toMatch(/const isPending = status === 'pending' \|\| status === 'processing'/)
-  })
-
-  it('the receipt block still renders reference, amount+currency and status', () => {
-    expect(CODE).toMatch(/\{payment\.reference\}/)
-    expect(CODE).toMatch(/formatPrice\(payment\.amount, payment\.currency\)/)
-    expect(CODE).toMatch(/\{payment\.status\}/)
-    // It is still gated on the payment existing at all.
-    expect(CODE).toMatch(/\{payment && \(/)
-  })
-
-  it('the course name, titles and navigation are untouched', () => {
-    expect(CODE).toMatch(/let courseName = 'Votre formation XP Client'/)
-    expect(SRC).toContain('Paiement confirmé !')
-    expect(SRC).toContain('Le paiement a échoué')
-    expect(SRC).toContain('Paiement en attente')
-    expect(CODE).toMatch(/href="\/dashboard"/)
-    expect(CODE).toMatch(/href="\/courses"/)
-    expect(SRC).toContain('CONTACT_EMAIL')
-  })
-
-  it('the pilot short-circuit and the authenticated read path are unchanged', () => {
-    expect(CODE).toMatch(/if \(FREE_ACCESS_MODE\) redirect\('\/dashboard'\)/)
-    // The USER's client — ownership comes from RLS, not from a filter the page
-    // could forget. PAY-1 preserved `payments_own` precisely so this keeps working.
-    expect(CODE).toMatch(/from '@\/lib\/supabase\/server'/)
-    expect(CODE).not.toMatch(/createAdminClient|service_role/)
-    expect(CODE).toMatch(/\.eq\('id', paymentId\)/)
+    expect(CODE).not.toMatch(/payment\??\.metadata|data\??\.metadata/)
   })
 })
 
@@ -229,36 +100,14 @@ describe('PAY-1B(a) · 7-8. the page stays informational', () => {
   })
 
   it('no redirect becomes payment authority', () => {
-    // The only redirect is the pilot short-circuit. Nothing routes on status,
-    // so a learner cannot turn a URL into an access decision here.
-    const redirects = [...CODE.matchAll(/redirect\(([^)]*)\)/g)].map(m => m[1].trim())
-    expect(redirects).toEqual(["'/dashboard'"])
-    expect(CODE).not.toMatch(/if \(isConfirmed\)[\s\S]{0,40}redirect/)
     expect(CODE).not.toMatch(/redirect\([^)]*learn/)
+    expect(CODE).not.toMatch(/status|completed/)
   })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('PAY-1B(a) · 9-10. compatibility with 058 today and 059 next', () => {
-  it('9. every selected column exists in the table migration 058 produced', () => {
-    for (const c of COLUMNS) {
-      expect(PAYMENTS_17, `${c} is not a column of public.payments after 058`).toContain(c)
-    }
-  })
-
-  it('10. the projection is a subset of the allowlist 059 is specified to grant', () => {
-    for (const c of COLUMNS) {
-      expect(PLANNED_059_ALLOWLIST, `${c} would be withheld by 059 — this page would 42501`)
-        .toContain(c)
-    }
-    // The two 059 withholds are exactly the two this projection drops.
-    for (const c of EXCLUDED_BY_059) {
-      expect(PLANNED_059_ALLOWLIST).not.toContain(c)
-      expect(COLUMNS).not.toContain(c)
-    }
-  })
-
-  it('058 still records the 059 specification this projection was built against', () => {
+describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migration', () => {
+  it('058 still records the 059 specification PAY-1B(a) was built against', () => {
     const gates = read(MIG058)
     const note = gates.slice(gates.indexOf('GATES BEFORE PAYMENTS ARE ENABLED'))
     expect(note).toMatch(/PAY-1B\(a\)/)
@@ -267,73 +116,56 @@ describe('PAY-1B(a) · 9-10. compatibility with 058 today and 059 next', () => {
     expect(note).toMatch(/ONLY AFTER PAY-1B MAY PAY-2 WRITE provider_token/)
   })
 
-  it('PAY-1B(a) itself added no migration; 059 came later, and FITS this projection', () => {
+  it('059 grants the browser roles neither withheld column; no later migration widens it', () => {
     const files = readdirSync(join(ROOT, 'supabase', 'migrations')).filter(f => f.endsWith('.sql'))
-    expect(files.filter(f => f.startsWith('058'))).toEqual(['058_payment_provider_foundation.sql'])
-    // This assertion used to read "059 does not exist", which encoded the
-    // ORDERING: the application had to name its columns before the grant was
-    // narrowed. It did, and PAY-1B(b) has since authored 059 — so what is worth
-    // asserting now is the thing that ordering was protecting, namely that the
-    // allowlist 059 grants actually covers what this page asks for. If the two
-    // ever drift, this fails here instead of as a 42501 in production.
     expect(files.filter(f => parseInt(f, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
-                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql'])
+                '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql',
+                '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
-    // PAY-2B's 060 adds two payment columns. It issues NO privilege statement,
-    // so the allowlist this page depends on is unchanged — and this page must
-    // not start reading either new column, which would be a 42501.
-    const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
-      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
-    expect(m060.match(/^\s*(grant|revoke)\s/gim) ?? [],
-      '060 changes a payment privilege, so this allowlist check is stale').toEqual([])
-    for (const added of ['failure_reason', 'last_ipn_at']) {
-      expect(COLUMNS, `this page now selects ${added}, which no role grants`).not.toContain(added)
-    }
-    // AUDIT-SEC-01's 061 issues privilege statements, but on audit_log only —
-    // so the payment allowlist this page depends on is still 059's.
-    const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
-      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
-    for (const stmt of m061.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
-      expect(stmt, '061 changes a privilege on a table other than audit_log')
-        .toMatch(/on public\.audit_log\b/i)
-    }
-    // 062's privilege statements are ON FUNCTION, so the payment allowlist this
-    // page depends on is untouched — and the page must not start reading the
-    // columns the completion function writes.
-    const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
-      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
-    for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
-      expect(stmt, '062 changes a table privilege').toMatch(/on function/i)
-    }
-    for (const added of ['provider_token', 'entitlement_id']) {
-      expect(COLUMNS, `this page now selects ${added}`).not.toContain(added)
-    }
+    expect(Math.max(...nums)).toBe(64)
 
-    const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
-      .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    const strip = (p: string) => read(p).replace(/--[^\n]*/g, m => ' '.repeat(m.length))
+    const m059 = strip('supabase/migrations/059_payment_column_select_security.sql')
     const granted = /grant select \(([\s\S]*?)\) on public\.payments to authenticated;/i
       .exec(m059)?.[1].split(',').map(s => s.trim()).filter(Boolean) ?? []
     expect(granted.length).toBeGreaterThan(0)
-    // Every plain column this page projects must be granted...
-    for (const c of COLUMNS) {
-      expect(granted, `this page selects ${c}, which 059 would withhold → 42501`).toContain(c)
+    for (const withheld of EXCLUDED_BY_059) expect(granted, `059 grants ${withheld}`).not.toContain(withheld)
+    for (const c of granted) expect(PAYMENTS_17).toContain(c)
+
+    // 060 issues no privilege statement.
+    expect(strip('supabase/migrations/060_payment_completion_contract.sql').match(/^\s*(grant|revoke)\s/gim) ?? [])
+      .toEqual([])
+    // 061's are on audit_log only.
+    for (const stmt of strip('supabase/migrations/061_audit_log_privilege_hardening.sql').match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '061 changes a privilege on a table other than audit_log').toMatch(/on public\.audit_log\b/i)
     }
-    // ...and the FK the `courses(title)` embed joins through, which the page
-    // never names and PostgREST cannot resolve without.
-    expect(granted, 'courses(title) joins through course_id').toContain('course_id')
-    // The two columns 059 exists to withhold stay withheld, and this page
-    // asks for neither.
-    for (const withheld of EXCLUDED_BY_059) {
-      expect(granted, `059 grants ${withheld}`).not.toContain(withheld)
-      expect(COLUMNS).not.toContain(withheld)
+    // 062's are ON FUNCTION.
+    for (const stmt of strip('supabase/migrations/062_atomic_payment_completion.sql').match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
+      expect(stmt, '062 changes a table privilege').toMatch(/on function/i)
+    }
+    // XP-PAYTECH-04's 063: on its own marker table and its trigger function —
+    // never on public.payments, so 059's browser allowlist is untouched.
+    const m063 = strip('supabase/migrations/063_payment_state_machine.sql')
+    const stmts063 = m063.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []
+    expect(stmts063.length).toBeGreaterThan(0)
+    for (const stmt of stmts063) {
+      expect(stmt, '063 changes a privilege on public.payments')
+        .toMatch(/on public\.payment_environment\b|on function public\.payments_transition_guard\(\)/i)
+    }
+    // XP-PAYTECH-05's 064: on its own table and functions — again never on
+    // public.payments, so 059's browser allowlist is untouched.
+    const stmts064 = strip('supabase/migrations/064_payment_exceptions.sql').match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []
+    expect(stmts064.length).toBeGreaterThan(0)
+    for (const stmt of stmts064) {
+      expect(stmt, '064 changes a privilege on public.payments')
+        .toMatch(/on public\.payment_exceptions\b|on function public\.payment_exception/i)
     }
   })
 })
 
 // ═══════════════════════════════════════════════════════════════════════════
-describe('PAY-1B(a) · every other payment reader, and which client it uses', () => {
+describe('PAY-1B(a) · every payment reader, and which client it uses', () => {
   const SHIPPED = ['app', 'components', 'lib']
 
   function walk(dir: string, acc: string[] = []): string[] {
@@ -349,55 +181,56 @@ describe('PAY-1B(a) · every other payment reader, and which client it uses', ()
 
   /** Map a receiver variable to the client factory that produced it. */
   function clientOf(src: string, recv: string): 'service' | 'browser' | 'unknown' {
+    if (recv === 'createAdminClient') return 'service'   // createAdminClient().from('payments')
     if (new RegExp(`const\\s+${recv}\\s*=\\s*createAdminClient\\(`).test(src)) return 'service'
     if (new RegExp(`const\\s+${recv}\\s*=\\s*(await\\s+)?createClient\\(`).test(src)) return 'browser'
     return 'unknown'
   }
 
-  const readers = SHIPPED.flatMap(d => walk(join(ROOT, d)))
+  const files = SHIPPED.flatMap(d => walk(join(ROOT, d)))
     .map(f => ({ file: f.slice(ROOT.length + 1).replace(/\\/g, '/'), src: readFileSync(f, 'utf8') }))
     .filter(x => /from\(\s*'payments'\s*\)/.test(x.src))
-    .flatMap(x => paymentSelects(x.src).map(s => ({ file: x.file, ...s, client: clientOf(x.src, s.recv) })))
 
-  it('the confirmation page is the ONLY browser-role payment reader, and it is now explicit', () => {
-    const browser = readers.filter(r => r.client === 'browser')
-    expect(browser.map(r => r.file)).toEqual([PAGE])
-    expect(browser[0].select).toBe('id, reference, amount, currency, status, courses(title)')
-    expect(readers.every(r => r.client !== 'unknown'),
-      `a payment reader's client could not be classified: ${readers.filter(r => r.client === 'unknown').map(r => r.file).join(', ')}`).toBe(true)
+  /** A `.from('payments')` reached through `createAdminClient()` directly or a const bound to it. */
+  const readers = files.flatMap(x => {
+    const src = x.src.replace(/createAdminClient\(\)\s*\n?\s*\.from\(/g, 'createAdminClient.from(')
+    return paymentSelects(src).map(s => ({ file: x.file, ...s, client: clientOf(x.src, s.recv) }))
   })
 
-  it('every remaining payment reader is service-role, so 059 cannot break it', () => {
-    // 059 revokes and re-grants for anon and authenticated only. service_role
-    // keeps full access, so a `select('*')` there is unaffected by the
-    // allowlist — it is reported as hygiene, not as a 059 blocker.
-    const service = readers.filter(r => r.client === 'service')
-    expect(service.length).toBeGreaterThanOrEqual(4)
-    for (const r of service) {
+  it('NO browser-role payment reader exists anywhere in shipped code', () => {
+    expect(readers.length, 'the reader scan found nothing — it is broken').toBeGreaterThanOrEqual(4)
+    expect(readers.filter(r => r.client === 'browser').map(r => r.file)).toEqual([])
+  })
+
+  it('every payment reader is service-role and named, so 059 cannot break it', () => {
+    for (const r of readers) {
+      expect(r.client, `${r.file} reads payments through an unclassified client`).toBe('service')
       expect([
         'app/(admin)/admin/page.tsx', 'app/(admin)/admin/payments/page.tsx',
-        'app/(admin)/admin/payments/actions.ts', 'app/actions/payment.ts',
-        // XP-PAYTECH-01. All service-role, so 059's browser allowlist cannot
-        // break them; all named here so an unreviewed reader still fails.
         'app/actions/paytech-checkout.ts',
         'app/api/payments/paytech/ipn/route.ts',
+        'app/api/payments/paytech/reconcile/route.ts',
         'app/payment/success/page.tsx',
         'app/payment/cancel/page.tsx',
         'lib/payments/payment-completion.ts',
-      ]).toContain(r.file)
+        'lib/payments/payment-exceptions.ts',
+        'lib/payments/paytech-reconcile.ts',
+      ], `${r.file} is an unreviewed payment reader`).toContain(r.file)
+    }
+  })
+
+  it('no reader outside the admin surfaces pulls provider_token or metadata into a page', () => {
+    for (const r of readers.filter(r => r.file.startsWith('app/payment/'))) {
+      expect(r.select).not.toMatch(/\*|provider_token|metadata/)
     }
   })
 
   it('REPORTED, NOT CHANGED: the admin dashboard still reads payments with a wildcard', () => {
-    // app/(admin)/admin/page.tsx pulls every column — including provider_token
-    // and metadata — into the admin page's server memory for its five most
-    // recent completed payments. Service-role, so unaffected by 059 and not a
-    // blocker; narrowing it needs its own authorization. Pinned here so the
-    // finding cannot be silently lost, and so this test fails if someone
-    // "fixes" it without a slice.
+    // app/(admin)/admin/page.tsx pulls every column into the admin page's
+    // server memory. Service-role, admin-only, and out of this slice's scope;
+    // pinned so the finding cannot be silently lost.
     const admin = readers.filter(r => r.file === 'app/(admin)/admin/page.tsx')
     expect(admin.map(r => r.select).sort())
       .toEqual(['*', '*, profiles(full_name, email), courses(title)', 'amount'].sort())
-    expect(admin.every(r => r.client === 'service')).toBe(true)
   })
 })

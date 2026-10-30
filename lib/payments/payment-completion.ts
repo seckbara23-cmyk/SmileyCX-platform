@@ -1,59 +1,48 @@
 import 'server-only'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { createLogger } from '@/lib/logger'
+import { paymentDatabaseAuthority } from '@/lib/payments/payment-database-guard'
 import type { ProviderMode } from '@/lib/payments/paytech-config'
 
 const log = createLogger('payments/completion')
 
 /**
- * THE payment completion chokepoint — XP-PAYTECH-01.
+ * THE payment completion chokepoint — XP-PAYTECH-01, hardened by XP-PAYTECH-04.
  *
  * This is the ONLY module in the repository permitted to call
  * `public.complete_payment()`. Migration 062's obligation 5 requires exactly
- * that, and a repo-wide test asserts it
- * (`__tests__/payments/xp-paytech-01-completion-chokepoint.test.ts`). Every
- * other module — the IPN route, any future provider, any admin tool — reaches
- * completion through `completeVerifiedPayment()` below.
+ * that, and a repo-wide test asserts it (`xp-paytech-01-checkout.test.ts`,
+ * "exactly one chokepoint"). Every caller — the IPN route, the reconciliation
+ * sweep, the admin "verify" action, checkout's own re-check — reaches
+ * completion through `paytech-reconcile.ts`, which comes here.
  *
- * ── THE EIGHT OBLIGATIONS, AND WHERE EACH IS DISCHARGED ───────────────────
+ * It is also the home of every OTHER status write a PayTech payment can
+ * receive after it was opened, so the full set of transitions the
+ * application performs can be read in one file. Migration 063 enforces the
+ * same set in the database. Every function here first asks
+ * `paymentDatabaseAuthority()`, so none of these writes can reach a database
+ * this deployment may not act on.
  *
- * Migration 062 states eight duties that cannot be enforced from inside the
- * database. They are answered here rather than assumed:
+ * ── THE EIGHT OBLIGATIONS OF 062, AND WHERE EACH IS DISCHARGED ────────────
  *
- *  1. CONFIRM SERVER-TO-SERVER — *** PARTIALLY UNSATISFIABLE FOR PAYTECH ***
- *     PayDunya publishes a confirm endpoint; PayTech publishes none (see
- *     `paytech-client.ts`). So for PayTech the evidence is the IPN's HMAC
- *     signature over a message built from OUR OWN stored amount and reference
- *     (`paytech-ipn.ts`). That is a cryptographic attestation by the provider
- *     to the exact amount we are about to fulfil — strong, but it travels on a
- *     channel the payer can observe, which is why it is paired with the
- *     independent cross-check in step 3 and the replay defence in 062 itself.
- *     This difference from PayDunya is a REAL reduction in assurance and is
- *     reported as such; it is not papered over.
- *  2. NEVER TREAT A CONSTANT AS A SIGNATURE — enforced in `paytech-ipn.ts`,
- *     which refuses to reach `signature` strength on the sha256-constant check
- *     alone, and here, which refuses anything below `VERIFIED_STRENGTH`.
- *  3. PASS WHAT IT VERIFIED — the caller passes the verified amount, currency,
- *     reference, provider and mode. For PayTech the verified amount IS our
- *     stored amount, because that is what the signature covers, so 062's
- *     internal comparison is a consistency check rather than an independent
- *     one. The independent cross-check is therefore done BEFORE this module:
- *     the route compares the payload's own claimed amount against the row and
- *     refuses a mismatch, so a provider bug or a mis-signed notification is
- *     still caught.
+ *  1. CONFIRM SERVER-TO-SERVER — `confirmPaymentStatus()` asks PayTech, and
+ *     its answer is read ONLY through the written settlement contract
+ *     (`paytech-settlement-contract.ts`). Until that contract is confirmed
+ *     nothing is ever completed. The IPN's HMAC proves authenticity and binds
+ *     our amount and reference; it never proves payment.
+ *  2. NEVER TREAT A CONSTANT AS A SIGNATURE — `paytech-ipn.ts` cannot reach
+ *     `signature` strength on the sha256-constant check alone.
+ *  3. PASS WHAT IT VERIFIED — the amount, currency, reference, provider and
+ *     mode passed here come from OUR stored row, after the provider's own
+ *     amount was compared with it in `paytech-reconcile.ts`.
  *  4. ONLY FOR A CONFIRMED-COMPLETE PAYMENT — `completeVerifiedPayment()`
- *     accepts no status argument. It is unreachable for a cancelled or pending
- *     notification; those go to `recordTerminalFailure()` instead.
+ *     accepts no status argument and is called only on a `paid` settlement.
  *  5. ONE CHOKEPOINT — this module, asserted by test.
- *  6. OWN THE FORENSICS — `touchIpnReceipt()` records `last_ipn_at` on every
- *     notification and `failure_reason` on every refusal, reading the
- *     structured `reason` out of the exception DETAIL. Those two columns exist:
- *     migration 060 added them.
- *  7. EVERY REFUSAL IS A RECONCILIATION EVENT — `isRetryable()` says so: only
- *     `entitlement_race` is safely retryable. Everything else needs a human
- *     and must NOT be answered with a provider retry.
- *  8. BE IDEMPOTENT — `already_completed` is reported as a SUCCESS so the
- *     provider stops redelivering.
+ *  6. OWN THE FORENSICS — `last_ipn_at` on every notification; `failure_reason`
+ *     on every refusal and every unresolved check.
+ *  7. EVERY REFUSAL IS A RECONCILIATION EVENT — `isRetryable()` names the two
+ *     that a retry can fix; everything else needs a human.
+ *  8. BE IDEMPOTENT — `already_completed` is reported as a SUCCESS.
  */
 
 // ── Outcomes ────────────────────────────────────────────────────────────────
@@ -66,20 +55,25 @@ const log = createLogger('payments/completion')
  * and nothing was written.
  */
 export type CompletionOutcome =
-  | { kind: 'completed'; entitlementId: string | null; review: unknown | null }
+  | { kind: 'completed'; entitlementId: string | null; requiresReview: boolean }
   | { kind: 'already_completed' }
   | { kind: 'refused'; reason: string; retryable: boolean }
 
 /**
- * The only refusal that a retry can fix.
+ * The refusals a retry can fix.
  *
- * `entitlement_race` means two transactions contended and this one lost; the
- * row it wanted now exists or will. Every other reason — any `*_mismatch`,
- * `entitlement_conflict`, `entitlement_revoked_requires_decision` — describes a
- * disagreement that retrying cannot resolve and that a human must look at.
+ *   * `entitlement_race` — two transactions contended and this one lost.
+ *   * `unknown_error`    — no structured reason came back: a transport fault,
+ *     a timeout, a lock or statement timeout. 062 is all-or-nothing, so
+ *     nothing was written and asking again is safe.
+ *
+ * Every other reason — any `*_mismatch`, `status_not_completable`,
+ * `entitlement_conflict`, `entitlement_revoked_requires_decision`,
+ * `test_payment_in_live_database`, `environment_refused` — describes a disagreement that retrying
+ * cannot resolve and that a human must look at.
  */
 export function isRetryable(reason: string): boolean {
-  return reason === 'entitlement_race'
+  return reason === 'entitlement_race' || reason === 'unknown_error'
 }
 
 /** A refusal reason that means "this notification is not about a payment we know". */
@@ -104,12 +98,14 @@ export interface VerifiedPayment {
   readonly currency: string
 }
 
-/** Extracts the structured `reason` migration 062 puts in the exception DETAIL. */
+/**
+ * Extracts the structured `reason` migrations 062 and 063 put in the
+ * exception DETAIL. Anything without one is `unknown_error`.
+ */
 export function reasonFromError(err: unknown): string {
   const e = err as { details?: unknown; message?: unknown } | null
   for (const field of [e?.details, e?.message]) {
     if (typeof field !== 'string') continue
-    // 062 raises with detail = '{"reason":"amount_mismatch"}'
     const m = /"reason"\s*:\s*"([a-z_]+)"/.exec(field)
     if (m) return m[1]
   }
@@ -129,6 +125,10 @@ export function reasonFromError(err: unknown): string {
 export async function completeVerifiedPayment(
   verified: VerifiedPayment,
 ): Promise<CompletionOutcome> {
+  if (!(await paymentDatabaseAuthority()).allowed) {
+    return { kind: 'refused', reason: 'environment_refused', retryable: false }
+  }
+
   const admin = createAdminClient()
 
   const { data, error } = await admin.rpc('complete_payment', {
@@ -143,9 +143,7 @@ export async function completeVerifiedPayment(
 
   if (error) {
     const reason = reasonFromError(error)
-    // The provider token is a reconciliation key, not a credential (058's own
-    // column comment says so), but it is still not logged: the payment id is
-    // enough to find the row and the token is what an attacker would want.
+    // Never the provider token: the reference is enough to find the row.
     log.error(
       { provider: verified.provider, reference: verified.reference, reason },
       'complete_payment refused',
@@ -153,7 +151,14 @@ export async function completeVerifiedPayment(
     return { kind: 'refused', reason, retryable: isRetryable(reason) }
   }
 
-  const result = (data ?? {}) as { outcome?: string; entitlement_id?: string; review?: unknown }
+  // 062 answers in camelCase: { outcome, paymentId, courseId, entitlementId,
+  // preExistingEntitlement }. XP-PAYTECH-01 read `entitlement_id` and `review`,
+  // which never existed, so the duplicate-purchase flag was always lost.
+  const result = (data ?? {}) as {
+    outcome?: string
+    entitlementId?: string
+    preExistingEntitlement?: boolean
+  }
 
   if (result.outcome === 'already_completed') {
     return { kind: 'already_completed' }
@@ -161,8 +166,8 @@ export async function completeVerifiedPayment(
 
   return {
     kind: 'completed',
-    entitlementId: result.entitlement_id ?? null,
-    review: result.review ?? null,
+    entitlementId: result.entitlementId ?? null,
+    requiresReview: result.preExistingEntitlement === true,
   }
 }
 
@@ -175,17 +180,16 @@ export async function completeVerifiedPayment(
  * on a refusal, precisely so that the function can be all-or-nothing. The
  * forensics therefore belong outside it, and a failure to write them must never
  * change the fulfilment decision — so this swallows its own errors after
- * logging.
- *
- * Correlation is by `provider_token`, the UNIQUE replay key, so this can only
- * ever touch one row. It never writes `status` and never writes a column that
- * could grant access.
+ * logging. It never writes `status` and never writes a column that could
+ * grant access.
  */
 export async function touchIpnReceipt(opts: {
   providerToken: string
   failureReason?: string | null
 }): Promise<void> {
   try {
+    if (!(await paymentDatabaseAuthority()).allowed) return
+
     const admin = createAdminClient()
     const patch: Record<string, unknown> = { last_ipn_at: new Date().toISOString() }
     if (opts.failureReason) patch.failure_reason = opts.failureReason
@@ -199,26 +203,53 @@ export async function touchIpnReceipt(opts: {
       log.error({ reason: opts.failureReason ?? null }, 'could not record IPN receipt')
     }
   } catch {
-    // Forensics must never be able to fail a request that was otherwise correct.
     log.error('recording the IPN receipt threw')
   }
 }
 
 /**
- * Move a payment to a terminal non-paid state.
+ * Record why a payment is still unresolved after a check that was NOT a
+ * notification (the sweep, the admin action, checkout's re-check). Forensics
+ * only: never `status`, never `last_ipn_at`. Swallows its own errors.
+ */
+export async function recordSettlementNote(opts: {
+  paymentId: string
+  failureReason: string
+}): Promise<void> {
+  try {
+    if (!(await paymentDatabaseAuthority()).allowed) return
+
+    const { error } = await createAdminClient()
+      .from('payments')
+      .update({ failure_reason: opts.failureReason })
+      .eq('id', opts.paymentId)
+    if (error) log.error({ reason: opts.failureReason }, 'could not record settlement note')
+  } catch {
+    log.error('recording the settlement note threw')
+  }
+}
+
+// ── Status writes — every one a compare-and-set ─────────────────────────────
+
+/** The two states a payment may be in while money might still move. */
+export const IN_FLIGHT_STATUSES = ['pending', 'processing'] as const
+
+/**
+ * Move an OPENED payment to a terminal non-paid state, because the provider
+ * reliably said it failed or was cancelled.
  *
- * Used for an authenticated cancellation. It writes `status` and nothing that
- * grants access, and it refuses to touch a payment that is already `completed`
- * — an out-of-order cancellation notification arriving after a verified success
- * must NOT undo that success. That rule lives in the `.neq` below rather than
- * in a read-then-write, so two concurrent notifications cannot interleave
- * around it.
+ * Compare-and-set on `status IN (pending, processing)`: a completed, refunded
+ * or already-closed payment is never touched, so an out-of-order cancellation
+ * can neither undo a verified purchase nor overwrite a refund. Migration 063
+ * enforces the same rule in the database.
  */
 export async function recordTerminalFailure(opts: {
   providerToken: string
-  status: 'cancelled' | 'failed' | 'expired'
+  status: 'cancelled' | 'failed'
   failureReason: string
 }): Promise<{ changed: boolean }> {
+  if (!(await paymentDatabaseAuthority()).allowed) return { changed: false }
+
   const admin = createAdminClient()
 
   const { data, error } = await admin
@@ -226,16 +257,70 @@ export async function recordTerminalFailure(opts: {
     .update({
       status:         opts.status,
       failure_reason: opts.failureReason,
-      last_ipn_at:    new Date().toISOString(),
     })
     .eq('provider_token', opts.providerToken)
-    // A completed payment is final. Cancellation never revokes a verified
-    // purchase — Phase E of the brief, and simple correctness.
-    .neq('status', 'completed')
+    .in('status', [...IN_FLIGHT_STATUSES])
     .select('id')
 
   if (error) {
     log.error({ status: opts.status }, 'could not record terminal payment state')
+    return { changed: false }
+  }
+  return { changed: Array.isArray(data) && data.length > 0 }
+}
+
+/**
+ * Close an intent that was NEVER OPENED with the provider — no token was ever
+ * stored, so no checkout URL was ever handed to the learner, so no money can
+ * have moved against it. This is the only automatic closure that needs no
+ * provider answer (XP-PAYTECH-04 safeguard 1).
+ *
+ * Compare-and-set on `status = 'pending' AND provider_token IS NULL`.
+ */
+export async function closeUnopenedAttempt(opts: {
+  paymentId: string
+  failureReason: string
+}): Promise<{ changed: boolean }> {
+  if (!(await paymentDatabaseAuthority()).allowed) return { changed: false }
+
+  const { data, error } = await createAdminClient()
+    .from('payments')
+    .update({ status: 'expired', failure_reason: opts.failureReason })
+    .eq('id', opts.paymentId)
+    .eq('status', 'pending')
+    .is('provider_token', null)
+    .select('id')
+
+  if (error) {
+    log.error({ paymentId: opts.paymentId }, 'could not close an unopened attempt')
+    return { changed: false }
+  }
+  return { changed: Array.isArray(data) && data.length > 0 }
+}
+
+/**
+ * Close an OPENED attempt after a human verified, in the PayTech dashboard,
+ * that it was not paid — the "manual reconciliation" safeguard 1 allows when
+ * the provider cannot answer. Only `paytech-reconcile.ts`'s admin path calls
+ * this, after the provider was asked and did NOT say paid or pending.
+ *
+ * Compare-and-set on `status IN (pending, processing)`.
+ */
+export async function closeAttemptAfterManualReconciliation(opts: {
+  paymentId: string
+}): Promise<{ changed: boolean }> {
+  if (!(await paymentDatabaseAuthority()).allowed) return { changed: false }
+
+  const { data, error } = await createAdminClient()
+    .from('payments')
+    .update({ status: 'expired', failure_reason: 'manual_reconciliation_unpaid' })
+    .eq('id', opts.paymentId)
+    .eq('provider', 'paytech')
+    .in('status', [...IN_FLIGHT_STATUSES])
+    .select('id')
+
+  if (error) {
+    log.error({ paymentId: opts.paymentId }, 'could not close an attempt after manual reconciliation')
     return { changed: false }
   }
   return { changed: Array.isArray(data) && data.length > 0 }

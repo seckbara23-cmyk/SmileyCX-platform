@@ -248,6 +248,155 @@ if (existsSync('.env.local')) {
   }
 }
 
+// ══ PayTech configuration gate (XP-PAYTECH-04) ═════════════════════════════
+//
+// The application refuses a PayTech mode that does not belong to its
+// environment (lib/payments/providers.ts). This gate refuses the same
+// configuration ONE STEP EARLIER — before it is ever built — and checks what
+// the runtime cannot see: variables that merely sit there waiting. Like the
+// PayDunya gate above it reads names and presence only, never a value, and
+// needs no network, so it always runs.
+//
+//   production  (VERCEL_ENV=production):
+//     * PAYTECH_MODE, when set, is 'prod'; no PAYTECH_TEST_* credential exists;
+//     * no PAYTECH_CALLBACK_BASE_URL — production notifications go to the
+//       canonical domain only (XP-PAYTECH-READY-01 E3);
+//     * CRON_SECRET is set whenever PayTech is configured, or the
+//       reconciliation sweep refuses to run and nothing reconciles.
+//   everywhere else (preview, development, CI, local):
+//     * PAYTECH_MODE is never 'prod'; no PAYTECH_PROD_* credential exists;
+//       PAYTECH_ALLOW_PRODUCTION is not 'true'. Live money there would be a real
+//       sale from an unreviewed build.
+//     * a PAYTECH_CALLBACK_BASE_URL pin is absolute HTTPS and is not the
+//       production domain.
+//   always:
+//     * no NEXT_PUBLIC_ variable names PayTech or the cron secret;
+//     * the selected mode has both of its credentials;
+//     * PAYTECH_CHECKOUT_ENABLED=true only with a mode set.
+//   retired, reported but not blocking:
+//     * PAYTECH_ENABLED (replaced by PAYTECH_CHECKOUT_ENABLED) and
+//       NEXT_PUBLIC_PAYMENTS_ENABLED (no longer read by anything).
+{
+  const env = process.env
+  const isProduction = (env.VERCEL_ENV ?? '').trim() === 'production'
+  const present = name => typeof env[name] === 'string' && env[name].trim().length > 0
+  const nameFor = (mode, suffix) => `PAYTECH_${mode.toUpperCase()}_${suffix}`
+  const SUFFIXES = ['API_KEY', 'API_SECRET']
+  const PRODUCTION_HOSTS = ['www.xpclient-academy.com', 'xpclient-academy.com']
+
+  const failures = []
+  const notes = []
+  const rawMode = env.PAYTECH_MODE
+  const mode = typeof rawMode === 'string' ? rawMode.trim() : ''
+  const configured = mode.length > 0
+
+  const publicLeaks = Object.keys(env).filter(
+    k => k.startsWith('NEXT_PUBLIC_') && /PAYTECH|CRON_SECRET/i.test(k),
+  )
+  if (publicLeaks.length > 0) {
+    failures.push(
+      `PayTech or cron variables exposed to the browser: ${publicLeaks.join(', ')}.\n` +
+      '    A NEXT_PUBLIC_ variable is inlined into the client bundle. Rename it and\n' +
+      '    rotate the credential — treat it as compromised.',
+    )
+  }
+
+  if (configured && !['test', 'prod'].includes(mode)) {
+    failures.push("PAYTECH_MODE must be exactly 'test' or 'prod'. There is no default.")
+  }
+
+  if (configured && ['test', 'prod'].includes(mode)) {
+    const missing = SUFFIXES.map(s => nameFor(mode, s)).filter(n => !present(n))
+    if (missing.length > 0) {
+      failures.push(
+        `PAYTECH_MODE='${mode}' but ${missing.length} of 2 credentials for that mode are missing: ${missing.join(', ')}.`,
+      )
+    }
+  }
+
+  if (isProduction) {
+    if (configured && mode !== 'prod') {
+      failures.push(
+        "This is production and PAYTECH_MODE is not 'prod'. PayTech's test mode debits\n" +
+        '    100–150 CFA whatever the price and must not serve the public.',
+      )
+    }
+    const testKeys = SUFFIXES.map(s => nameFor('test', s)).filter(present)
+    if (testKeys.length > 0) {
+      failures.push(`Test PayTech credentials are present in production: ${testKeys.join(', ')}. Remove them.`)
+    }
+    if (present('PAYTECH_CALLBACK_BASE_URL')) {
+      failures.push(
+        'PAYTECH_CALLBACK_BASE_URL is set in production. Production notifications must reach\n' +
+        '    the canonical domain; the pin is for non-production deployments only.',
+      )
+    }
+    if (configured && !present('CRON_SECRET')) {
+      failures.push(
+        'PayTech is configured in production but CRON_SECRET is not set: the reconciliation\n' +
+        '    sweep would refuse to run, and a payment whose notification is lost would never settle.',
+      )
+    }
+  } else {
+    if (mode === 'prod') {
+      failures.push(
+        "PAYTECH_MODE='prod' outside production:\n" +
+        '    live money taken there is a real sale from an unreviewed deployment.',
+      )
+    }
+    const prodKeys = SUFFIXES.map(s => nameFor('prod', s)).filter(present)
+    if (prodKeys.length > 0) {
+      failures.push(`Live PayTech credentials are present outside production: ${prodKeys.join(', ')}. Remove them.`)
+    }
+    if ((env.PAYTECH_ALLOW_PRODUCTION ?? '').trim() === 'true') {
+      failures.push("PAYTECH_ALLOW_PRODUCTION='true' outside production. That approval belongs to production alone.")
+    }
+    if (present('PAYTECH_CALLBACK_BASE_URL')) {
+      let u = null
+      try { u = new URL(env.PAYTECH_CALLBACK_BASE_URL.trim()) } catch { /* reported below */ }
+      if (!u || u.protocol !== 'https:') {
+        failures.push('PAYTECH_CALLBACK_BASE_URL must be an absolute https:// URL.')
+      } else if (PRODUCTION_HOSTS.includes(u.hostname)) {
+        failures.push(
+          'PAYTECH_CALLBACK_BASE_URL points at the production domain from a non-production\n' +
+          '    deployment: sandbox notifications would be delivered to production.',
+        )
+      }
+    }
+  }
+
+  if ((env.PAYTECH_CHECKOUT_ENABLED ?? '').trim() === 'true' && !configured) {
+    failures.push("PAYTECH_CHECKOUT_ENABLED='true' but PAYTECH_MODE is not set: checkout would offer a provider that cannot work.")
+  }
+
+  if (present('PAYTECH_ENABLED')) {
+    notes.push('PAYTECH_ENABLED is set but no longer read (replaced by PAYTECH_CHECKOUT_ENABLED). Remove it.')
+  }
+  if (present('NEXT_PUBLIC_PAYMENTS_ENABLED')) {
+    notes.push('NEXT_PUBLIC_PAYMENTS_ENABLED is set but no longer read: payment availability is decided on the server. Remove it.')
+  }
+
+  if (failures.length > 0) {
+    console.error('\n✗ [PAYTECH_CONFIG] DEPLOYMENT BLOCKED\n')
+    for (const f of failures) console.error(`  • ${f}\n`)
+    console.error(
+      '  Reference: XP-PAYTECH-04 (test/live separation, safeguard 4).\n' +
+      '  No PayTech value is ever printed by this gate.\n',
+    )
+    process.exit(1)
+  }
+  for (const n of notes) console.warn(`⚠ [PAYTECH_CONFIG] ${n}`)
+
+  if (!configured) {
+    process.stdout.write('• PayTech not configured (PAYTECH_MODE unset) — PayTech inactive, nothing to verify.\n')
+  } else {
+    process.stdout.write(
+      `✓ PayTech configuration verified: mode='${mode}' for ${isProduction ? 'production' : 'a non-production deployment'}, ` +
+      `checkout ${(env.PAYTECH_CHECKOUT_ENABLED ?? '').trim() === 'true' ? 'enabled' : 'disabled'}.\n`,
+    )
+  }
+}
+
 const url     = process.env.NEXT_PUBLIC_SUPABASE_URL
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 
