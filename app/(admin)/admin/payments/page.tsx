@@ -3,11 +3,14 @@ import { requirePlatformAdmin } from '@/lib/auth/session'
 import { createAdminClient } from '@/lib/supabase/admin'
 import {
   countOpenPaymentExceptions,
+  lastSweepFinishedAt,
   paymentExceptionQueue,
   watchedPaymentIds,
 } from '@/lib/payments/payment-exceptions'
+import { paytechProcessingAvailability } from '@/lib/payments/providers'
+import { ownerEmails } from '@/lib/auth/owner-email'
 import { verifyPaytechPayment, closeUnpaidPaytechPayment } from './reconcile-actions'
-import ExceptionQueue from './ExceptionQueue'
+import ExceptionQueue, { SweepHealth } from './ExceptionQueue'
 import type { Metadata } from 'next'
 
 // PAY-2C-0. `activateEnrollment` is deliberately NOT imported: it marked a
@@ -52,14 +55,16 @@ const NOTICE: Record<string, string> = {
   verify_already_completed: 'Ce paiement était déjà confirmé.',
   verify_failed:            'PayTech indique un échec : le paiement est clôturé.',
   verify_cancelled:         'PayTech indique une annulation : le paiement est clôturé.',
-  verify_already_terminal:  'Ce paiement était déjà clôturé.',
-  verify_pending:           'PayTech indique un paiement en attente : rien n’a été modifié.',
-  verify_unknown:           'PayTech n’a pas pu donner de réponse exploitable (contrat de statut non confirmé, ou service injoignable). Rien n’a été modifié.',
-  verify_refused:           'PayTech indique un paiement que la plateforme refuse d’honorer automatiquement (voir « Motif »). Décision manuelle requise — remboursement ou accès.',
+  verify_already_terminal:  'Ce paiement était déjà clôturé. Si PayTech le dit réglé, une anomalie a été ouverte : voir la file des anomalies.',
+  verify_pending:           'PayTech indique un paiement en attente. Le statut du paiement n’a pas changé ; un dossier le concernant a pu changer d’état (voir la file des anomalies).',
+  verify_unknown:           'PayTech n’a pas pu donner de réponse exploitable (contrat de statut non confirmé, service injoignable ou état inconnu). Le statut du paiement n’a pas changé ; un dossier a pu être ouvert (voir la file des anomalies).',
+  verify_conflict:          'PayTech n’a pas confirmé de paiement et sa réponse ne correspond pas à ce paiement (voir « Motif »). Le statut du paiement n’a pas changé et une anomalie est enregistrée. Vérifiez le tableau de bord PayTech : vous pouvez clôturer si aucun paiement n’a abouti, puis traiter l’anomalie. Si PayTech l’indique encore en attente, ce paiement peut encore aboutir : un paiement tardif reviendrait ici comme anomalie.',
+  verify_refused:           'PayTech indique un paiement que la plateforme refuse d’honorer automatiquement (voir « Motif »). Une anomalie est ouverte : décidez-la dans la file des anomalies (remboursement ou accès).',
+  verify_retry:             'Erreur passagère pendant l’enregistrement du paiement : rien n’a été décidé et aucun dossier n’a été ouvert. Réessayez « Vérifier » ; le contrôle quotidien réessaiera aussi.',
   verify_ineligible:        'Ce paiement ne peut pas être vérifié automatiquement (voir « Motif »).',
-  verify_exception_unrecorded: 'PayTech a signalé un paiement qui n’a pas pu être enregistré. Rien n’a été modifié. Réessayez.',
-  close_done:               'Paiement clôturé comme non abouti. L’apprenant peut relancer un paiement.',
-  close_done_exception:     'Paiement clôturé, mais une notification reçue pour cette tentative reste à vérifier : une anomalie est ouverte et l’apprenant ne peut pas relancer de paiement tant qu’elle n’est pas traitée.',
+  verify_exception_unrecorded: 'Un signalement n’a pas pu être enregistré. Actualisez la page : si le paiement est encore en cours, réessayez ; sinon, revérifiez-le depuis la file des anomalies.',
+  close_done:               'Paiement clôturé comme non abouti. L’apprenant peut relancer un paiement, sauf si une anomalie le concerne encore.',
+  close_done_exception:     'Paiement clôturé. Une anomalie reste ouverte pour cette tentative : traitez-la dans la file des anomalies. Tant qu’elle est ouverte, elle peut empêcher l’apprenant de relancer un paiement.',
   exception_confirm_received_done: 'Réception des fonds enregistrée. Aucun accès n’a été accordé.',
   exception_dismiss_done:   'Anomalie classée : rien à rembourser.',
   exception_require_refund_done: 'Remboursement marqué comme nécessaire. Rien n’a été envoyé : effectuez-le auprès de PayTech, puis enregistrez-le ici.',
@@ -80,20 +85,27 @@ const NOTICE: Record<string, string> = {
   exception_refused_refund_already_recorded: 'Refusé : un autre remboursement est déjà enregistré pour cette anomalie.',
   exception_refused_refund_reference_reused: 'Refusé : cette référence de remboursement est déjà utilisée.',
   exception_refused_refund_reference_invalid: 'Référence de remboursement invalide.',
-  exception_refused_refund_amount_invalid: 'Refusé : le montant doit être positif et ne pas dépasser le montant du paiement.',
+  exception_refused_refund_amount_invalid: 'Refusé : le montant doit être celui du paiement, ou celui que PayTech a indiqué.',
   exception_refused_refund_partial_not_supported: 'Refusé : seul un remboursement intégral peut être enregistré. Rien n’a été modifié.',
+  exception_refused_refund_charged_attestation_required: 'Refusé : PayTech a annoncé en dernier un montant plus élevé. Pour enregistrer celui-ci, attestez que c’est la totalité de ce qui a été reçu. Rien n’a été modifié.',
   exception_refused_receipt_not_operator_confirmed: 'Seule une confirmation faite par un administrateur peut être annulée.',
   exception_withdraw_receipt_done: 'Confirmation de réception annulée.',
-  exception_acknowledge_report_done: 'Signalement marqué comme vérifié. L’apprenant peut de nouveau relancer un paiement.',
+  exception_acknowledge_report_done: 'Signalement marqué comme vérifié. Aucun fait réglé n’a changé.',
   exception_refused_no_report_to_review: 'Aucun signalement à vérifier sur cette anomalie.',
+  exception_refused_exception_not_resolved: 'Cette anomalie est déjà ouverte. Actualisez.',
+  exception_refused_evidence_changed: 'Ce dossier a changé pendant votre vérification. Actualisez, vérifiez de nouveau le tableau de bord PayTech, puis décidez. Rien n’a été modifié.',
+  exception_refused_evidence_version_required: 'Ce formulaire ne dit pas quelle version du dossier il montrait. Actualisez, puis décidez. Rien n’a été modifié.',
+  exception_reopen_after_review_done: 'Le dossier est de nouveau à traiter.',
   exception_withdraw_refund_done: 'Décision de remboursement annulée.',
   exception_refused_refund_currency_mismatch: 'Refusé : la devise ne correspond pas au paiement.',
   exception_refused_refund_date_invalid: 'Refusé : la date doit être comprise entre la création du paiement et aujourd’hui.',
   exception_refused_environment_refused: 'Opération refusée sur ce déploiement : il ne peut pas agir sur cette base de données. Rien n’a été modifié.',
   close_refused_provider_says_paid:    'Clôture refusée : PayTech indique que ce paiement a abouti.',
-  close_refused_provider_says_pending: 'Clôture refusée : PayTech indique que ce paiement peut encore être réglé.',
+  close_refused_provider_says_pending: 'Clôture refusée : PayTech indique que ce paiement peut encore être réglé. La clôture sera possible 7 jours après la création de la tentative.',
+  close_refused_audit_unavailable: 'Clôture refusée : votre attestation n’a pas pu être enregistrée. Rien n’a été modifié. Réessayez.',
+  close_refused_report_unrecorded: 'Un signalement n’a pas pu être enregistré. Actualisez la page : si le paiement est encore en cours, réessayez ; sinon, revérifiez-le depuis la file des anomalies.',
   close_refused_not_open:   'Clôture refusée : ce paiement n’est plus en cours.',
-  close_refused_ineligible: 'Clôture refusée : ce paiement ne relève pas de PayTech.',
+  close_refused_ineligible: 'Clôture refusée : ce paiement ne peut pas être clôturé ici (voir « Motif »).',
   close_refused_race:       'Clôture refusée : le paiement a changé entre-temps. Actualisez.',
   close_reason_required:    'Indiquez un motif (10 caractères minimum).',
   close_attestation_required: 'Cochez la confirmation de vérification dans le tableau de bord PayTech.',
@@ -150,6 +162,15 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
     .order('created_at', { ascending: false })
     .limit(200)
 
+  // The newest 200 can leave out an attempt still in flight, and it can only be closed from here.
+  const { data: oldestInFlight } = await supabase
+    .from('payments')
+    .select('id, amount, currency, method, status, reference, provider, provider_mode, failure_reason, last_ipn_at, created_at, completed_at, profiles(full_name, email), courses(title)')
+    .eq('provider', 'paytech')
+    .in('status', ['pending', 'processing'])
+    .order('created_at', { ascending: true })
+    .limit(50)
+
   const { data: revData } = await supabase
     .from('payments')
     .select('amount, provider_mode')
@@ -164,14 +185,17 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
 
   // Absent until migration 064 is applied. The page must still render: a failed
   // read shows as "unavailable", never as an empty queue.
-  const [openExceptions, exceptions, watched] = await Promise.all([
+  const [openExceptions, exceptions, watched, lastSweep] = await Promise.all([
     countOpenPaymentExceptions(),
     exceptionsOnly ? paymentExceptionQueue() : Promise.resolve(null),
     watchedPaymentIds(),
+    lastSweepFinishedAt(),
   ])
 
   const now = Date.now()
-  const all = (data ?? []) as unknown as PaymentRow[]
+  const newest = (data ?? []) as unknown as PaymentRow[]
+  const shown = new Set(newest.map(p => p.id))
+  const all = [...newest, ...((oldestInFlight ?? []) as unknown as PaymentRow[]).filter(p => !shown.has(p.id))]
   const toReconcile = all.filter(p => needsReconciliation(p, now))
   const payments = reconcileOnly ? toReconcile : all.slice(0, 100)
 
@@ -213,7 +237,7 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
           <Link href="/admin/payments?filter=exceptions" className="font-semibold underline">
             {openExceptions} anomalie(s) de paiement à traiter
           </Link>
-          {' '}: de l’argent a peut-être été reçu sans accès accordé.
+          {' '}: des signalements attendent une vérification ou une décision.
         </div>
       )}
 
@@ -227,6 +251,10 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
           utilisez <span className="font-semibold">Admin → Accès</span>.
         </p>
       </div>
+
+      {(paytechProcessingAvailability().available || (openExceptions ?? 0) > 0) && (
+        <SweepHealth lastSweep={lastSweep} now={Date.now()} alertRecipients={ownerEmails().length} />
+      )}
 
       {exceptionsOnly ? <ExceptionQueue exceptions={exceptions} /> : (
       <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-x-auto">
@@ -275,9 +303,9 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
                     </td>
                     <td className="px-4 py-3 text-xs font-mono text-gray-500">
                       {p.failure_reason ?? '—'}
-                      {watched.has(p.id) && (
+                      {watched.has(p.id) && (p.status === 'pending' || p.status === 'processing') && (
                         <p role="alert" className="mt-1 font-sans font-semibold text-red-700">
-                          PayTech a notifié un paiement pour cette tentative. Vérifiez avant de clôturer.
+                          Un signalement concerne cette tentative. Vérifiez avant de clôturer.
                         </p>
                       )}
                     </td>

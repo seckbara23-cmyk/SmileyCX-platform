@@ -39,7 +39,7 @@ vi.mock('@/lib/supabase/admin', () => ({
     from: (table: string) => {
       let completedOnly = false
       const chain: Record<string, unknown> = {
-        select: () => chain, order: () => chain, limit: () => chain, in: () => chain, is: () => chain, not: () => chain,
+        select: () => chain, order: () => chain, limit: () => chain, in: () => chain, is: () => chain, not: () => chain, gt: () => chain,
         eq: (c: string, v: string) => { if (c === 'status' && v === 'completed') completedOnly = true; return chain },
         then: (res: (_v: unknown) => unknown) => Promise.resolve(
           table === 'payment_exceptions' && H.exceptionTable === 'error'
@@ -505,7 +505,7 @@ describe('XP-PAYTECH-05 — the exception workflow cannot complete, grant or ref
     const names = [...ACTIONS.matchAll(/export async function (\w+)/g)].map(m => m[1]).sort()
     expect(names).toEqual([
       'acknowledgeExceptionReport', 'confirmExceptionReceipt', 'dismissException', 'recheckException',
-      'recordExceptionAccess', 'recordExceptionRefund', 'requireExceptionRefund',
+      'recordExceptionAccess', 'recordExceptionRefund', 'reopenExceptionAfterReview', 'requireExceptionRefund',
       'withdrawExceptionReceipt', 'withdrawExceptionRefund',
     ])
     for (const body of [
@@ -564,6 +564,16 @@ describe('XP-PAYTECH-05 — the alert carries the reference and nothing else', (
   })
 })
 
+describe('XP-PAYTECH-06B — the sweep clock', () => {
+  it('starts before the alerts, so a run cut off is not called overdue for time it never counted', () => {
+    const route = read('app/api/payments/paytech/reconcile/route.ts')
+    expect(route.indexOf('const started = Date.now()')).toBeGreaterThan(-1)
+    expect(route.indexOf('const started = Date.now()')).toBeLessThan(route.indexOf('sendPendingExceptionAlerts('))
+    expect(route.match(/Date\.now\(\) - started > SWEEP_BUDGET_MS/g)).toHaveLength(2)
+    expect(route).not.toContain('Date.now() - now > SWEEP_BUDGET_MS')
+  })
+})
+
 describe('XP-PAYTECH-05 — the admin queue', () => {
   const view = (over: Record<string, unknown> = {}) => ({
     id: '30000000-0000-4000-8000-000000000001', paymentId: '40000000-0000-4000-8000-000000000001',
@@ -572,6 +582,9 @@ describe('XP-PAYTECH-05 — the admin queue', () => {
     paymentReceived: 'reported', accessState: 'not_granted', refundState: 'not_assessed',
     refundExternalReference: null, refundAmount: null, refundCurrency: null, refundConfirmedAt: null,
     resolution: null, resolvedAt: null, alertSentAt: null, postSettlementReportAt: null,
+    administratorFlaggedAt: null, evidenceVersion: 7, lastDecisionNote: null, lastDecisionAt: null, providerAnswers: [],
+    evidenceCount: 1, notificationCount: 1, evidenceOverflow: false, providerAnswer: null, providerAmount: null, providerAmounts: [],
+    repeatCount: 0, lastRepeatAt: null, differentReportAt: null, differentSignal: null,
     payment: { reference: 'SCX-REF-1', status: 'expired', amount: 45000, currency: 'XOF', providerMode: 'live' },
     learner: { name: 'Awa', email: 'awa@example.test' }, courseTitle: 'Fondamentaux',
     accessLive: false, otherCompletedReference: null, ...over,
@@ -637,11 +650,11 @@ describe('XP-PAYTECH-05 — the admin queue', () => {
 
   it('names an unproven report for what it is', async () => {
     const html = await render([view({ lastSignal: 'unverified_report', paymentReceived: 'not_established', detail: 'ipn_signature_mismatch' })])
-    expect(html).toContain('signature n’a pas pu être vérifiée')
+    expect(html).toContain('Notification non vérifiée')
     expect(html).toContain('Non établi')
   })
 
-  it('a resolved record offers nothing and shows the refund', async () => {
+  it('a resolved record only offers to report money it does not cover, and shows the refund', async () => {
     const html = await render([view({
       state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', paymentReceived: 'confirmed_by_operator',
       refundExternalReference: 'PT-REFUND-0001', refundAmount: 45000, refundCurrency: 'XOF', refundConfirmedAt: '2026-10-03T00:00:00Z',
@@ -649,10 +662,13 @@ describe('XP-PAYTECH-05 — the admin queue', () => {
     })])
     expect(html).toContain('PT-REFUND-0001')
     expect(html).not.toContain('Vérifier à nouveau')
-    expect(html).not.toContain('<form')
+    expect(html).not.toContain('Marquer ce signalement comme vérifié')
+    expect(html.match(/<form/g)).toHaveLength(1)
+    expect(html).toContain('Un paiement n’est pas couvert par ce dossier')
+    expect(html).toContain('un paiement que ce dossier ne couvre pas')
   })
 
-  it('a paid report after settlement is unmissable, and its only action changes no settled fact', async () => {
+  it('a paid report after settlement is unmissable, and its actions change no settled fact', async () => {
     const html = await render([view({
       state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', paymentReceived: 'confirmed_by_operator',
       refundExternalReference: 'PT-REFUND-0001', refundAmount: 45000, refundCurrency: 'XOF', refundConfirmedAt: '2026-10-03T00:00:00Z',
@@ -660,8 +676,452 @@ describe('XP-PAYTECH-05 — the admin queue', () => {
     })])
     expect(html).toContain('un second paiement réel')
     expect(html).toContain('Marquer ce signalement comme vérifié')
-    expect(html).not.toContain('Vérifier à nouveau')
+    expect(html).toContain('Vérifier à nouveau')
     expect(html).not.toContain('Enregistrer le remboursement effectué')
+    expect(html).not.toContain('Classer : rien à rembourser')
+  })
+
+  const repeated = { state: 'resolved', resolution: 'nothing_to_return', refundState: 'not_required', paymentReceived: 'not_received',
+    resolvedAt: '2026-10-03T00:00:00Z', repeatCount: 4, lastRepeatAt: '2026-10-05T00:00:00Z', evidenceCount: 3 }
+
+  it('a repeated notification is shown, says the learner is not blocked, and can be acted on', async () => {
+    const html = await render([view(repeated)])
+    expect(html).toContain('reçue de nouveau, 4 fois')
+    expect(html).toContain('Elle ne bloque pas l’apprenant')
+    expect(html).toContain('Marquer ce signalement comme vérifié')
+    expect(html).toContain('Un paiement n’est pas couvert par ce dossier')
+    expect(html).toContain('name="evidenceCount" value="3"')
+  })
+
+  it('on a flagged record it does not claim the learner is free to pay', async () => {
+    const html = await render([view({ ...repeated, postSettlementReportAt: '2026-10-04T00:00:00Z' })])
+    expect(html).toContain('reçue de nouveau, 4 fois')
+    expect(html).not.toContain('Elle ne bloque pas l’apprenant')
+  })
+
+  it('a different notification past the limit is not described as already verified', async () => {
+    const html = await render([view({ ...repeated, differentReportAt: '2026-10-05T00:00:00Z', differentSignal: 'amount_mismatch' })])
+    expect(html).toContain('Un signalement que la dernière vérification ne couvre pas')
+    expect(html).toContain('Montant signalé différent')
+    expect(html).not.toContain('déjà vérifiée')
+    expect(html).not.toContain('Elle ne bloque pas l’apprenant')
+  })
+
+  it('a flag on a completed payment does not claim a provider report or a blocked learner', async () => {
+    const html = await render([view({
+      state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', paymentReceived: 'confirmed_by_provider',
+      resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z',
+      notificationCount: 2,
+      payment: { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' },
+    })])
+    expect(html).toContain('Un paiement que ce dossier ne couvre pas')
+    expect(html).toContain('lequel des deux est concerné avant tout remboursement')
+    // The record cannot support saying that nothing questions it: a claim that came before
+    // a paid notification is not what its last signal says.
+    expect(html).not.toContain('Rien ne remet en cause')
+    expect(html).toContain('L’apprenant n’est pas bloqué')
+    expect(html).not.toContain('ne peut pas relancer')
+  })
+
+  const completedFlag = {
+    state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', paymentReceived: 'confirmed_by_provider',
+    resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z', evidenceCount: 2, notificationCount: 2,
+    payment: { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' },
+  }
+
+  it.each([
+    ['a cancellation', { lastSignal: 'cancel_hint' }],
+    ['the provider saying it failed', { lastSignal: 'provider_not_paid' }],
+    ['a conflicting amount', { lastSignal: 'amount_mismatch' }],
+    ['an earlier provider answer', { providerAnswer: 'provider_not_paid' }],
+    ['the provider having named another amount', { providerAnswer: 'settlement_amount_mismatch' }],
+  ])('a flag beside %s does not say the payment is beyond doubt', async (_name, over) => {
+    const html = await render([view({ ...completedFlag, ...over })])
+    expect(html).toContain('met aussi en doute le paiement confirmé')
+    expect(html).not.toContain('Rien ne remet en cause')
+  })
+
+  it('a different notification gives no false reason for having reopened nothing', async () => {
+    const html = await render([view({ ...completedFlag, repeatCount: 1, differentReportAt: '2026-10-05T00:00:00Z', differentSignal: 'paid_hint' })])
+    expect(html).not.toContain('la limite de réouvertures')
+    expect(html).not.toContain('sa signature n’a pas pu')
+    expect(html).toContain('compté et n’a rien rouvert')
+  })
+
+  it('a dismissal on more than one report asks for that to be covered', async () => {
+    const html = await render([view({ evidenceCount: 2 })])
+    const dismiss = html.slice(html.indexOf('Classer : rien à rembourser'))
+    expect(dismiss.slice(0, dismiss.indexOf('</details>'))).toContain('name="attestAll"')
+  })
+
+  it('a report is not stated as PayTech\'s own word', async () => {
+    const paid = await render([view()])
+    expect(paid).toContain('Une notification indique un paiement')
+    expect(paid).not.toContain('PayTech a notifié')
+    expect(await render([view({ lastSignal: 'cancel_hint' })])).toContain('Une notification indique une annulation')
+    expect(await render([view({ lastSignal: 'unverified_report' })])).toContain('signature invalide ou type d’événement inconnu')
+    const { paymentExceptionEmailText } = await import('@/lib/email/templates/payment-exception')
+    expect(paymentExceptionEmailText({ reference: 'SCX-1' })).not.toContain('PayTech a signalé')
+  })
+
+  it('access held through the payment itself is not called another origin', async () => {
+    const own = await render([view({ ...completedFlag, accessLive: true })])
+    expect(own).not.toContain('autre origine')
+    expect(own).toContain('Accès actif')
+    expect(await render([view({ accessLive: true })])).toContain('Accès actif, autre origine')
+  })
+
+  it('one notification and an answer from PayTech are not called several notifications', async () => {
+    const html = await render([view({ evidenceCount: 2, notificationCount: 1, providerAnswer: 'provider_not_paid', paymentReceived: 'confirmed_by_operator', refundState: 'required' })])
+    expect(html).not.toContain('notifications au contenu différent')
+    expect(html).toContain('2 signalements différents')
+  })
+
+  it('"not paid" is no disagreement on a refund or a dismissal, where it is expected', async () => {
+    for (const resolution of ['refund_confirmed', 'nothing_to_return']) {
+      const html = await render([view({ state: 'resolved', resolution, refundState: 'not_required', resolvedAt: '2026-10-03T00:00:00Z', providerAnswer: 'provider_not_paid' })])
+      expect(html).not.toContain('Désaccord enregistré')
+    }
+  })
+
+  it('a record with repeats does not say no alert is required', async () => {
+    const html = await render([view({ state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', resolvedAt: '2026-10-03T00:00:00Z', repeatCount: 2, lastRepeatAt: '2026-10-05T00:00:00Z' })])
+    expect(html).toContain('une alerte par semaine au plus')
+    expect(html).not.toContain('aucune alerte requise')
+  })
+
+  it('a refund after the provider named another amount offers that amount, and says so', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'settlement_amount_mismatch', providerAmount: 40000 })])
+    expect(html).toContain('Seuls ce montant ou celui du paiement')
+    expect(html).toContain('value="40000"')
+    const plain = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required' })])
+    expect(plain).not.toContain('Seuls ce montant ou celui du paiement')
+    expect(plain).toContain('value="45000"')
+  })
+
+  it('that hint does not depend on what the provider said last', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'provider_not_paid', providerAmount: 40000 })])
+    expect(html).toContain('Seuls ce montant ou celui du paiement')
+  })
+
+  it('when the provider says more than was charged, the form says only its amount can be recorded', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'settlement_amount_mismatch', providerAmount: 90000 })])
+    expect(html).toContain('Seuls ce montant ou, sous l’attestation ci-dessous, celui du paiement peuvent être enregistrés')
+    expect(html).not.toContain('Seuls ce montant ou celui du paiement')
+  })
+
+  it('on a completed payment the form starts at the amount charged, and says less cannot be recorded', async () => {
+    const payment = { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'settlement_amount_mismatch', providerAmount: 5000, payment })])
+    expect(html).toContain('Seul le montant du paiement peut être enregistré')
+    expect(html).not.toContain('Seuls ce montant ou celui du paiement')
+    expect(html).toMatch(/name="amount"[^>]*value="45000"/)
+    const more = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'settlement_amount_mismatch', providerAmount: 90000, payment })])
+    expect(more).toContain('Seuls ce montant ou, sous l’attestation ci-dessous, celui du paiement peuvent être enregistrés')
+    expect(more).toMatch(/name="amount"[^>]*value="90000"/)
+  })
+
+  it('on a closed attempt the form starts at what the provider said', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'settlement_amount_mismatch', providerAmount: 5000 })])
+    expect(html).toMatch(/name="amount"[^>]*value="5000"/)
+  })
+
+  it('every amount the provider has named is on the record for whoever reads it', async () => {
+    const one = await render([view({ providerAmounts: [5000] })])
+    expect(one).not.toContain('Montants annoncés par PayTech')
+    const html = await render([view({ providerAnswer: 'settlement_amount_mismatch', providerAmount: 9000, providerAmounts: [5000, 9000, 45000] })])
+    expect(html).toMatch(/Montants annoncés par PayTech sur ce dossier : 5.000, 9.000, 45.000 XOF/)
+  })
+
+  it('a cancellation on a flagged completed payment is not told "nothing questions it"', async () => {
+    const html = await render([view({ ...completedFlag, repeatCount: 1, differentReportAt: '2026-10-05T00:00:00Z', differentSignal: 'cancel_hint' })])
+    expect(html).toContain('met aussi en doute le paiement confirmé')
+    expect(html).not.toContain('Rien ne remet en cause')
+  })
+
+  it('the provider\'s own report after a settlement is not called unproven', async () => {
+    const settled = { state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', paymentReceived: 'confirmed_by_operator',
+      refundExternalReference: 'PT-REFUND-0001', refundAmount: 45000, refundCurrency: 'XOF', refundConfirmedAt: '2026-10-03T00:00:00Z',
+      resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z' }
+    const provider = await render([view({ ...settled, lastSignal: 'completion_refused' })])
+    expect(provider).toContain('après ce règlement par PayTech')
+    expect(provider).not.toContain('sans que cela soit prouvé')
+    expect(await render([view({ ...settled, lastSignal: 'paid_hint' })])).toContain('sans que cela soit prouvé')
+  })
+
+  it('a flag an administrator raised is described as that, whatever the record says otherwise', async () => {
+    const flag = { postSettlementReportAt: '2026-10-04T00:00:00Z', administratorFlaggedAt: '2026-10-04T00:00:00Z', lastSignal: 'paid_hint' }
+    const refunded = await render([view({ ...flag, state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', paymentReceived: 'confirmed_by_operator',
+      refundExternalReference: 'PT-REFUND-0001', refundAmount: 45000, refundCurrency: 'XOF', refundConfirmedAt: '2026-10-03T00:00:00Z', resolvedAt: '2026-10-03T00:00:00Z' })])
+    expect(refunded).toContain('Un administrateur a indiqué un paiement que ce dossier ne couvre pas')
+    expect(refunded).toContain('L’apprenant ne peut pas relancer de paiement')
+    expect(refunded).not.toContain('sans que cela soit prouvé')
+
+    const completed = await render([view({ ...flag, state: 'resolved', resolution: 'nothing_to_return', refundState: 'not_required', paymentReceived: 'confirmed_by_provider',
+      resolvedAt: '2026-10-03T00:00:00Z', payment: { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' } })])
+    expect(completed).toContain('Un administrateur a indiqué un paiement que ce dossier ne couvre pas')
+    expect(completed).toContain('L’apprenant n’est pas bloqué')
+    expect(completed).not.toContain('Ce paiement a abouti alors que')
+  })
+
+  it('a form states the version of the record it showed, on the decision and on the refund', async () => {
+    const hidden = /name="evidenceVersion" value="7"/g
+    const refund = { paymentReceived: 'confirmed_by_operator', refundState: 'required' }
+    const html = await render([view(refund)])
+    expect(html).toContain('Enregistrer le remboursement effectué')
+    expect((html.match(hidden) ?? []).length).toBeGreaterThanOrEqual(2)
+    expect(html).not.toContain('flagShown')
+  })
+
+  it('what the last administrator wrote is on the record', async () => {
+    const html = await render([view({ state: 'resolved', resolution: 'nothing_to_return', lastDecisionNote: 'Vu dans le <tableau> PayTech', lastDecisionAt: '2026-10-05T00:00:00Z' })])
+    expect(html).toContain('Vu dans le &lt;tableau&gt; PayTech')
+    expect(await render([view()])).not.toContain('Dernière décision')
+  })
+
+  it('an unproven report after a refund reads as unproven, whoever reopened the record before', async () => {
+    const html = await render([view({ state: 'resolved', resolution: 'refund_confirmed', refundState: 'confirmed', resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z',
+      lastSignal: 'paid_hint', payment: { reference: 'SCX-REF-1', status: 'expired', amount: 45000, currency: 'XOF', providerMode: 'live' } })])
+    expect(html).toContain('sans que cela soit prouvé')
+    expect(html).not.toContain('par un administrateur')
+  })
+
+  it('access on a refunded payment is not called another origin', async () => {
+    const html = await render([view({ accessLive: true, refundState: 'confirmed', state: 'resolved', resolution: 'refund_confirmed', resolvedAt: '2026-10-03T00:00:00Z',
+      payment: { reference: 'SCX-REF-1', status: 'refunded', amount: 45000, currency: 'XOF', providerMode: 'live' } })])
+    expect(html).toContain('Accès actif')
+    expect(html).not.toContain('autre origine')
+  })
+
+  it('one report on a completed payment is not called several', async () => {
+    const html = await render([view({ state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', paymentReceived: 'confirmed_by_provider', lastSignal: 'unverified_report',
+      resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z', notificationCount: 1,
+      payment: { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' } })])
+    expect(html).toContain('Un signalement que ce paiement ne couvre pas')
+    expect(html).not.toContain('Plusieurs signalements')
+    expect(html).not.toContain('lequel des deux')
+  })
+
+  it('a refund at a decimal amount the provider named can be entered', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_operator', refundState: 'required', providerAmount: 45000.5 })])
+    expect(html).toContain('step="any"')
+  })
+
+  it('a status word the contract does not list has words of its own', async () => {
+    const html = await render([view({ providerAnswer: 'settlement_status_unrecognised', providerAnswers: ['settlement_status_unrecognised'] })])
+    expect(html).toContain('un état de paiement que le contrat ne connaît pas')
+  })
+
+  it('money PayTech confirmed, and now says can still be paid, can be dismissed under the attestation', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', providerAnswer: 'provider_pending', providerAnswers: ['provider_pending'] })])
+    expect(html).toContain('Classer : rien à rembourser')
+  })
+
+  it('every answer the provider gave on a record is shown, not only its last', async () => {
+    const html = await render([view({ providerAnswer: 'settlement_amount_mismatch', providerAmount: 90000,
+      providerAnswers: ['settlement_currency_mismatch', 'settlement_amount_mismatch'] })])
+    expect(html).toContain('une devise différente de la devise enregistrée')
+    expect(html).toContain('un montant différent du montant enregistré')
+  })
+
+  it('a paid answer with no readable amount has words of its own', async () => {
+    const html = await render([view({ providerAnswer: 'settlement_amount_unreadable', providerAnswers: ['settlement_amount_unreadable'] })])
+    expect(html).toContain('un paiement sans montant lisible')
+  })
+
+  it('a refund decision on more than one report asks for the attestation', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_operator', evidenceCount: 2, notificationCount: 2 })])
+    const form = html.slice(html.indexOf('Un remboursement est nécessaire'))
+    expect(form.slice(0, form.indexOf('</form>'))).toContain('name="attestAll"')
+  })
+
+  it('a confirmation by PayTech dismissed after it said not paid shows that disagreement', async () => {
+    const html = await render([view({ state: 'resolved', resolution: 'nothing_to_return', resolvedAt: '2026-10-03T00:00:00Z', paymentReceived: 'confirmed_by_provider',
+      providerAnswer: 'provider_not_paid', providerAnswers: ['provider_not_paid'] })])
+    expect(html).toContain('que ce paiement n’a pas abouti')
+  })
+
+  it('out of date means the record changed, not only that a report arrived', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    expect(page).toContain('Ce dossier a changé pendant votre vérification')
+    expect(page).not.toContain('Un signalement différent est arrivé pendant votre vérification')
+    expect(page).toContain('ce paiement peut encore aboutir : un paiement tardif reviendrait ici comme anomalie')
+  })
+
+  it('a dismissal a completion contradicts is described as that, not as another payment', async () => {
+    const html = await render([view({ ...completedFlag, resolution: 'nothing_to_return', evidenceCount: 1, notificationCount: 1 })])
+    expect(html).toContain('classé sans remboursement')
+    expect(html).not.toContain('Un paiement que ce dossier ne couvre pas')
+  })
+
+  it('a settled record already dealt with is not left "awaiting an alert"', async () => {
+    const settled = await render([view({ state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', resolvedAt: '2026-10-03T00:00:00Z' })])
+    expect(settled).not.toContain('alerte en attente')
+    expect(settled).toContain('aucune alerte requise')
+    expect(await render([view()])).toContain('alerte en attente')
+  })
+
+  it('a settled record with something to review offers to ask PayTech again', async () => {
+    const asks = await render([view({ ...completedFlag })])
+    expect(asks).toContain('Vérifier à nouveau auprès de PayTech')
+    const quiet = await render([view({ state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', resolvedAt: '2026-10-03T00:00:00Z' })])
+    expect(quiet).not.toContain('Vérifier à nouveau auprès de PayTech')
+  })
+
+  it('the notice after a close does not promise the learner can pay', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    expect(page).toContain('sauf si une anomalie le concerne encore')
+    expect(page).toContain('verify_conflict:')
+    expect(page).not.toContain('de l’argent a peut-être été reçu sans accès accordé')
+  })
+
+  it('both banners carry the new sentence, not the old claim that money may have arrived', () => {
+    for (const file of ['app/(admin)/admin/page.tsx', 'app/(admin)/admin/payments/page.tsx']) {
+      const page = read(file)
+      expect(page).not.toContain('a peut-être été reçu')
+      expect(page).toContain('des signalements attendent une vérification ou une décision')
+    }
+  })
+
+  it('a paid notification on a completed payment is not called one on a closed attempt', async () => {
+    const html = await render([view(completedFlag)])
+    expect(html).not.toContain('tentative clôturée')
+  })
+
+  it('a settled record shows how many different notifications it holds', async () => {
+    const html = await render([view({ ...completedFlag, evidenceCount: 3, notificationCount: 3 })])
+    expect(html).toContain('3 signalement(s) différent(s)')
+    expect(html).toContain('3 notifications au contenu différent')
+  })
+
+  it('an acknowledgement attests to the payment and to any other, not only a second one', async () => {
+    const html = await render([view(completedFlag)])
+    expect(html).toContain('l’état de ce paiement et s’il y a eu un autre paiement')
+  })
+
+  it('what the provider said is shown apart, whatever a notification has written since', async () => {
+    const html = await render([view({ lastSignal: 'currency_mismatch', providerAnswer: 'settlement_amount_mismatch' })])
+    expect(html).toContain('Désaccord enregistré avec PayTech : il a indiqué un montant différent')
+    expect(await render([view()])).not.toContain('Désaccord enregistré avec PayTech')
+  })
+
+  it('the queue says it does not replace the dashboard, even when it is empty', async () => {
+    for (const html of [await render([view()]), await render([])]) {
+      expect(html).toContain('complète le rapprochement avec le tableau de bord PayTech')
+    }
+  })
+
+  it('a contradiction after an access decision is not described as a second payment', async () => {
+    const html = await render([view({
+      state: 'resolved', resolution: 'access_honoured', refundState: 'not_required', accessState: 'granted', paymentReceived: 'confirmed_by_operator',
+      resolvedAt: '2026-10-03T00:00:00Z', postSettlementReportAt: '2026-10-04T00:00:00Z', lastSignal: 'provider_not_paid', providerAnswer: 'provider_not_paid',
+    })])
+    expect(html).toContain('Un signalement met ce règlement en doute')
+    expect(html).not.toContain('un second paiement réel')
+  })
+
+  it('a dismissal on a payment still in flight says it does not close it', async () => {
+    const inFlight = { reference: 'SCX-REF-1', status: 'processing', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    expect(await render([view({ payment: inFlight })])).toContain('classer cette anomalie ne le clôture pas')
+    expect(await render([view()])).not.toContain('classer cette anomalie ne le clôture pas')
+  })
+
+  it('a delivery nobody looked at is not called verified', async () => {
+    const html = await render([view({ state: 'resolved', resolution: 'settled_normally', refundState: 'not_required', resolvedAt: '2026-10-03T00:00:00Z', repeatCount: 1, lastRepeatAt: '2026-10-05T00:00:00Z' })])
+    expect(html).toContain('déjà prise en compte')
+    expect(html).not.toContain('déjà vérifiée')
+  })
+
+  it('the notices do not state what may not be so', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    expect(page).toContain('elle peut empêcher l’apprenant de relancer un paiement')
+    expect(page).toContain('close_refused_report_unrecorded:')
+    expect(page).not.toContain('PayTech a signalé un paiement qui n’a pas pu')
+  })
+
+  describe('a sweep that has stopped says so', () => {
+    const NOW = new Date('2026-10-31T12:00:00Z').getTime()
+    const health = async (lastSweep: { readable: boolean; at: string | null }, alertRecipients = 2) => {
+      const { renderToStaticMarkup } = await import('react-dom/server')
+      const { SweepHealth } = await import('@/app/(admin)/admin/payments/ExceptionQueue')
+      return renderToStaticMarkup(SweepHealth({ lastSweep, now: NOW, alertRecipients }) ?? null)
+    }
+
+    it('says nothing while the sweep is recent', async () => {
+      expect(await health({ readable: true, at: '2026-10-31T05:00:00Z' })).toBe('')
+      expect(await health({ readable: true, at: '2026-10-30T01:00:00Z' })).toBe('')
+    })
+    it('a recent sweep with nobody to alert is not healthy', async () => {
+      const html = await health({ readable: true, at: '2026-10-31T05:00:00Z' }, 0)
+      expect(html).toContain('Aucun destinataire d’alerte')
+    })
+    it('warns when the last one is too old', async () => {
+      const html = await health({ readable: true, at: '2026-10-29T05:00:00Z' })
+      expect(html).toContain('n’a pas abouti depuis')
+      expect(html).toContain('role="alert"')
+    })
+    it('warns when there has never been one', async () => {
+      expect(await health({ readable: true, at: null })).toContain('n’a encore jamais abouti')
+    })
+    it('does not read "could not tell" as "never"', async () => {
+      const html = await health({ readable: false, at: null })
+      expect(html).toContain('Impossible de savoir')
+      expect(html).not.toContain('jamais abouti')
+    })
+    it('its row is written only by a deployment that may act on this database', () => {
+      const src = read('lib/payments/payment-exceptions.ts')
+      const body = src.slice(src.indexOf('export async function recordSweepFinished'), src.indexOf('export async function lastSweepFinishedAt'))
+      expect(body.indexOf('paymentDatabaseAuthority()')).toBeGreaterThan(-1)
+      expect(body.indexOf('paymentDatabaseAuthority()')).toBeLessThan(body.indexOf('logAuditEvent('))
+    })
+    it('a stale sweep with nobody to alert says both', async () => {
+      const html = await health({ readable: true, at: '2026-10-29T05:00:00Z' }, 0)
+      expect(html).toContain('n’a pas abouti depuis')
+      expect(html).toContain('Aucun destinataire d’alerte')
+    })
+    it('the page shows it where PayTech can be processed, and wherever a record waits for a person', () => {
+      const page = read('app/(admin)/admin/payments/page.tsx')
+      expect(page).toMatch(/\(paytechProcessingAvailability\(\)\.available \|\| \(openExceptions \?\? 0\) > 0\) && \(\s*<SweepHealth/)
+    })
+  })
+
+  it('an open record says how many different notifications it holds, and only then asks for it to be covered', async () => {
+    const one = await render([view({ paymentReceived: 'confirmed_by_operator', refundState: 'required' })])
+    expect(one).not.toContain('notifications au contenu différent')
+    expect(one).not.toContain('attestAll')
+    const two = await render([view({ paymentReceived: 'confirmed_by_operator', refundState: 'required', evidenceCount: 2, notificationCount: 2 })])
+    expect(two).toContain('2 notifications au contenu différent')
+    expect(two).toContain('name="attestAll"')
+    expect(await render([view({ evidenceCount: 21, notificationCount: 21, evidenceOverflow: true })])).toContain('Plus de 20 notifications au contenu différent')
+    const atCap = await render([view({ evidenceCount: 20, notificationCount: 20 })])
+    expect(atCap).toContain('20 notifications au contenu différent')
+    expect(atCap).not.toContain('Plus de 20')
+    const past = await render([view({ paymentReceived: 'confirmed_by_operator', refundState: 'required', evidenceCount: 22, notificationCount: 21, evidenceOverflow: true })])
+    expect(past).toContain('Plus de 20 signalements différents')
+    expect(past).not.toContain('22 signalement')
+    const access = await render([view({ paymentReceived: 'confirmed_by_operator', evidenceCount: 2 })])
+    expect(access).toMatch(/Rattacher l’accès/)
+    expect(access).toContain('name="attestAll"')
+  })
+
+  it.each([
+    ['receipt not confirmed', {}],
+    ['receipt confirmed', { paymentReceived: 'confirmed_by_operator' }],
+    ['refund required', { paymentReceived: 'confirmed_by_operator', refundState: 'required' }],
+    ['resolved with repeats', repeated],
+  ])('every form that can review states what it showed: %s', async (_label, over) => {
+    const html = await render([view(over)])
+    const recheck = html.includes('Vérifier à nouveau') ? 1 : 0
+    expect(html.match(/name="evidenceCount"/g)).toHaveLength(html.match(/<form/g)!.length - recheck)
+    expect(html.match(/name="evidenceVersion"/g)).toHaveLength(html.match(/<form/g)!.length - recheck)
+  })
+
+  it('the notices for the new refusals exist, and the close warning is for in-flight rows', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    expect(page).toContain("watched.has(p.id) && (p.status === 'pending' || p.status === 'processing')")
+    expect(page).toContain('exception_refused_evidence_changed')
+    expect(page).toContain('exception_refused_exception_not_resolved')
+    expect(page).toContain('exception_reopen_after_review_done')
   })
 
   it('flags a possible double payment', async () => {
@@ -715,6 +1175,192 @@ describe('XP-PAYTECH-05 — the admin queue', () => {
     const plain = renderToStaticMarkup(await AdminPaymentsPage({ searchParams: Promise.resolve({ notice: 'not_a_real_notice' }) }))
     expect(plain).not.toContain('Décision refusée')
   })
+  it('says what an unlisted status or an unreadable amount is, and not that the amount differs', async () => {
+    const off = 'Montant signalé différent du montant enregistré'
+    const unlisted = await render([view({ lastSignal: 'amount_mismatch', detail: 'settlement_status_unrecognised', providerAnswer: 'settlement_status_unrecognised', providerAnswers: ['settlement_status_unrecognised'] })])
+    expect(unlisted).toContain('PayTech donne un état de paiement que le contrat ne connaît pas')
+    expect(unlisted).not.toContain(off)
+    const unreadable = await render([view({ lastSignal: 'amount_mismatch', detail: 'settlement_amount_unreadable', providerAnswer: 'settlement_amount_unreadable', providerAnswers: ['settlement_amount_unreadable'] })])
+    expect(unreadable).toContain('PayTech indique un paiement sans montant lisible')
+    expect(unreadable).not.toContain(off)
+    expect(await render([view({ lastSignal: 'amount_mismatch', detail: 'settlement_amount_mismatch' })])).toContain(off)
+  })
+
+  it('on a completed payment, says what the provider said last when it took a question back', async () => {
+    const completed = { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    const line = 'Dernière réponse de PayTech : paiement confirmé au montant enregistré'
+    const back = await render([view({
+      lastSignal: 'provider_not_paid', paymentReceived: 'confirmed_by_provider', payment: completed,
+      providerAnswer: null, providerAnswers: ['provider_not_paid', 'provider_paid_at_ours'],
+    })])
+    expect(back).toContain(line)
+    expect(back).toContain('PayTech confirme de nouveau ce paiement')
+    expect(back).not.toContain('PayTech contredit l’état enregistré')
+    expect(back).toContain('que ce paiement n’a pas abouti')
+
+    const asking = await render([view({
+      lastSignal: 'provider_not_paid', paymentReceived: 'confirmed_by_provider', payment: completed,
+      providerAnswer: 'provider_not_paid', providerAnswers: ['provider_not_paid'],
+    })])
+    expect(asking).not.toContain(line)
+    expect(asking).toContain('PayTech contredit l’état enregistré')
+
+    // A closed attempt reads from its own headline: a late payment is what it is about.
+    const closed = await render([view({
+      lastSignal: 'provider_paid', paymentReceived: 'confirmed_by_provider',
+      providerAnswer: null, providerAnswers: ['provider_not_paid', 'provider_paid'],
+    })])
+    expect(closed).not.toContain(line)
+    expect(closed).toContain('PayTech confirme un paiement sur une tentative clôturée')
+  })
+
+  it.each([
+    ['paid at nothing', { providerAnswer: 'settlement_amount_mismatch', providerAmount: null }, true],
+    ['no readable amount', { providerAnswer: 'settlement_amount_unreadable', providerAmount: null }, true],
+    ['a word the contract does not list', { providerAnswer: 'settlement_status_unrecognised', providerAmount: null }, true],
+    ['not paid', { providerAnswer: 'provider_not_paid', providerAmount: null }, true],
+    ['can still be paid', { providerAnswer: 'provider_pending', providerAmount: null }, true],
+    ['another amount', { providerAnswer: 'settlement_amount_mismatch', providerAmount: 60000 }, false],
+    ['not paid, with an amount it named still on record', { providerAnswer: 'provider_not_paid', providerAmount: 60000 }, true],
+    ['can still be paid, with an amount it named still on record', { providerAnswer: 'provider_pending', providerAmount: 60000 }, true],
+    ['no readable amount, with an amount it named still standing', { providerAnswer: 'settlement_amount_unreadable', providerAmount: 60000 }, false],
+    ['an unlisted word, with an amount it named still standing', { providerAnswer: 'settlement_status_unrecognised', providerAmount: 60000 }, false],
+    ['another currency', { providerAnswer: 'settlement_currency_mismatch', providerAmount: null }, false],
+    ['nothing else', { providerAnswer: null, providerAmount: null }, false],
+  ])('offers a dismissal of money the provider confirmed when its last word was %s only if that names no money', async (_name, over, offered) => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_provider', ...over })])
+    expect(html.includes('Classer : rien à rembourser')).toBe(offered)
+  })
+
+  it('a flag from a word nobody has defined says that, and one from a notification still says a payment was reported', async () => {
+    const flagged = { state: 'resolved', resolution: 'refund_confirmed', postSettlementReportAt: new Date().toISOString(), providerAnswer: 'settlement_status_unrecognised' }
+    const word = await render([view({ ...flagged, lastSignal: 'amount_mismatch' })])
+    expect(word).toContain('PayTech a donné après ce règlement un état de paiement que le contrat ne connaît pas')
+    expect(word).not.toContain('Un paiement a été signalé après ce règlement')
+    const notification = await render([view({ ...flagged, lastSignal: 'paid_hint' })])
+    expect(notification).toContain('Un paiement a été signalé après ce règlement')
+  })
+
+  it('on a completed payment the hint does not offer amounts the database would refuse', async () => {
+    const payment = { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    const html = await render([view({ payment, paymentReceived: 'confirmed_by_provider', refundState: 'required', providerAnswer: 'settlement_amount_mismatch', providerAmount: 90000, providerAmounts: [50000, 90000] })])
+    expect(html).not.toContain('Seuls les montants annoncés')
+    expect(html).toContain('Seuls ce montant ou, sous l’attestation ci-dessous, celui du paiement peuvent être enregistrés')
+  })
+
+  it('asks for the further attestation only when the provider named more than was charged', async () => {
+    const form = (over: Record<string, unknown>) => render([view({ paymentReceived: 'confirmed_by_provider', refundState: 'required', ...over })])
+    const more = await form({ providerAnswer: 'settlement_amount_mismatch', providerAmount: 46350, providerAmounts: [46350] })
+    expect(more).toContain('name="attestCharged"')
+    expect(more).toContain('la totalité de ce qui a été reçu')
+    // It is optional in the form: the same form records the amount the provider named.
+    expect(more).not.toMatch(/name="attestCharged"[^>]*required/)
+    expect(await form({ providerAnswer: 'settlement_amount_mismatch', providerAmount: 5000, providerAmounts: [5000] })).not.toContain('attestCharged')
+    // An amount it named earlier and lower can be recorded too, and needs the same attestation.
+    expect(await form({ providerAnswer: 'settlement_amount_mismatch', providerAmount: 30000, providerAmounts: [5000, 30000] })).toContain('name="attestCharged"')
+    const payment = { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    expect(await form({ payment, providerAnswer: 'settlement_amount_mismatch', providerAmount: 30000, providerAmounts: [5000, 30000] })).not.toContain('attestCharged')
+    expect(await form({})).not.toContain('attestCharged')
+  })
+
+  it('a check that may have opened or changed a record does not claim nothing was modified', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    const notice = (key: string) => (page.match(new RegExp(`${key}:\\s+'([^']*)'`)) ?? [])[1] ?? ''
+    for (const key of ['verify_pending', 'verify_unknown']) {
+      expect(notice(key).length).toBeGreaterThan(20)
+      expect(notice(key)).not.toMatch(/rien n’a été modifié/i)
+      expect(notice(key)).toMatch(/dossier/)
+    }
+  })
+
+  it('a completed payment the provider never questioned is not said to have been re-confirmed', async () => {
+    const completed = { reference: 'SCX-REF-1', status: 'completed', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    const html = await render([view({ payment: completed, providerAnswer: null, providerAnswers: [] })])
+    expect(html).not.toContain('PayTech confirme de nouveau ce paiement')
+    expect(html).toContain('Une notification indique un paiement')
+    const taken = await render([view({ payment: completed, providerAnswer: null, providerAnswers: ['provider_not_paid', 'provider_paid_at_ours'] })])
+    expect(taken).toContain('PayTech confirme de nouveau ce paiement')
+  })
+
+  it('a transient refusal is told apart from a refused payment, and never asks for a refund or an access decision', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    const notice = (key: string) => (page.match(new RegExp(`${key}:\\s+'([^']*)'`)) ?? [])[1] ?? ''
+    expect(notice('verify_retry')).toMatch(/passagère/)
+    expect(notice('verify_retry')).toMatch(/rien n’a été décidé/)
+    expect(notice('verify_retry')).toMatch(/aucun dossier/)
+    expect(notice('verify_retry')).not.toMatch(/rembours|accès|décision manuelle/i)
+    expect(notice('verify_refused')).toMatch(/anomalie/)
+    expect(notice('verify_already_terminal')).toMatch(/file des anomalies/)
+    for (const key of ['verify_pending', 'verify_unknown', 'verify_conflict']) {
+      expect(notice(key)).not.toMatch(/n’a pas été modifié/)
+      expect(notice(key)).toMatch(/statut du paiement n’a pas changé/)
+    }
+  })
+
+  it('a record on an attempt still in flight does not call the attempt closed', async () => {
+    const inFlight = { reference: 'SCX-REF-1', status: 'processing', amount: 45000, currency: 'XOF', providerMode: 'live' }
+    const html = await render([view({ lastSignal: 'provider_pending', payment: inFlight })])
+    expect(html).not.toContain('Tentative clôturée')
+    expect(html).toContain('Encore réglable selon PayTech')
+    expect(await render([view({ lastSignal: 'provider_pending' })])).toContain('Tentative clôturée, mais encore réglable selon PayTech')
+  })
+
+  it('a close refused for want of a payment\'s identity says where to look, and an old attempt still in flight can be closed', () => {
+    const page = read('app/(admin)/admin/payments/page.tsx')
+    expect(page).toContain('ce paiement ne peut pas être clôturé ici (voir « Motif »)')
+    expect(page).not.toContain('ne relève pas de PayTech')
+    expect(page).toMatch(/\.in\('status', \['pending', 'processing'\]\)\s+\.order\('created_at', \{ ascending: true \}\)/)
+    expect(page).toContain('...((oldestInFlight ?? [])')
+  })
+
+  it('asks every form that decides over several notifications about them, the access form included', async () => {
+    const html = await render([view({ paymentReceived: 'confirmed_by_operator', evidenceCount: 3, notificationCount: 3 })])
+    const section = (title: string) => html.split('<details').find(s => s.includes(title)) ?? ''
+    for (const title of ['Un remboursement est nécessaire', 'L’accès a été accordé pour ce paiement']) {
+      expect(section(title), title).toContain('name="attestAll"')
+    }
+  })
+
+})
+
+describe('XP-PAYTECH-06 — what a notification\'s digest can and cannot reveal', () => {
+  const config = { apiSecret: 'secret-a' }
+  const body = { type_event: 'sale_complete', token: 't', ref_command: 'r', item_price: '100', client_phone: '770000000' }
+  const load = async () => (await import('@/lib/payments/paytech-ipn')).notificationFingerprint
+
+  it('is the same for the same notification, whatever the key order or number format', async () => {
+    const f = await load()
+    const a = f(body, config, 'signature')
+    expect(a).toMatch(/^[a-f0-9]{64}$/)
+    expect(f(Object.fromEntries(Object.entries(body).reverse()), config, 'signature')).toBe(a)
+    expect(f({ ...body, item_price: 100 }, config, 'signature')).toBe(a)
+    expect(f({ ...body, item_price: ' 100 ' }, config, 'signature')).toBe(a)
+  })
+
+  it('ignores the fields that authenticate it', async () => {
+    const f = await load()
+    expect(f({ ...body, api_key_sha256: 'x', api_secret_sha256: 'y', hmac_compute: 'z' }, config, 'signature'))
+      .toBe(f(body, config, 'signature'))
+  })
+
+  it.each([
+    ['event', { type_event: 'sale_canceled' }],
+    ['phone', { client_phone: '771111111' }],
+    ['a field nobody has documented', { transaction_id: 'abc' }],
+  ])('changes with the %s', async (_label, over) => {
+    const f = await load()
+    expect(f({ ...body, ...over }, config, 'signature')).not.toBe(f(body, config, 'signature'))
+  })
+
+  it('changes with how much was proved, so an unproven report cannot stand in for a signed one', async () => {
+    const f = await load()
+    expect(f(body, config, 'shared_secret')).not.toBe(f(body, config, 'signature'))
+  })
+
+  it('is keyed, so a phone number in it cannot be recovered by guessing', async () => {
+    const f = await load()
+    expect(f(body, { apiSecret: 'secret-b' }, 'signature')).not.toBe(f(body, config, 'signature'))
+  })
 })
 
 describe('XP-PAYTECH-05 — the public documents', () => {
@@ -744,7 +1390,6 @@ describe('XP-PAYTECH-05 — the public documents', () => {
     const doc = read('docs/payments/XP-PAYTECH-05-LATE-PAID-EXCEPTIONS.md')
     expect(doc).toMatch(/Not live/)
     expect(doc).toMatch(/has not been applied to any hosted database/)
-    expect(doc).toMatch(/cannot be detected until the settlement contract is confirmed/)
   })
 
   it('disclose no infrastructure identifier or private record', () => {

@@ -17,6 +17,11 @@
  * A mistaken confirmation or refund decision can be withdrawn, with a reason,
  * until something rests on it, so it cannot block a learner's checkout for good.
  *
+ * A review records the notifications the form showed. The same one again then only
+ * counts, and `reopenExceptionAfterReview` lets an administrator overrule any review.
+ * Every form states the version of the record it showed, and the database refuses one from
+ * before a change, or one that does not say.
+ *
  * All are platform-admin only and rate-limited. Migration 064 holds the rules and
  * audits an accepted decision in the same transaction. A refusal is audited here.
  *
@@ -64,7 +69,28 @@ const RefundSchema = z.object({
 })
 
 /** Attested decisions rest on a check the operator says they made. */
-const ATTESTED: readonly ExceptionAction[] = ['confirm_received', 'dismiss', 'acknowledge_report']
+const ATTESTED: readonly ExceptionAction[] = ['confirm_received', 'dismiss', 'acknowledge_report', 'reopen_after_review']
+
+/** How many different reports the form showed. */
+function seenEvidence(formData: FormData): number | null {
+  const v = formData.get('evidenceCount')
+  return typeof v === 'string' && /^\d{1,4}$/.test(v) ? Number(v) : null
+}
+
+/** The version of the record the form showed, for the database to compare. It refuses a form that gives none. */
+function seenVersion(formData: FormData): number | null {
+  const v = formData.get('evidenceVersion')
+  return typeof v === 'string' && /^\d{1,9}$/.test(v) ? Number(v) : null
+}
+
+/**
+ * Several different reports may mean several payments. One decision must not pass over
+ * that unchecked, and a request that does not say how many it showed may be doing so.
+ */
+function coversEveryNotification(formData: FormData): boolean {
+  const reports = seenEvidence(formData)
+  return (reports !== null && reports <= 1) || formData.get('attestAll') === 'yes'
+}
 
 function back(notice: string): never {
   revalidatePath('/admin/payments')
@@ -119,11 +145,16 @@ async function decision(formData: FormData, action: ExceptionAction): Promise<ne
   const note = NoteSchema.safeParse(formData.get('note'))
   if (!note.success) back('close_reason_required')
   if (ATTESTED.includes(action) && formData.get('attest') !== 'yes') back('close_attestation_required')
+  if ((action === 'record_access' || action === 'dismiss' || action === 'require_refund') && !coversEveryNotification(formData)) {
+    back('close_attestation_required')
+  }
 
   const rl = await rateLimitDb(`payment-exception:${admin.id}`, DECISION_LIMIT)
   if (!rl.success) back('rate_limited')
 
-  const result = await decidePaymentException({ exceptionId: id.data, action, actor: who, note: note.data })
+  const result = await decidePaymentException({
+    exceptionId: id.data, action, actor: who, note: note.data, seenVersion: seenVersion(formData),
+  })
   return finish(who, id.data, action, note.data, result)
 }
 
@@ -145,6 +176,11 @@ export async function withdrawExceptionReceipt(formData: FormData): Promise<void
 /** A paid report arrived after settlement, and the operator reviewed it. Changes no settled fact. */
 export async function acknowledgeExceptionReport(formData: FormData): Promise<void> {
   await decision(formData, 'acknowledge_report')
+}
+
+/** The operator found money this record does not cover. Reopens or flags it. Refused unless resolved. */
+export async function reopenExceptionAfterReview(formData: FormData): Promise<void> {
+  await decision(formData, 'reopen_after_review')
 }
 
 /** The refund decision was a mistake. Refused once a refund is recorded. */
@@ -179,7 +215,7 @@ export async function recordExceptionRefund(formData: FormData): Promise<void> {
     date:      formData.get('refundedOn'),
   })
   if (!refund.success) back('exception_refund_invalid')
-  if (formData.get('attest') !== 'yes') back('close_attestation_required')
+  if (formData.get('attest') !== 'yes' || !coversEveryNotification(formData)) back('close_attestation_required')
 
   const rl = await rateLimitDb(`payment-exception:${admin.id}`, DECISION_LIMIT)
   if (!rl.success) back('rate_limited')
@@ -198,6 +234,8 @@ export async function recordExceptionRefund(formData: FormData): Promise<void> {
     currency:            refund.data.currency,
     refundedAt:          when.toISOString(),
     note:                note.data,
+    seenVersion:         seenVersion(formData),
+    attestCharged:       formData.get('attestCharged') === 'yes',
   })
   return finish(who, id.data, 'record_refund', note.data, result)
 }

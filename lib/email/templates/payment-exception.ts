@@ -23,7 +23,7 @@ export function paymentExceptionEmailText({ reference }: PaymentExceptionEmailDa
     '',
     `Référence : ${reference}`,
     '',
-    "PayTech a signalé un paiement que la plateforme ne peut pas traiter automatiquement. Cette alerte n'accorde aucun accès et n'effectue aucun remboursement.",
+    "Un signalement concernant ce paiement ne peut pas être traité automatiquement. Il n'est pas forcément prouvé. Cette alerte n'accorde aucun accès et n'effectue aucun remboursement.",
     '',
     'Consultez Admin > Paiements > Anomalies.',
   ].join('\n')
@@ -35,7 +35,7 @@ export function paymentExceptionEmailHtml({ reference }: PaymentExceptionEmailDa
   <body style="font-family: Arial, sans-serif; color: #1f2937; line-height: 1.5;">
     <p><strong>Un paiement demande une vérification.</strong></p>
     <p>Référence&nbsp;: <code>${escapeHtml(reference)}</code></p>
-    <p>PayTech a signalé un paiement que la plateforme ne peut pas traiter automatiquement. Cette alerte n'accorde aucun accès et n'effectue aucun remboursement.</p>
+    <p>Un signalement concernant ce paiement ne peut pas être traité automatiquement. Il n'est pas forcément prouvé. Cette alerte n'accorde aucun accès et n'effectue aucun remboursement.</p>
     <p>Consultez <strong>Admin &gt; Paiements &gt; Anomalies</strong>.</p>
   </body>
 </html>`

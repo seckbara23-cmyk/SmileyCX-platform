@@ -153,13 +153,13 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
       expect(stmt, '063 changes a privilege on public.payments')
         .toMatch(/on public\.payment_environment\b|on function public\.payments_transition_guard\(\)/i)
     }
-    // XP-PAYTECH-05's 064: on its own table and functions — again never on
+    // XP-PAYTECH-05's 064: on its own two tables and its functions — again never on
     // public.payments, so 059's browser allowlist is untouched.
     const stmts064 = strip('supabase/migrations/064_payment_exceptions.sql').match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []
     expect(stmts064.length).toBeGreaterThan(0)
     for (const stmt of stmts064) {
       expect(stmt, '064 changes a privilege on public.payments')
-        .toMatch(/on public\.payment_exceptions\b|on function public\.payment_exception/i)
+        .toMatch(/on public\.payment_exceptions\b|on public\.payment_completion_notices\b|on function public\.payment_exception|on function public\.payment_completion_notices_guard\(\)/i)
     }
   })
 })

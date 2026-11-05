@@ -367,9 +367,10 @@ describe('AUDIT-SEC-01 — cross-artifact: who actually uses audit_log', () => {
     return out
   }
 
-  it('the ONLY audit_log accessor in the codebase is the service-role INSERT', () => {
+  it('the ONLY audit_log accessors in the codebase are the service-role helper\'s INSERT and one SELECT', () => {
     // This is what makes removing anon's SELECT and narrowing authenticated's
-    // to SELECT-only safe: nothing reads the table at all.
+    // to SELECT-only safe: no browser role reads the table. XP-PAYTECH-06's one read,
+    // when an event last succeeded, is the service role's, which 061 preserves.
     const hits: string[] = []
     for (const f of sourceFiles()) {
       const src = read(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
@@ -378,7 +379,7 @@ describe('AUDIT-SEC-01 — cross-artifact: who actually uses audit_log', () => {
         hits.push(`${f}:${/\.insert\(/.test(window) ? 'INSERT' : /\.select\(/.test(window) ? 'SELECT' : 'OTHER'}`)
       }
     }
-    expect(hits).toEqual(['lib/audit/log.ts:INSERT'])
+    expect(hits).toEqual(['lib/audit/log.ts:INSERT', 'lib/audit/log.ts:SELECT'])
     // ...and it goes through the service-role client, which 061 preserves.
     const helper = read('lib/audit/log.ts')
     expect(helper).toContain('createAdminClient()')

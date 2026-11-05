@@ -42,7 +42,7 @@ export default async function AdminDashboardPage() {
   const { data: revData } = await supabase.from('payments').select('amount').eq('status', 'completed')
   const totalRevenue = revData?.reduce((sum: number, p: { amount: number }) => sum + p.amount, 0) ?? 0
 
-  // XP-PAYTECH-05. Money may have been received with nothing granted.
+  // XP-PAYTECH-05. Payment reports waiting for a person.
   const openExceptions = await countOpenPaymentExceptions()
 
   const stats = [
@@ -66,7 +66,7 @@ export default async function AdminDashboardPage() {
           <Link href="/admin/payments?filter=exceptions" className="font-semibold underline">
             {openExceptions} anomalie(s) de paiement à traiter
           </Link>
-          {' '}: de l&apos;argent a peut-être été reçu sans accès accordé.
+          {' '}: des signalements attendent une vérification ou une décision.
         </div>
       )}
 

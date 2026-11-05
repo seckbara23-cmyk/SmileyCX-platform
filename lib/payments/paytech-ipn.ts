@@ -104,6 +104,35 @@ export type IpnStrength = (typeof IPN_STRENGTHS)[number]
 /** The strength required before anything is fulfilled. Deliberately a constant. */
 export const VERIFIED_STRENGTH: IpnStrength = 'signature'
 
+/** Fields that authenticate a notification and say nothing about what happened. */
+const NOT_EVIDENCE = new Set(['api_key_sha256', 'api_secret_sha256', 'hmac_compute'])
+
+/**
+ * What one notification said, as a digest, so a repeat can be told from a
+ * notification with different content. It proves nothing about money.
+ *
+ * Every field counts, so an unknown one makes a notification look new, which fails
+ * towards a human. The same values read the same whether they arrived as JSON or
+ * as form fields. It is keyed because a payload can hold a phone number, and an
+ * unkeyed digest of so little entropy could be reversed.
+ */
+export function notificationFingerprint(
+  payload: Record<string, unknown>,
+  config: Pick<PaytechConfig, 'apiSecret'>,
+  strength: IpnStrength,
+): string {
+  const fields = Object.keys(payload)
+    .filter(k => !NOT_EVIDENCE.has(k))
+    .sort()
+    .map(k => {
+      const v = payload[k]
+      return [k, typeof v === 'string' ? v.trim() : JSON.stringify(v)]
+    })
+  return createHmac('sha256', config.apiSecret)
+    .update(JSON.stringify(['paytech-notification-fingerprint-v1', strength, fields]))
+    .digest('hex')
+}
+
 export const IPN_REJECTION_REASONS = [
   'malformed_payload',       // not a usable object
   'missing_token',           // no provider token to correlate on
@@ -151,9 +180,9 @@ export function normaliseEvent(raw: unknown): PaytechEvent | null {
 // ── Payload ─────────────────────────────────────────────────────────────────
 
 /**
- * The fields we read. Everything else PayTech sends is ignored on purpose:
- * `client_phone` and `payment_method` are payer data we have no reason to
- * store, and `item_price` is never consumed because we use our own amount.
+ * The fields we act on. Nothing else PayTech sends decides anything or is stored:
+ * `client_phone` and `payment_method` are payer data, which reach only the keyed
+ * digest above, and `item_price` is a claim we compare with our own amount.
  */
 export interface PaytechIpnPayload {
   readonly type_event?: unknown

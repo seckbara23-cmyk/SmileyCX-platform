@@ -3,7 +3,7 @@
 -- payment report that the state machine cannot act on.
 --
 -- Run as a SINGLE TRANSACTION. Forward-only: no earlier migration is edited.
--- Creates ONE table, TEN functions and TWO triggers. Changes no existing
+-- Creates TWO tables, ELEVEN functions and THREE triggers. Changes no existing
 -- payment, entitlement, enrollment or audit row — section 8 proves it.
 --
 -- ⚠ NOT APPLIED AT AUTHORING TIME. Operator step at the foot of this file.
@@ -32,7 +32,7 @@
 --
 -- `watching` is a report on a payment still in flight. It raises no alert,
 -- because the payment may yet settle normally. If the payment completes, the
--- record resolves itself. If the payment closes instead, the record opens, in the
+-- record settles as described below. If the payment closes instead, the record opens, in the
 -- same transaction as the closure, whichever path closed it. If neither happens,
 -- the next sweep after a day escalates it, so it cannot sit unseen.
 --
@@ -50,19 +50,74 @@
 --     in-flight payment moves to `failed` and a completed one to `refunded`,
 --     the two moves 063 already permits.
 --
+-- ── REPEATED NOTIFICATIONS ─────────────────────────────────────────────────
+--
+-- Each report from a notification carries a keyed digest of what it said, and a review
+-- records the digests the administrator was shown. The same notification again is
+-- counted and changes nothing else. It stays visible in the queue, and the sweep sends
+-- at most one alert per record per week about it, beside the reminder of a record still
+-- waiting for a person.
+--
+-- A notification with different content reopens or flags the record a limited number
+-- of times. After that, or if it failed its signature, or if the record is already
+-- flagged, it is counted and marked as different. The first such report since a review
+-- is alerted on at the next sweep, and later ones at most weekly.
+--
+-- A provider's answer counts as news the first time it says something it has not said
+-- on this record, whichever path asked, and so does an amount it has not named there. It
+-- opens or flags the record where it questions what the record holds, and otherwise is
+-- kept for the administrator. Said again by a status check, it reopens nothing that has
+-- been resolved. "Paid" after its last word was "not paid" or "pending" is news once on a
+-- record. Any other change in what it says reaches a person at most weekly and flags nothing.
+-- "Pending" on an attempt in flight counts only where it has already said more on the record.
+--
+-- ── A COMPLETED PAYMENT ────────────────────────────────────────────────────
+--
+-- A completed payment covers one notification. payment_completion_notices remembers its
+-- digest, written before the completion when a notification drives it, so a normal
+-- payment has no exception record. Only the provider's word can put a completed payment in
+-- question, because a notification's claim is not proof and a refund is offered on an
+-- open record. A person's report of another payment opens a record only while that word
+-- stands, and otherwise flags it. Any other notification is recorded on a settled record,
+-- counted, marked and alerted on, and blocks nobody. A cancellation the provider answers as
+-- paid at our amount leaves nothing, because that answer settles it. A payment that completes while its record holds
+-- anything that completion does not cover is flagged. A record the provider has
+-- contradicted, or on which an administrator confirmed money, stays open or opens. A refusal
+-- 062 later honours is settled by that completion, when the record holds no settlement
+-- detail, provider answer or amount, digest, repeat, administrator mark or pending refund
+-- decision.
+--
+-- ── WHAT AN ADMINISTRATOR IS TOLD ──────────────────────────────────────────
+--
+-- A decision covers what it showed. A record carries a version, which the guard moves when
+-- the evidence a form lists changes. An attempt closing, or access going live, does not move
+-- it, and a form says what it was shown only as far as that. Every decision states the version
+-- it was shown, and one from before a change, or one that does not say, is refused. Repeats
+-- never move it, and digests stop moving it at the limit, so a flood cannot keep every form
+-- out of date. A record stores a bounded number of digests. One past that can never read as
+-- reviewed. The queue shows how many different reports a record holds, and a dismissal, a
+-- refund decision, a recorded refund or an access decision on more than one needs its own
+-- attestation.
+--
 -- ── TRUST BOUNDARY ─────────────────────────────────────────────────────────
 --
 -- service_role may only READ this table. Every write goes through a function, so
--- no state can change without its checks and its audit row. That is why the write
+-- no state can change without its checks. That is why the write
 -- functions are SECURITY DEFINER, unlike 062. 062 is INVOKER because DEFINER would
 -- add no capability there. Here DEFINER is what lets the application hold no write
--- privilege on this table at all. EXECUTE goes to service_role only, and each
+-- privilege on this table at all. Every decision is audited in the same transaction.
+-- A counted report writes a row only for a new digest, the first repeat in an alert period
+-- or a change in what the provider says, and an alert stamp writes none, so that repeats
+-- cannot flood the log. EXECUTE goes
+-- to service_role only, and each
 -- function does one narrow thing. search_path is pg_catalog then pg_temp, so no
 -- schema anyone can write to is ever searched, and every object here is named with
 -- its schema. Browser roles hold nothing.
 --
--- The guard trigger also binds the table owner, so a hand-written UPDATE cannot
--- rewrite what happened without the owner's runbook.
+-- The guard trigger also binds the table owner for a record's identity, what was seen, and
+-- its state, money, refund and access, so a hand-written UPDATE cannot rewrite those without
+-- the owner's runbook. Counters and the provider's answers are only ever written by these
+-- functions, which is the application's limit and not the owner's.
 --
 -- ── LOCK ORDER ─────────────────────────────────────────────────────────────
 --
@@ -74,12 +129,14 @@
 --
 --   E1  063 is applied: payments_transition_guard and payment_environment exist.
 --   E2  062 is applied: complete_payment(text×5, numeric, text) is INVOKER.
---   E3  037 is applied, and the role running this can read entitlements and
---       EXECUTE entitlement_accessible(), the one definition of "grants access".
+--   E3  037 is applied, entitlements has the columns it created, and the role
+--       running this can read it and EXECUTE entitlement_accessible(), the one
+--       definition of "grants access".
 --   E4  audit_log has the columns 027 created, and the role running this can
 --       INSERT into it and UPDATE payments.
 --   E5  063's guard is the only non-internal trigger on public.payments.
---   E6  Roles service_role, anon and authenticated exist.
+--   E6  Roles service_role, anon and authenticated exist, and service_role has
+--       BYPASSRLS.
 --   E7  Nothing this migration creates exists yet.
 -- ============================================================================
 
@@ -106,12 +163,26 @@ begin
     raise exception 'XP-PAYTECH-05 064 preflight: complete_payment is SECURITY DEFINER; 062 created it INVOKER';
   end if;
 
-  -- E6, first, because the checks below name these roles.
+  -- E7, first, so that running this twice says so rather than naming a trigger.
+  if to_regclass('public.payment_exceptions') is not null
+  or to_regclass('public.payment_completion_notices') is not null then
+    raise exception 'XP-PAYTECH-05 064 preflight: this migration''s tables already exist';
+  end if;
+  if to_regprocedure('public.payment_exception_report(uuid, text, text, text, text, numeric)') is not null then
+    raise exception 'XP-PAYTECH-05 064 preflight: public.payment_exception_report() already exists';
+  end if;
+
+  -- E6, next, because the checks below name these roles.
   foreach v_txt in array array['service_role', 'anon', 'authenticated'] loop
     if not exists (select 1 from pg_roles r where r.rolname = v_txt) then
       raise exception 'XP-PAYTECH-05 064 preflight: role % does not exist', v_txt;
     end if;
   end loop;
+  -- The table has RLS and no policy. Without BYPASSRLS the application would read no
+  -- rows, and checkout would see nothing blocking it.
+  if not (select r.rolbypassrls from pg_roles r where r.rolname = 'service_role') then
+    raise exception 'XP-PAYTECH-05 064 preflight: service_role does not bypass row level security';
+  end if;
 
   -- E3. The write functions run as this role, so it is the one that must be able to.
   if to_regprocedure('public.entitlement_accessible(text, timestamptz, timestamptz, timestamptz)') is null then
@@ -122,6 +193,12 @@ begin
   end if;
   if not has_table_privilege(current_user, 'public.entitlements', 'SELECT') then
     raise exception 'XP-PAYTECH-05 064 preflight: % cannot read public.entitlements', current_user;
+  end if;
+  select count(*) into v_n from pg_attribute a
+   where a.attrelid = 'public.entitlements'::regclass and a.attnum > 0 and not a.attisdropped
+     and a.attname in ('id', 'user_id', 'course_id', 'status', 'starts_at', 'expires_at', 'revoked_at', 'created_at');
+  if v_n <> 8 then
+    raise exception 'XP-PAYTECH-05 064 preflight: public.entitlements does not have the columns 037 created';
   end if;
 
   -- E4
@@ -145,14 +222,6 @@ begin
    where t.tgrelid = 'public.payments'::regclass and not t.tgisinternal;
   if v_txt is distinct from 'payments_transition_guard' then
     raise exception 'XP-PAYTECH-05 064 preflight: public.payments has triggers [%]; expected only 063''s guard', v_txt;
-  end if;
-
-  -- E7
-  if to_regclass('public.payment_exceptions') is not null then
-    raise exception 'XP-PAYTECH-05 064 preflight: public.payment_exceptions already exists';
-  end if;
-  if to_regprocedure('public.payment_exception_report(uuid, text, text, text)') is not null then
-    raise exception 'XP-PAYTECH-05 064 preflight: public.payment_exception_report() already exists';
   end if;
 end
 $do$;
@@ -197,6 +266,56 @@ create table public.payment_exceptions (
   -- reach a human. Cleared when an administrator has reviewed it.
   post_settlement_report_at timestamptz,
 
+  -- Keyed digests of the distinct notifications seen, and of those an administrator
+  -- has reviewed. A report without a digest did not come from a notification, so it
+  -- is never treated as a repeat.
+  evidence_fingerprints text[] not null default '{}',
+  reviewed_fingerprints text[] not null default '{}',
+  -- How many times a notification alone has reopened or flagged this record.
+  notification_reopens integer not null default 0 check (notification_reopens >= 0),
+  -- Notifications counted as repeats since the last review, and the weekly alert
+  -- about them. Repeats change nothing else, so this is how they reach a human.
+  repeat_count       integer not null default 0 check (repeat_count >= 0),
+  last_repeat_at     timestamptz,
+  repeat_alert_due_at timestamptz,
+  repeat_alerted_at  timestamptz,
+  -- A counted report whose content no review covered. It could not act, so it must
+  -- not read as a repeat.
+  different_report_at timestamptz,
+  -- What that report claimed, for the administrator only. Apart from last_signal and
+  -- detail, because those decide what counts as news and no one has reviewed this.
+  different_signal   text check (different_signal is null or different_signal in (
+    'paid_hint', 'unverified_report', 'provider_paid', 'completion_refused', 'provider_pending',
+    'provider_not_paid', 'cancel_hint', 'amount_mismatch', 'currency_mismatch')),
+  -- The provider's last answer that questioned the record, and every such answer it
+  -- has given. Only the provider's answers write these. Having been said before is what
+  -- stops an answer counting as news, and a notification must not be able to make the
+  -- same answer look new, nor a provider that alternates between two reopen for ever.
+  -- Bounded because these are fixed codes from the application, never free text.
+  provider_answer    text check (provider_answer is null or provider_answer ~ '^[a-z0-9_:]{1,80}$'),
+  provider_answers   text[] not null default '{}',
+  -- The amount the provider last said was paid, where it was not ours. A refund of the
+  -- whole of it can be recorded, because that is what was received.
+  provider_amount    numeric check (provider_amount is null or provider_amount > 0),
+  -- Every amount the provider has said was paid on this record, ours among them. Having
+  -- been named before is what stops an amount counting as news, so a provider alternating
+  -- between two cannot keep flagging, and a later answer cannot take back what it said.
+  provider_amounts   numeric[] not null default '{}' check (cardinality(provider_amounts) <= 20),
+  -- An administrator attested to money this record does not cover, while it could still
+  -- settle by itself. The payment completing must not pass over that.
+  administrator_reopened_at timestamptz,
+  -- An administrator attested to such money on a record that stays settled. Cleared with
+  -- the flag, so the queue can say who raised it. The reason is in the audit log.
+  administrator_flagged_at timestamptz,
+  -- A notification arrived that could not be stored, because the limit is reached. Reset
+  -- by a review, so the next such notification makes a form out of date once more.
+  evidence_overflow_at timestamptz,
+  -- Moves whenever what a form shows about the evidence changes. Only the guard writes it.
+  evidence_version   integer not null default 0 check (evidence_version >= 0),
+  -- What the last administrator wrote, for the next one to read. Also in the audit log.
+  last_decision_note text check (last_decision_note is null or length(last_decision_note) <= 500),
+  last_decision_at   timestamptz,
+
   payment_received   text not null,
   -- What the evidence was before an administrator confirmed it, so that withdrawing
   -- the confirmation restores the truth rather than guessing it.
@@ -223,6 +342,8 @@ create table public.payment_exceptions (
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now(),
 
+  constraint payment_exceptions_evidence_bounded
+    check (cardinality(evidence_fingerprints) <= 20 and reviewed_fingerprints <@ evidence_fingerprints),
   constraint payment_exceptions_state_valid
     check (state in ('watching', 'open', 'resolved')),
   constraint payment_exceptions_signal_valid
@@ -269,6 +390,21 @@ grant select on public.payment_exceptions to service_role;
 
 comment on table public.payment_exceptions is
   'XP-PAYTECH-05. A payment report the state machine cannot act on: paid after closure, paid but refused by complete_payment, or conflicting with the record. Holds separate facts for payment received, access granted, refund required and refund confirmed. Grants nothing and moves no money. service_role may only read it; every write goes through a function.';
+
+-- The one notification a completed payment covers. Held apart from the exceptions so
+-- that a payment completed by it has no exception record at all. Nothing reads it but the report
+-- function, so no application role holds anything on it.
+create table public.payment_completion_notices (
+  payment_id  uuid primary key references public.payments(id) on delete restrict,
+  fingerprint text not null check (fingerprint ~ '^[a-f0-9]{64}$'),
+  recorded_at timestamptz not null default now()
+);
+
+alter table public.payment_completion_notices enable row level security;
+revoke all on public.payment_completion_notices from public, anon, authenticated, service_role;
+
+comment on table public.payment_completion_notices is
+  'XP-PAYTECH-06. The keyed digest of the notification a completed payment covers. Any other notification on that payment may be a second real payment. Written once by payment_exception_report; it stores the digest and never the notification.';
 
 
 -- ══ 2. HELPERS ════════════════════════════════════════════════════════════
@@ -332,7 +468,11 @@ begin
     if new.state not in ('watching', 'open')
     or new.refund_state <> 'not_assessed'
     or new.access_state <> 'not_granted'
-    or new.resolution is not null then
+    or new.resolution is not null
+    or cardinality(new.reviewed_fingerprints) <> 0
+    or new.notification_reopens <> 0
+    or new.repeat_count <> 0
+    or new.evidence_version <> 0 then
       perform public.payment_exception_refuse('exception_must_start_clean');
     end if;
     return new;
@@ -342,7 +482,9 @@ begin
   or new.payment_id        is distinct from old.payment_id
   or new.first_signal      is distinct from old.first_signal
   or new.first_reported_at is distinct from old.first_reported_at
-  or new.created_at        is distinct from old.created_at then
+  or new.created_at        is distinct from old.created_at
+  -- What was seen stays seen.
+  or not (old.evidence_fingerprints <@ new.evidence_fingerprints) then
     perform public.payment_exception_refuse('exception_identity_immutable');
   end if;
 
@@ -413,17 +555,58 @@ begin
     perform public.payment_exception_refuse('access_record_final');
   end if;
 
+  -- ── what a form showed ──
+  -- Whatever can arrive without limit stays out of this: repeats, alert stamps and which
+  -- report came last. Digests stop at their limit, and a notification can do the rest only
+  -- a bounded number of times between reviews, so a flood cannot keep a form out of date.
+  -- A write can ask for it to move, but it moves by one whatever the write says.
+  new.evidence_version := old.evidence_version + case when
+       new.evidence_version          is distinct from old.evidence_version
+    or new.state                     is distinct from old.state
+    or new.resolution                is distinct from old.resolution
+    or new.payment_received          is distinct from old.payment_received
+    or new.refund_state              is distinct from old.refund_state
+    or new.access_state              is distinct from old.access_state
+    or new.provider_answer           is distinct from old.provider_answer
+    or new.provider_amount           is distinct from old.provider_amount
+    or new.provider_answers          is distinct from old.provider_answers
+    or new.provider_amounts          is distinct from old.provider_amounts
+    or new.evidence_fingerprints     is distinct from old.evidence_fingerprints
+    or new.post_settlement_report_at is distinct from old.post_settlement_report_at
+    or (new.evidence_overflow_at is null) <> (old.evidence_overflow_at is null)
+    or (new.different_report_at  is null) <> (old.different_report_at  is null)
+    then 1 else 0 end;
+
   new.updated_at := now();
   return new;
 end
 $fn$;
 
 comment on function public.payment_exceptions_guard() is
-  'XP-PAYTECH-05. The exception state machine, binding the table owner too: a clean start, no deletion, immutable identity, legal state and refund transitions, provider evidence never downgraded, a refund only on confirmed receipt, refund and access facts final. Raises P0001 with a JSON reason in DETAIL.';
+  'XP-PAYTECH-05. The exception state machine, binding the table owner too: a clean start, no deletion, immutable identity, legal state and refund transitions, provider evidence never downgraded, a refund only on confirmed receipt, refund and access facts final, and the version a form is compared with. Raises P0001 with a JSON reason in DETAIL.';
 
 create trigger payment_exceptions_guard
   before insert or update or delete on public.payment_exceptions
   for each row execute function public.payment_exceptions_guard();
+
+create function public.payment_completion_notices_guard()
+returns trigger
+language plpgsql
+security invoker
+set search_path = pg_catalog, pg_temp
+as $fn$
+begin
+  perform public.payment_exception_refuse('completion_notice_immutable');
+  return null;
+end
+$fn$;
+
+comment on function public.payment_completion_notices_guard() is
+  'XP-PAYTECH-06. What a completion covers is written once. Binds the table owner too.';
+
+create trigger payment_completion_notices_guard
+  before update or delete on public.payment_completion_notices
+  for each row execute function public.payment_completion_notices_guard();
 
 
 -- ══ 4. FOLLOWING THE PAYMENT ══════════════════════════════════════════════
@@ -439,24 +622,121 @@ set search_path = pg_catalog, pg_temp
 as $fn$
 declare
   v_id uuid;
+  v_notifications integer;
+  v_notice text;
 begin
   if new.status = 'completed' then
+    -- The provider has now said this was paid at our amount, so what it said before no longer
+    -- stands, and a refund of another amount would be partial. Whoever was told about it is
+    -- told again.
     update public.payment_exceptions
-       set state = 'resolved', resolution = 'settled_normally', resolved_at = now(),
-           payment_received = 'confirmed_by_provider', refund_state = 'not_required'
-     where payment_id = new.id
-       and (state = 'watching' or (state = 'open' and escalated_at is not null and refund_state = 'not_assessed'))
+       set provider_amount = null, provider_answer = null,
+           provider_answers = case when 'provider_paid_at_ours' = any(provider_answers) then provider_answers
+                                   else provider_answers || 'provider_paid_at_ours'::text end,
+           provider_amounts = case when provider_amount is null or new.amount = any(provider_amounts) or cardinality(provider_amounts) >= 20
+                                   then provider_amounts else provider_amounts || new.amount end,
+           alert_sent_at = null
+     where payment_id = new.id and (provider_amount is not null or provider_answer is not null)
     returning id into v_id;
     if v_id is not null then
       perform public.payment_exception_audit(
+        'payment.exception_provider_answer_recorded', 'system', null, null, new.user_id, 'payment_completed', null, null, null,
+        jsonb_build_object('paymentId', new.id, 'reference', new.reference, 'exceptionId', v_id, 'completed', true));
+    end if;
+
+    -- One completed payment covers one paid notification. Anything else on the record
+    -- may be another payment, or a claim nobody has checked, so it is flagged for a
+    -- person. The flag cannot block a checkout or offer a refund here, because this
+    -- payment is complete. A conflict the provider raised, or money an administrator
+    -- confirmed, is not settled by a completion at all: it stays open, or opens. A refusal
+    -- 062 itself raised and now honours is what the completion was waited for, and settles,
+    -- when the record holds no settlement detail, provider answer or amount, digest, repeat,
+    -- administrator mark or pending refund decision. A withdrawn decision does not stop it.
+    update public.payment_exceptions
+       set state = 'resolved', resolution = 'settled_normally', resolved_at = now(),
+           payment_received = 'confirmed_by_provider', refund_state = 'not_required',
+           reviewed_fingerprints = case when cardinality(evidence_fingerprints) = 1 and evidence_overflow_at is null
+                                             and first_signal = 'paid_hint'
+                                        then evidence_fingerprints else reviewed_fingerprints end,
+           post_settlement_report_at = case when cardinality(evidence_fingerprints) > 1 or evidence_overflow_at is not null
+                                              or (cardinality(evidence_fingerprints) = 1 and first_signal <> 'paid_hint')
+                                              or administrator_reopened_at is not null
+                                            then now() else post_settlement_report_at end,
+           alert_sent_at = case when cardinality(evidence_fingerprints) > 1 or evidence_overflow_at is not null
+                                  or (cardinality(evidence_fingerprints) = 1 and first_signal <> 'paid_hint')
+                                  or administrator_reopened_at is not null
+                                then null else alert_sent_at end
+     where payment_id = new.id
+       and refund_state = 'not_assessed'
+       and state in ('watching', 'open')
+       and (payment_received in ('reported', 'not_established')
+            or (first_signal = 'completion_refused' and last_signal = 'completion_refused'
+                and coalesce(detail, '') not like 'settlement_%' and coalesce(detail, '') <> 'currency_unsupported'
+                and provider_answer is null and provider_amount is null
+                and cardinality(evidence_fingerprints) = 0 and repeat_count = 0
+                and administrator_reopened_at is null and administrator_flagged_at is null
+                and evidence_before_confirmation is null))
+       and cardinality(provider_answers) = 0
+    returning id, cardinality(evidence_fingerprints) into v_id, v_notifications;
+    -- Watching, but the provider has already questioned this record. That is for a person.
+    if v_id is null then
+      update public.payment_exceptions
+         set state = 'open', alert_sent_at = null, payment_received = 'confirmed_by_provider'
+       where payment_id = new.id and state = 'watching'
+      returning id into v_id;
+      if v_id is not null then
+        perform public.payment_exception_audit(
+          'payment.exception_recorded', 'system', null, null, new.user_id, 'payment_completed', null, null, null,
+          jsonb_build_object('paymentId', new.id, 'reference', new.reference, 'exceptionId', v_id, 'completed', true));
+        return null;
+      end if;
+      -- A person recorded nothing to return on this attempt, and it has now completed. The
+      -- payment is valid, and what they recorded no longer stands unquestioned.
+      update public.payment_exceptions
+         set post_settlement_report_at = now(), alert_sent_at = null, payment_received = 'confirmed_by_provider'
+       where payment_id = new.id and state = 'resolved' and resolution = 'nothing_to_return'
+      returning id into v_id;
+      if v_id is not null then
+        perform public.payment_exception_audit(
+          'payment.exception_reported_after_settlement', 'system', null, null, new.user_id, 'payment_completed', null, null, null,
+          jsonb_build_object('paymentId', new.id, 'reference', new.reference, 'exceptionId', v_id));
+        return null;
+      end if;
+      -- Still open for a person. The payment has completed, so the money is no longer only
+      -- reported, or only their word, and that is what the record should say. What a decision
+      -- means has changed under any form already open, and whoever was told should know.
+      update public.payment_exceptions
+         set payment_received = 'confirmed_by_provider', evidence_version = evidence_version + 1, alert_sent_at = null
+       where payment_id = new.id and state = 'open'
+      returning id into v_id;
+      if v_id is not null then
+        perform public.payment_exception_audit(
+          'payment.exception_evidence_raised', 'system', null, null, new.user_id, 'payment_completed', null, null, null,
+          jsonb_build_object('paymentId', new.id, 'reference', new.reference, 'exceptionId', v_id));
+      end if;
+      return null;
+    end if;
+    if v_id is not null then
+      perform public.payment_exception_audit(
         'payment.exception_settled', 'system', null, null, new.user_id, 'payment_completed', null, null, null,
-        jsonb_build_object('paymentId', new.id, 'reference', new.reference, 'exceptionId', v_id));
+        jsonb_build_object('paymentId', new.id, 'reference', new.reference, 'exceptionId', v_id,
+                           'notifications', v_notifications));
     end if;
   elsif new.status in ('failed', 'cancelled', 'expired') then
     update public.payment_exceptions
        set state = 'open', alert_sent_at = null
      where payment_id = new.id and state = 'watching'
     returning id into v_id;
+    -- A notification was remembered for a completion that never happened. Closing the
+    -- attempt must not lose it.
+    if v_id is null and not exists (select 1 from public.payment_exceptions e where e.payment_id = new.id) then
+      select n.fingerprint into v_notice from public.payment_completion_notices n where n.payment_id = new.id;
+      if v_notice is not null then
+        insert into public.payment_exceptions (payment_id, state, first_signal, last_signal, payment_received, evidence_fingerprints)
+        values (new.id, 'open', 'paid_hint', 'paid_hint', 'reported', array[v_notice])
+        returning id into v_id;
+      end if;
+    end if;
     if v_id is not null then
       perform public.payment_exception_audit(
         'payment.exception_recorded', 'system', null, null, new.user_id, 'payment_closed', null, null, null,
@@ -485,7 +765,10 @@ create function public.payment_exception_report(
   p_payment_id uuid,
   p_signal     text,
   p_source     text,
-  p_detail     text default null
+  p_detail     text default null,
+  p_fingerprint text default null,
+  -- Only from the provider's own answer about another amount.
+  p_provider_amount numeric default null
 )
 returns jsonb
 language plpgsql
@@ -502,6 +785,25 @@ declare
   v_event  text;
   v_outcome text := 'replayed';
   v_flagged boolean;
+  v_known  boolean;
+  v_spent  boolean;
+  v_answer text;
+  v_mismatch_news boolean;
+  v_amount numeric;
+  v_amount_news boolean;
+  v_amount_moved boolean;
+  v_word_beside boolean;
+  v_word_moved boolean;
+  v_paid_again boolean;
+  v_provider_news boolean;
+  v_settled_news boolean;
+  v_on_completed boolean;
+  v_completing boolean;
+  v_notice text;
+  v_adds_only boolean;
+  v_repeat boolean := false;
+  v_different boolean;
+  v_first_repeat boolean;
   v_rank   constant jsonb := '{"not_established":0,"not_received":0,"reported":1,"confirmed_by_operator":2,"confirmed_by_provider":3}';
 begin
   if p_signal is null or p_signal not in ('paid_hint', 'unverified_report', 'provider_paid', 'completion_refused', 'provider_pending',
@@ -513,6 +815,12 @@ begin
   end if;
   if p_detail is not null and p_detail !~ '^[a-z0-9_:]{1,80}$' then
     perform public.payment_exception_refuse('invalid_detail');
+  end if;
+  if p_fingerprint is not null and p_fingerprint !~ '^[a-f0-9]{64}$' then
+    perform public.payment_exception_refuse('invalid_fingerprint');
+  end if;
+  if p_provider_amount is not null and (p_provider_amount <= 0 or p_detail is distinct from 'settlement_amount_mismatch') then
+    perform public.payment_exception_refuse('invalid_provider_amount');
   end if;
 
   select * into v_pay from public.payments where id = p_payment_id for update;
@@ -538,12 +846,15 @@ begin
       v_state := 'open';     v_money := 'not_established';
     when p_signal = 'unverified_report' and v_group = 'in_flight' then
       v_state := 'watching'; v_money := 'not_established';
-    -- Only a SIGNED report of an unknown event can question a completed payment.
+    -- A signed report of an unknown event, reaching here without a digest. With a digest
+    -- it was taken above as a notification's claim about a completed payment.
     when p_signal = 'unverified_report' and p_detail = 'ipn_unknown_event' then
       v_state := 'open';     v_money := 'confirmed_by_provider';
     when p_signal = 'provider_paid' and v_group = 'closed' then
       v_state := 'open';     v_money := 'confirmed_by_provider';
-    when p_signal = 'completion_refused' and v_group <> 'completed' then
+    -- Also on a completed payment if it is the provider's own word about the amount: it
+    -- may have answered just as another path completed the payment.
+    when p_signal = 'completion_refused' and (v_group <> 'completed' or p_detail like 'settlement_%') then
       v_state := 'open';     v_money := 'confirmed_by_provider';
     when p_signal = 'provider_pending' and v_group = 'closed' then
       v_state := 'open';     v_money := 'not_established';
@@ -558,6 +869,161 @@ begin
 
   select * into v_exc from public.payment_exceptions where payment_id = p_payment_id for update;
 
+  -- A sweep asks about closed attempts every day, and "not paid" is what a closed
+  -- attempt should hear. It matters where a person is still deciding, where access or a
+  -- refund rests on that attempt, or where the provider once called it paid, and only if
+  -- it is not already the last thing it said. On a refund it flags nothing, and "paid"
+  -- after it can only be seen if it was kept.
+  if p_source = 'sweep' and p_signal = 'provider_not_paid' and v_group <> 'completed'
+     and (v_exc.id is null or v_exc.provider_answer is not distinct from 'provider_not_paid'
+          or (v_exc.state = 'resolved' and v_exc.resolution not in ('access_honoured', 'refund_confirmed')
+              and not (v_exc.resolution = 'nothing_to_return' and v_exc.payment_received = 'confirmed_by_provider'))) then
+    return jsonb_build_object('outcome', 'ignored', 'needsAlert', false);
+  end if;
+  -- An administrator attested to closing this attempt, and only "pending" is being said. Opening
+  -- a record would undo that close and block the learner it freed. A late payment is still news.
+  if p_signal = 'provider_pending' and v_group = 'closed' and v_exc.id is null
+     and v_pay.failure_reason is not distinct from 'manual_reconciliation_unpaid' then
+    return jsonb_build_object('outcome', 'ignored', 'needsAlert', false);
+  end if;
+  -- "Can still be paid" is what an attempt in flight should hear. It is kept only where the
+  -- provider has said more on this record, because it then replaces that as its last word.
+  if p_signal = 'provider_pending' and v_group = 'in_flight'
+     and (v_exc.id is null or v_exc.provider_answer is not distinct from 'provider_pending'
+          or (v_exc.provider_answer is null and v_exc.provider_amount is null
+              and v_exc.payment_received is distinct from 'confirmed_by_provider')) then
+    return jsonb_build_object('outcome', 'ignored', 'needsAlert', false);
+  end if;
+  -- A cancellation claimed on a closed attempt is what the record already says, unless a
+  -- person is still deciding or access rests on it. Not evidence that money moved.
+  if p_signal = 'cancel_hint' and v_group <> 'completed'
+     and (v_exc.id is null or (v_exc.state = 'resolved' and v_exc.resolution <> 'access_honoured')) then
+    return jsonb_build_object('outcome', 'ignored', 'needsAlert', false);
+  end if;
+
+  -- The provider says a completed payment was paid at its amount, which is what it should
+  -- say. With no other answer on record there is nothing to write. Otherwise that answer
+  -- no longer stands, so a refund can be recorded at what was paid. It raises no alert of
+  -- its own, because it takes a question back, and any form from before it is out of date.
+  -- That it said so is kept, or the page sending a person back would show nothing new.
+  if p_signal = 'provider_paid' and v_group = 'completed' then
+    if v_exc.id is null or (v_exc.provider_amount is null and v_exc.provider_answer is null) then
+      return jsonb_build_object('outcome', 'ignored', 'needsAlert', false);
+    end if;
+    update public.payment_exceptions
+       set provider_amount = null, provider_answer = null,
+           provider_answers = case when 'provider_paid_at_ours' = any(provider_answers) then provider_answers
+                                   else provider_answers || 'provider_paid_at_ours'::text end,
+           provider_amounts = case when v_pay.amount = any(provider_amounts) or cardinality(provider_amounts) >= 20
+                                   then provider_amounts else provider_amounts || v_pay.amount end,
+           report_count = report_count + 1, last_reported_at = now()
+     where id = v_exc.id
+    returning * into v_exc;
+    perform public.payment_exception_audit(
+      'payment.exception_provider_answer_recorded', 'system', null, null, v_pay.user_id, p_source, null, null, null,
+      jsonb_build_object('paymentId', v_pay.id, 'reference', v_pay.reference, 'exceptionId', v_exc.id,
+                         'signal', p_signal, 'state', v_exc.state, 'paymentStatus', v_pay.status));
+    return jsonb_build_object('outcome', 'provider_answered', 'exceptionId', v_exc.id, 'state', v_exc.state,
+                              'paymentReceived', v_exc.payment_received, 'reportCount', v_exc.report_count, 'needsAlert', false);
+  end if;
+
+  -- What a notification claims about a completed payment. The payment stays valid, so
+  -- this can open nothing and block nobody, but it may be a second real payment. Only
+  -- the provider's own word can question the payment itself.
+  v_on_completed := v_group = 'completed' and p_source = 'ipn' and p_fingerprint is not null
+    and (p_signal in ('paid_hint', 'unverified_report', 'cancel_hint')
+         or (p_signal in ('amount_mismatch', 'currency_mismatch') and p_detail like 'ipn_%'));
+  -- The notification about to complete this payment, in the same request. Written first,
+  -- so that no completion a notification drives can lose what it covers.
+  v_completing := p_detail = 'ipn_completing_payment' and p_signal = 'paid_hint' and p_source = 'ipn'
+    and p_fingerprint is not null and v_group <> 'closed';
+  v_completing := coalesce(v_completing, false);
+  if p_detail = 'ipn_completing_payment' then
+    p_detail := null;
+  end if;
+  -- The provider's word, asked for because a notification arrived. The claim stays the notification's.
+  v_word_beside := coalesce(p_detail = 'settlement_status_unrecognised' and p_source = 'ipn' and p_fingerprint is null, false);
+  -- Adds to a record without rewriting what it says.
+  v_adds_only := v_on_completed or (p_signal = 'cancel_hint' and v_group <> 'completed')
+    or (p_signal = 'provider_not_paid' and v_group <> 'completed')
+    or (p_signal = 'provider_pending' and v_group = 'in_flight')
+    or v_word_beside;
+
+  if v_exc.id is null and (v_on_completed or v_completing) then
+    select n.fingerprint into v_notice from public.payment_completion_notices n where n.payment_id = p_payment_id;
+    -- The first paid notification is what the completion covers, and a payment completed by it
+    -- ends here. One that failed its signature is never taken as that notification.
+    if v_notice is null and p_signal = 'paid_hint' then
+      insert into public.payment_completion_notices (payment_id, fingerprint) values (p_payment_id, p_fingerprint);
+      return jsonb_build_object('outcome', 'completion_noted', 'needsAlert', false);
+    end if;
+    if v_completing and v_notice = p_fingerprint then
+      return jsonb_build_object('outcome', 'replayed', 'needsAlert', false);
+    end if;
+  end if;
+
+  -- That completion already covers this notification. It is not a repeat of itself.
+  if v_completing and coalesce(p_fingerprint = any(v_exc.evidence_fingerprints), false) then
+    return jsonb_build_object('outcome', 'replayed', 'exceptionId', v_exc.id, 'needsAlert', false);
+  end if;
+
+  if v_on_completed and v_exc.id is null then
+    -- Anything else starts a record on the settled payment, in the only way a record
+    -- can start. It carries the digest the completion covers, already reviewed.
+    insert into public.payment_exceptions (payment_id, state, first_signal, last_signal, detail, payment_received)
+    values (p_payment_id, 'watching', p_signal, p_signal, p_detail, 'reported')
+    returning * into v_exc;
+    update public.payment_exceptions
+       set state = 'resolved', resolution = 'settled_normally', resolved_at = now(),
+           payment_received = 'confirmed_by_provider', refund_state = 'not_required',
+           evidence_fingerprints = case when v_notice is null then '{}'::text[] else array[v_notice] end,
+           reviewed_fingerprints = case when v_notice is null then '{}'::text[] else array[v_notice] end
+     where id = v_exc.id
+    returning * into v_exc;
+  end if;
+
+  -- This exact notification has been reviewed, or notifications alone have already
+  -- reopened or flagged this record as often as they may.
+  v_known := coalesce(p_fingerprint = any(v_exc.reviewed_fingerprints), false);
+  v_spent := coalesce(v_exc.notification_reopens >= 3, false);
+  -- The provider says something it has not said on this record. No captured notification
+  -- can produce that answer, so nothing here may hold it back. Said before, it is not news.
+  v_answer := case when p_detail like 'settlement_%' then p_detail
+                   when p_signal in ('provider_not_paid', 'provider_pending') then p_signal end;
+  v_mismatch_news := p_detail like 'settlement_%' and not coalesce(v_answer = any(v_exc.provider_answers), false);
+  v_mismatch_news := coalesce(v_mismatch_news, false);
+  -- The amount it says was paid, if it said one. "Paid" alone means paid at ours.
+  v_amount := case when p_provider_amount is not null then p_provider_amount
+                   when p_signal = 'provider_paid' then v_pay.amount end;
+  -- An amount it has not named here is news, while there is room to remember it. Ours is
+  -- news only after it named another: on its own it is what a refunded payment should hear.
+  v_amount_news := v_amount is not null
+    and not coalesce(v_amount = any(v_exc.provider_amounts), false)
+    and coalesce(cardinality(v_exc.provider_amounts), 0) < 20
+    and (p_provider_amount is not null or coalesce(cardinality(v_exc.provider_amounts), 0) > 0);
+  v_amount_news := coalesce(v_amount_news, false);
+  -- Paid, after a last word that a person could dismiss it on. News once on a record, so that
+  -- a provider going back and forth cannot keep a learner blocked. After "paid at nothing",
+  -- only paid at our amount is that: the same mismatch again is the same word.
+  v_paid_again := coalesce(p_signal in ('provider_paid', 'completion_refused')
+                           and (v_exc.provider_answer in ('provider_not_paid', 'provider_pending', 'settlement_amount_unreadable', 'settlement_status_unrecognised')
+                                or (v_exc.provider_answer = 'settlement_amount_mismatch' and v_exc.provider_amount is null
+                                    and not coalesce(p_detail like 'settlement_%', false)))
+                           and not 'provider_paid' = any(v_exc.provider_answers), false);
+  v_settled_news := v_mismatch_news or v_amount_news or v_paid_again
+    or (p_signal in ('provider_not_paid', 'provider_pending') and not coalesce(v_answer = any(v_exc.provider_answers), false));
+  v_provider_news := v_settled_news
+    or (p_signal in ('provider_paid', 'completion_refused') and v_exc.payment_received is distinct from 'confirmed_by_provider');
+  -- It said something other than its last word, or another amount, and that is not news,
+  -- because it has said it before or the list is full. This must not flag, or a provider
+  -- going back and forth could block a learner for ever, and it still reaches a person, at
+  -- most weekly.
+  v_amount_moved := p_provider_amount is not null and not v_provider_news
+    and v_exc.id is not null and v_exc.provider_amount is distinct from p_provider_amount;
+  v_word_moved := not v_provider_news and v_exc.id is not null
+    and (coalesce(p_detail like 'settlement_%', false) or p_signal in ('provider_paid', 'completion_refused', 'provider_not_paid', 'provider_pending'))
+    and v_exc.provider_answer is distinct from v_answer;
+
   if v_exc.id is null then
     if v_state is null then
       return jsonb_build_object('outcome', 'ignored', 'needsAlert', false);
@@ -565,52 +1031,103 @@ begin
     insert into public.payment_exceptions (payment_id, state, first_signal, last_signal, detail, payment_received)
     values (p_payment_id, v_state, p_signal, p_signal, p_detail, v_money)
     returning * into v_exc;
+    -- It also holds the notification a completion covers, or is about to.
+    select n.fingerprint into v_notice from public.payment_completion_notices n where n.payment_id = p_payment_id;
+    if v_notice is not null then
+      update public.payment_exceptions
+         set evidence_fingerprints = array[v_notice],
+             reviewed_fingerprints = case when v_group = 'completed' then array[v_notice] else '{}'::text[] end,
+             -- That notification was signed and said paid, and no completion came of it. A
+             -- report beside it that failed its check must not make the record read as
+             -- though nothing had been reported.
+             payment_received = case when v_group <> 'completed' and payment_received = 'not_established'
+                                     then 'reported' else payment_received end
+       where id = v_exc.id
+      returning * into v_exc;
+    end if;
     v_outcome := 'created';
     v_event   := 'payment.exception_recorded';
+
+  elsif v_on_completed and v_exc.state = 'resolved' then
+    v_repeat := true;
 
   elsif v_exc.state = 'resolved'
     and v_exc.resolution in ('nothing_to_return', 'settled_normally')
     and v_state is not null
     -- Not evidence that money moved, so it cannot undo a human's review.
     and p_signal not in ('provider_pending', 'unverified_report')
-    -- A repeated mismatch is the same fact. A new kind of conflict is not.
-    and (p_signal not in ('amount_mismatch', 'currency_mismatch') or p_signal is distinct from v_exc.last_signal) then
-    -- A repeated notification cannot be told from a new payment: the signature
-    -- carries no nonce. So this fails towards a human.
-    update public.payment_exceptions
-       set state = v_state, resolution = null, resolved_at = null, resolved_by = null,
-           refund_state = 'not_assessed', alert_sent_at = null, escalated_at = null,
-           last_signal = p_signal, detail = coalesce(p_detail, detail),
-           report_count = report_count + 1, last_reported_at = now(),
-           payment_received = case
-             when (v_rank ->> v_money)::int >= (v_rank ->> payment_received)::int then v_money
-             else payment_received end
-     where id = v_exc.id
-    returning * into v_exc;
-    v_outcome := 'reopened';
-    v_event   := 'payment.exception_reopened';
+    -- A status check repeating a mismatch is the same fact, whatever a notification has
+    -- written since. A notification is judged below on what it said.
+    and (p_signal not in ('amount_mismatch', 'currency_mismatch') or p_fingerprint is not null or v_mismatch_news or v_amount_news) then
+    -- A status check saying again what it has said changes nothing.
+    if p_source <> 'ipn' and not v_provider_news then
+      null;
+    elsif p_source = 'ipn' and not v_provider_news
+       and (v_known or v_spent or v_exc.post_settlement_report_at is not null
+            -- On a completed payment only the provider can open a record, and it has said
+            -- this already. Any notification can prompt it to say so again.
+            or (v_group = 'completed' and v_answer is not null)) then
+      v_repeat := true;
+    else
+      update public.payment_exceptions
+         set state = v_state, resolution = null, resolved_at = null, resolved_by = null,
+             refund_state = 'not_assessed', alert_sent_at = null, escalated_at = null,
+             last_signal = case when v_word_beside then last_signal else p_signal end, detail = coalesce(p_detail, detail),
+             report_count = report_count + 1, last_reported_at = now(),
+             notification_reopens = notification_reopens + case when p_source = 'ipn' and not v_provider_news then 1 else 0 end,
+             repeat_count = 0, repeat_alert_due_at = null, different_report_at = null, different_signal = null,
+             payment_received = case
+               when (v_rank ->> v_money)::int >= (v_rank ->> payment_received)::int then v_money
+               else payment_received end
+       where id = v_exc.id
+      returning * into v_exc;
+      v_outcome := 'reopened';
+      v_event   := 'payment.exception_reopened';
+    end if;
 
   elsif v_exc.state = 'resolved'
     and v_exc.resolution in ('refund_confirmed', 'access_honoured')
-    and p_source = 'ipn'
-    and p_signal in ('paid_hint', 'provider_paid', 'completion_refused', 'amount_mismatch', 'currency_mismatch') then
+    and p_signal in ('paid_hint', 'provider_paid', 'completion_refused', 'amount_mismatch', 'currency_mismatch',
+                     'provider_not_paid', 'cancel_hint', 'provider_pending')
+    -- "Not paid" is what a refunded payment should hear. It questions a completed
+    -- payment, or an access decision that rests on this attempt.
+    and (p_signal not in ('provider_not_paid', 'cancel_hint') or v_group = 'completed'
+         or v_exc.resolution = 'access_honoured')
+    -- A status check can flag only by saying something new. After a refund the provider
+    -- may well keep answering "paid", and that must not flag on every run.
+    and (p_source = 'ipn' or v_settled_news) then
     -- The settled facts stay final, but this could be a second real payment: nothing
     -- proves the checkout can no longer be paid. It reaches a human without touching
-    -- them. Only a NOTIFICATION flags, whatever the provider then answers. A status
-    -- check from the sweep or an administrator is not an event: after a refund the
-    -- provider may well keep answering "paid", and that must not flag on every run.
+    -- them. A record already flagged is in front of someone, so a notification only
+    -- counts on it and is alerted on, and its digest is kept.
     v_flagged := v_exc.post_settlement_report_at is not null;
-    update public.payment_exceptions
-       set post_settlement_report_at = now(),
-           alert_sent_at = case when v_flagged then alert_sent_at else null end,
-           last_signal = p_signal, detail = coalesce(p_detail, detail),
-           report_count = report_count + 1, last_reported_at = now()
-     where id = v_exc.id
-    returning * into v_exc;
-    if not v_flagged then
+    if (v_known or v_spent or v_flagged) and not v_settled_news then
+      v_repeat := true;
+    else
+      update public.payment_exceptions
+         set post_settlement_report_at = now(),
+             alert_sent_at = null,
+             last_signal = case when v_word_beside then last_signal else p_signal end, detail = coalesce(p_detail, detail),
+             notification_reopens = notification_reopens + case when v_settled_news then 0 else 1 end,
+             report_count = report_count + 1, last_reported_at = now()
+       where id = v_exc.id
+      returning * into v_exc;
       v_outcome := 'flagged';
       v_event   := 'payment.exception_reported_after_settlement';
     end if;
+
+  -- Not evidence that money moved, so it cannot undo a review, and it must not vanish.
+  elsif v_exc.state = 'resolved' and p_signal = 'unverified_report' then
+    v_repeat := true;
+
+  -- The attempt can still be paid, and a person decided it was over. It blocks nobody, but
+  -- they should know, once.
+  elsif v_exc.state = 'resolved' and p_signal = 'provider_pending' and v_settled_news then
+    v_repeat := true;
+
+  -- A status check about a settled record with nothing new to say. Nothing to write.
+  elsif v_exc.state = 'resolved' and p_source <> 'ipn' then
+    null;
 
   else
     v_new := v_exc.payment_received;
@@ -624,18 +1141,132 @@ begin
       v_outcome := 'opened';
       v_event   := 'payment.exception_recorded';
     end if;
+    -- The provider said something new about a record still open, and it contradicts what
+    -- the record holds. Whoever was told about it was not told this. "Not paid" contradicts
+    -- only a receipt someone has confirmed.
+    if v_exc.state = 'open'
+       and v_settled_news
+       and (p_signal <> 'provider_not_paid' or v_exc.payment_received in ('confirmed_by_operator', 'confirmed_by_provider')) then
+      v_outcome := 'provider_answered';
+      v_event   := 'payment.exception_provider_answer_recorded';
+    end if;
     update public.payment_exceptions
        set state = case when state = 'watching' and v_state = 'open' then 'open' else state end,
            payment_received = v_new,
-           alert_sent_at = case when v_outcome in ('evidence_raised', 'opened') then null else alert_sent_at end,
+           alert_sent_at = case when v_outcome in ('evidence_raised', 'opened', 'provider_answered') then null else alert_sent_at end,
            -- A notification during an operator's confirmation must survive a withdrawal.
            evidence_before_confirmation = case
              when payment_received = 'confirmed_by_operator' and v_money = 'reported' then 'reported'
              else evidence_before_confirmation end,
-           -- An unproven report never displaces what is already known.
-           last_signal = case when p_signal = 'unverified_report' then last_signal else p_signal end,
-           detail = case when p_signal = 'unverified_report' then detail else coalesce(p_detail, detail) end,
+           -- An unproven report never displaces what is already known, and nor does a
+           -- notification that only adds to a record.
+           last_signal = case when p_signal = 'unverified_report' or v_adds_only then last_signal else p_signal end,
+           detail = case when p_signal = 'unverified_report' or v_adds_only then detail else coalesce(p_detail, detail) end,
            report_count = report_count + 1, last_reported_at = now()
+     where id = v_exc.id
+    returning * into v_exc;
+  end if;
+
+  -- Counted where a human will see it, and nothing else. One audit row per alert
+  -- period, so repeats cannot flood the log.
+  if v_repeat then
+    v_different := not v_known;
+    v_first_repeat := v_exc.repeat_alert_due_at is null;
+    if v_different and v_exc.different_report_at is null then
+      v_event := 'payment.exception_different_report_recorded';
+    elsif v_first_repeat then
+      v_event := 'payment.exception_repeat_recorded';
+    end if;
+    update public.payment_exceptions
+       set repeat_count = repeat_count + 1, last_repeat_at = now(),
+           report_count = report_count + 1, last_reported_at = now(),
+           different_report_at = case when v_different then now() else different_report_at end,
+           different_signal = case when v_different then p_signal else different_signal end,
+           -- The first such report since a review is alerted on at the next sweep. It
+           -- takes a review to make another one this urgent, so this cannot be flooded.
+           repeat_alert_due_at = case
+             when v_different and different_report_at is null then now()
+             else coalesce(repeat_alert_due_at, greatest(now(), coalesce(repeat_alerted_at + interval '7 days', now())))
+           end
+     where id = v_exc.id
+    returning * into v_exc;
+    v_outcome := 'repeated';
+  end if;
+
+  if v_answer is not null and (v_exc.provider_answer is distinct from v_answer
+                               or not coalesce(v_answer = any(v_exc.provider_answers), false)
+                               or (p_provider_amount is not null and v_exc.provider_amount is distinct from p_provider_amount)) then
+    update public.payment_exceptions
+       set provider_answer = v_answer,
+           provider_amount = coalesce(p_provider_amount, provider_amount),
+           provider_answers = case when v_answer = any(provider_answers) then provider_answers
+                                   else provider_answers || v_answer end
+     where id = v_exc.id
+    returning * into v_exc;
+  end if;
+
+  -- What it named is kept, while there is room.
+  if v_amount is not null and not coalesce(v_amount = any(v_exc.provider_amounts), false)
+     and cardinality(v_exc.provider_amounts) < 20 then
+    update public.payment_exceptions
+       set provider_amounts = provider_amounts || v_amount
+     where id = v_exc.id
+    returning * into v_exc;
+  end if;
+
+  -- What it says changed, and that flagged nothing. On a settled record nothing else would
+  -- make it count as needing a person, so this does.
+  if v_amount_moved or v_word_moved then
+    update public.payment_exceptions
+       set repeat_alert_due_at = coalesce(repeat_alert_due_at, greatest(now(), coalesce(repeat_alerted_at + interval '7 days', now()))),
+           repeat_count = case when state = 'resolved' and not v_repeat then repeat_count + 1 else repeat_count end,
+           last_repeat_at = case when state = 'resolved' then now() else last_repeat_at end,
+           report_count = case when state = 'resolved' and not v_repeat then report_count + 1 else report_count end,
+           last_reported_at = case when state = 'resolved' then now() else last_reported_at end,
+           different_report_at = case when state = 'resolved' then now() else different_report_at end,
+           different_signal = case when state = 'resolved' then p_signal else different_signal end
+     where id = v_exc.id
+    returning * into v_exc;
+    v_event := coalesce(v_event, 'payment.exception_provider_answer_recorded');
+  end if;
+
+  if v_paid_again then
+    update public.payment_exceptions
+       set provider_answers = provider_answers || 'provider_paid'::text
+     where id = v_exc.id
+    returning * into v_exc;
+  end if;
+
+  -- The provider now says this payment was paid at our amount, so what it said before no
+  -- longer stands, whether or not the payment could then be completed. It stays in the lists
+  -- above, as what it has said.
+  if (p_signal = 'provider_paid' or (p_signal = 'completion_refused' and not coalesce(p_detail like 'settlement_%', false)))
+     and (v_exc.provider_amount is not null or v_exc.provider_answer is not null) then
+    update public.payment_exceptions
+       set provider_amount = null, provider_answer = null
+     where id = v_exc.id
+    returning * into v_exc;
+  end if;
+
+  if p_fingerprint is not null and not (p_fingerprint = any(v_exc.evidence_fingerprints)) then
+    -- Each different notification leaves a durable trail, up to the cap that bounds it.
+    if v_event is null
+       and (cardinality(v_exc.evidence_fingerprints) < 20 or v_exc.evidence_overflow_at is null) then
+      v_event := 'payment.exception_different_report_recorded';
+    end if;
+    update public.payment_exceptions
+       set evidence_fingerprints = case when cardinality(evidence_fingerprints) < 20
+                                        then evidence_fingerprints || p_fingerprint
+                                        else evidence_fingerprints end,
+           evidence_overflow_at = case when cardinality(evidence_fingerprints) < 20 then evidence_overflow_at
+                                       else coalesce(evidence_overflow_at, now()) end,
+           -- A different notification on a record someone was already told about may be
+           -- a second payment. The first alert did not cover it.
+           repeat_alert_due_at = case
+             when state = 'open' and alert_sent_at is not null
+               then coalesce(repeat_alert_due_at, greatest(now(), coalesce(repeat_alerted_at + interval '7 days', now())))
+             else repeat_alert_due_at
+           end
      where id = v_exc.id
     returning * into v_exc;
   end if;
@@ -646,7 +1277,9 @@ begin
       v_event, 'system', null, null, v_pay.user_id, p_source, null, null, null,
       jsonb_build_object('paymentId', v_pay.id, 'reference', v_pay.reference, 'exceptionId', v_exc.id,
                          'signal', p_signal, 'detail', p_detail, 'state', v_exc.state,
-                         'paymentReceived', v_exc.payment_received, 'paymentStatus', v_pay.status));
+                         'paymentReceived', v_exc.payment_received, 'paymentStatus', v_pay.status,
+                         'notifications', cardinality(v_exc.evidence_fingerprints),
+                         'providerAmount', p_provider_amount));
   end if;
 
   return jsonb_build_object(
@@ -660,8 +1293,8 @@ begin
 end
 $fn$;
 
-comment on function public.payment_exception_report(uuid, text, text, text) is
-  'XP-PAYTECH-05. Record a signal about a payment. Idempotent per payment. Moves no payment, grants nothing. A replay only counts.';
+comment on function public.payment_exception_report(uuid, text, text, text, text, numeric) is
+  'XP-PAYTECH-05. Record a signal about a payment. Idempotent per payment. Moves no payment, grants nothing. A replay only counts, and so does a notification an administrator has already reviewed. On a completed payment, what a notification claims beyond the one its completion covers is counted, marked and alerted on, and can block nobody. Only the provider''s word can put a completed payment in question.';
 
 
 -- ── decide: an administrator's decision ──
@@ -672,7 +1305,10 @@ create function public.payment_exception_decide(
   p_actor_email  text,
   p_note         text,
   p_ip           text default null,
-  p_user_agent   text default null
+  p_user_agent   text default null,
+  -- The version of the record the administrator was shown. Without it nothing says what
+  -- this decision covers, so it is refused.
+  p_seen_version integer default null
 )
 returns jsonb
 language plpgsql
@@ -688,7 +1324,8 @@ declare
   v_confirmed boolean;
 begin
   if p_action is null or p_action not in ('confirm_received', 'withdraw_receipt', 'dismiss', 'require_refund',
-                                          'withdraw_refund', 'record_access', 'acknowledge_report') then
+                                          'withdraw_refund', 'record_access', 'acknowledge_report',
+                                          'reopen_after_review') then
     perform public.payment_exception_refuse('invalid_action');
   end if;
   if p_actor_id is null then
@@ -696,6 +1333,9 @@ begin
   end if;
   if p_note is null or length(trim(p_note)) not between 10 and 500 then
     perform public.payment_exception_refuse('note_required');
+  end if;
+  if p_seen_version is null then
+    perform public.payment_exception_refuse('evidence_version_required');
   end if;
 
   select e.payment_id into v_payment_id from public.payment_exceptions e where e.id = p_exception_id;
@@ -705,20 +1345,65 @@ begin
   select * into v_pay from public.payments where id = v_payment_id for update;
   select * into v_exc from public.payment_exceptions where id = p_exception_id for update;
 
-  -- The one decision a settled record can take. It changes no settled fact.
+  -- The two decisions a resolved record can take. Neither changes a settled fact.
   if p_action = 'acknowledge_report' then
-    if v_exc.post_settlement_report_at is null then
+    if v_exc.post_settlement_report_at is null and v_exc.repeat_count = 0 then
       perform public.payment_exception_refuse('no_report_to_review');
+    end if;
+  elsif p_action = 'reopen_after_review' then
+    if v_exc.state <> 'resolved' then
+      perform public.payment_exception_refuse('exception_not_resolved');
     end if;
   elsif v_exc.state <> 'open' then
     perform public.payment_exception_refuse('exception_not_open');
+  end if;
+  -- A decision covers what the administrator was shown. Whatever has changed since must be
+  -- read first, or it would pass unseen.
+  if p_seen_version <> v_exc.evidence_version then
+    perform public.payment_exception_refuse('evidence_changed');
   end if;
   v_confirmed := v_exc.payment_received in ('confirmed_by_operator', 'confirmed_by_provider');
 
   case p_action
     when 'acknowledge_report' then
-      update public.payment_exceptions set post_settlement_report_at = null where id = v_exc.id;
+      update public.payment_exceptions
+         set post_settlement_report_at = null, repeat_count = 0,
+             administrator_flagged_at = null,
+             repeat_alert_due_at = null,
+             different_report_at = null, different_signal = null,
+             evidence_overflow_at = null,
+             reviewed_fingerprints = evidence_fingerprints
+       where id = v_exc.id;
       v_event := 'payment.exception_settlement_report_reviewed';
+
+    -- An administrator found money this record does not cover, on a dashboard or a
+    -- statement, whether or not any notification came again. A record holding no
+    -- settled fact opens again. Settled facts stay final, so it is flagged instead. So
+    -- is a completed payment: the money found is a different payment, and opening this
+    -- record would invite a refund that closes the legitimate one as refunded. The
+    -- exception is a completed payment the provider's last word still questions, where a
+    -- dismissal may have been the mistake. What it took back does not count.
+    when 'reopen_after_review' then
+      if v_exc.resolution in ('nothing_to_return', 'settled_normally')
+         and (v_pay.status <> 'completed' or v_exc.provider_answer is not null or v_exc.provider_amount is not null) then
+        update public.payment_exceptions
+           set state = 'open', resolution = null, resolved_at = null, resolved_by = null,
+               refund_state = 'not_assessed', escalated_at = null, alert_sent_at = null,
+               administrator_reopened_at = now(),
+               payment_received = case when payment_received in ('not_received', 'not_established') then 'reported' else payment_received end,
+               repeat_count = 0, repeat_alert_due_at = null, different_report_at = null, different_signal = null,
+               reviewed_fingerprints = '{}'
+         where id = v_exc.id;
+      else
+        update public.payment_exceptions
+           set post_settlement_report_at = now(), alert_sent_at = null,
+               administrator_flagged_at = now(),
+               -- A flag raised again changes no value a clock can be trusted to tell apart.
+               evidence_version = evidence_version + 1,
+               repeat_count = 0, repeat_alert_due_at = null, different_report_at = null, different_signal = null
+         where id = v_exc.id;
+      end if;
+      v_event := 'payment.exception_reopened_by_administrator';
 
     when 'confirm_received' then
       if v_confirmed then
@@ -750,14 +1435,25 @@ begin
       -- A completed payment is legitimately held, so reviewing it and finding
       -- nothing wrong says nothing against it. Anywhere else, money that was
       -- confirmed received cannot be waved away. Only a CLOSED payment can be
-      -- recorded as not received: an in-flight one may still settle.
-      if v_pay.status <> 'completed' and v_confirmed then
+      -- recorded as not received: an in-flight one may still settle. The exception is money
+      -- the provider confirmed, when its last word is that it was not paid or can still be
+      -- paid, or proves nothing while no amount it named stands. What it confirmed stays on
+      -- the record, and a person who checked the dashboard may decide between the two.
+      if v_pay.status <> 'completed' and v_confirmed
+         and not (v_exc.payment_received = 'confirmed_by_provider'
+                  and coalesce(v_exc.provider_answer in ('provider_not_paid', 'provider_pending')
+                               or (v_exc.provider_answer in ('settlement_amount_mismatch', 'settlement_amount_unreadable', 'settlement_status_unrecognised')
+                                   and v_exc.provider_amount is null), false)) then
         perform public.payment_exception_refuse('payment_confirmed_cannot_dismiss');
       end if;
       update public.payment_exceptions
          set state = 'resolved', resolution = 'nothing_to_return', resolved_at = now(), resolved_by = p_actor_id,
              refund_state = 'not_required',
-             payment_received = case when v_pay.status in ('completed', 'pending', 'processing') then payment_received
+             repeat_alert_due_at = null,
+             evidence_overflow_at = null,
+             reviewed_fingerprints = evidence_fingerprints,
+             payment_received = case when v_pay.status in ('completed', 'pending', 'processing')
+                                       or payment_received = 'confirmed_by_provider' then payment_received
                                      else 'not_received' end
        where id = v_exc.id;
       v_event := 'payment.exception_dismissed';
@@ -798,17 +1494,24 @@ begin
       end if;
       update public.payment_exceptions
          set state = 'resolved', resolution = 'access_honoured', resolved_at = now(), resolved_by = p_actor_id,
-             access_state = 'granted', access_entitlement_id = v_ent, refund_state = 'not_required'
+             access_state = 'granted', access_entitlement_id = v_ent, refund_state = 'not_required',
+             repeat_alert_due_at = null,
+             evidence_overflow_at = null,
+             reviewed_fingerprints = evidence_fingerprints
        where id = v_exc.id;
       v_event := 'payment.exception_access_recorded';
   end case;
 
-  select * into v_exc from public.payment_exceptions where id = p_exception_id;
+  update public.payment_exceptions
+     set last_decision_note = trim(p_note), last_decision_at = now()
+   where id = p_exception_id
+  returning * into v_exc;
 
   perform public.payment_exception_audit(
     v_event, 'admin', p_actor_id, p_actor_email, v_pay.user_id, 'admin_panel', trim(p_note), p_ip, p_user_agent,
     jsonb_build_object('paymentId', v_pay.id, 'reference', v_pay.reference, 'exceptionId', v_exc.id,
-                       'action', p_action, 'state', v_exc.state, 'paymentReceived', v_exc.payment_received,
+                       'action', p_action, 'seenVersion', p_seen_version, 'notifications', cardinality(v_exc.evidence_fingerprints),
+                       'state', v_exc.state, 'paymentReceived', v_exc.payment_received,
                        'refundState', v_exc.refund_state, 'accessState', v_exc.access_state));
 
   return jsonb_build_object('outcome', p_action, 'exceptionId', v_exc.id, 'state', v_exc.state,
@@ -817,8 +1520,8 @@ begin
 end
 $fn$;
 
-comment on function public.payment_exception_decide(uuid, text, uuid, text, text, text, text) is
-  'XP-PAYTECH-05. An administrator''s decision on an open exception. Never completes a payment and never writes an entitlement. Every decision is audited in the same transaction.';
+comment on function public.payment_exception_decide(uuid, text, uuid, text, text, text, text, integer) is
+  'XP-PAYTECH-05. An administrator''s decision on an exception. Never completes a payment and never writes an entitlement. Every decision is audited in the same transaction.';
 
 
 -- ── record_refund: a full refund already confirmed outside this system ──
@@ -832,7 +1535,9 @@ create function public.payment_exception_record_refund(
   p_refunded_at        timestamptz,
   p_note               text,
   p_ip                 text default null,
-  p_user_agent         text default null
+  p_user_agent         text default null,
+  p_seen_version       integer default null,
+  p_attest_charged     boolean default false
 )
 returns jsonb
 language plpgsql
@@ -846,6 +1551,7 @@ declare
   v_exc   public.payment_exceptions%rowtype;
   v_live  boolean;
   v_moved text;
+  v_named boolean;
 begin
   if p_actor_id is null then
     perform public.payment_exception_refuse('actor_required');
@@ -867,6 +1573,10 @@ begin
   -- The same refund recorded twice is not a second refund.
   if v_exc.refund_state = 'confirmed' then
     if v_exc.refund_external_reference = v_ref then
+      perform public.payment_exception_audit(
+        'payment.exception_refund_repeated', 'admin', p_actor_id, p_actor_email, v_pay.user_id, 'admin_panel',
+        trim(p_note), p_ip, p_user_agent,
+        jsonb_build_object('paymentId', v_pay.id, 'reference', v_pay.reference, 'exceptionId', v_exc.id, 'refundReference', v_ref));
       return jsonb_build_object('outcome', 'already_recorded', 'exceptionId', v_exc.id, 'state', v_exc.state,
                                 'refundState', v_exc.refund_state);
     end if;
@@ -879,17 +1589,41 @@ begin
   if v_exc.refund_state <> 'required' then
     perform public.payment_exception_refuse('refund_not_required');
   end if;
+  if p_seen_version is null then
+    perform public.payment_exception_refuse('evidence_version_required');
+  end if;
+  if p_seen_version <> v_exc.evidence_version then
+    perform public.payment_exception_refuse('evidence_changed');
+  end if;
 
   if p_currency is distinct from v_pay.currency then
     perform public.payment_exception_refuse('refund_currency_mismatch');
   end if;
-  if p_amount is null or p_amount <= 0 or p_amount > v_pay.amount then
+  if p_amount is null or p_amount <= 0 then
     perform public.payment_exception_refuse('refund_amount_invalid');
   end if;
-  -- Recording a partial refund as settled would close a record while money is
-  -- still owed. Refused until the owner decides a policy for it.
-  if p_amount < v_pay.amount then
-    perform public.payment_exception_refuse('refund_partial_not_supported');
+  -- The whole of an amount the provider named on this record, or the whole of what was
+  -- charged. It may have named several, and only the dashboard says which was received, so
+  -- a decision on several needs its own attestation. Once it says paid at our amount, those
+  -- no longer stand. A completed payment was paid at its amount, so less than that stays
+  -- partial, whatever the provider says now.
+  v_named := v_exc.provider_amount is not null
+    and (p_amount = v_exc.provider_amount or coalesce(p_amount = any(v_exc.provider_amounts), false));
+  if not v_named or v_pay.status = 'completed' then
+    if p_amount > v_pay.amount and not v_named then
+      perform public.payment_exception_refuse('refund_amount_invalid');
+    end if;
+    -- Recording a partial refund as settled would close a record while money is
+    -- still owed. Refused until the owner decides a policy for it.
+    if p_amount < v_pay.amount or (p_amount <> v_pay.amount and coalesce(p_amount < v_exc.provider_amount, false)) then
+      perform public.payment_exception_refuse('refund_partial_not_supported');
+    end if;
+  end if;
+  -- Less than the provider's last amount, whether the amount charged or one it named earlier.
+  -- That figure may include what never reached us, so a person who checked the dashboard can
+  -- say this was all of it. Without that the record stays open.
+  if coalesce(p_amount < v_exc.provider_amount, false) and not coalesce(p_attest_charged, false) then
+    perform public.payment_exception_refuse('refund_charged_attestation_required');
   end if;
   if p_refunded_at is null or p_refunded_at > now() + interval '5 minutes' or p_refunded_at < v_pay.created_at then
     perform public.payment_exception_refuse('refund_date_invalid');
@@ -900,7 +1634,11 @@ begin
        set refund_state = 'confirmed', refund_external_reference = v_ref, refund_amount = p_amount,
            refund_currency = p_currency, refund_confirmed_at = p_refunded_at,
            refund_recorded_by = p_actor_id, refund_recorded_at = now(),
-           state = 'resolved', resolution = 'refund_confirmed', resolved_at = now(), resolved_by = p_actor_id
+           state = 'resolved', resolution = 'refund_confirmed', resolved_at = now(), resolved_by = p_actor_id,
+           repeat_alert_due_at = null,
+           evidence_overflow_at = null,
+           reviewed_fingerprints = evidence_fingerprints,
+           last_decision_note = trim(p_note), last_decision_at = now()
      where id = v_exc.id;
   exception when unique_violation then
     perform public.payment_exception_refuse('refund_reference_reused');
@@ -925,7 +1663,10 @@ begin
     'payment.exception_refund_confirmed', 'admin', p_actor_id, p_actor_email, v_pay.user_id, 'admin_panel',
     trim(p_note), p_ip, p_user_agent,
     jsonb_build_object('paymentId', v_pay.id, 'reference', v_pay.reference, 'exceptionId', v_exc.id,
+                       'seenVersion', p_seen_version, 'notifications', cardinality(v_exc.evidence_fingerprints),
                        'refundReference', v_ref, 'refundAmount', p_amount, 'refundCurrency', p_currency,
+                       'providerAmount', v_exc.provider_amount,
+                       'chargedAttested', coalesce(p_attest_charged, false) and coalesce(p_amount < v_exc.provider_amount, false),
                        'refundedAt', p_refunded_at, 'paymentStatusBefore', v_pay.status,
                        'paymentStatusAfter', coalesce(v_moved, v_pay.status), 'accessStillLive', v_live));
 
@@ -935,28 +1676,49 @@ begin
 end
 $fn$;
 
-comment on function public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text) is
+comment on function public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text, integer, boolean) is
   'XP-PAYTECH-05. Record a full refund confirmed outside this system. Issues nothing and changes no access. Moves the payment only where 063 permits it.';
 
 
--- ── mark_alerted: every recipient accepted the alert ──
-create function public.payment_exception_mark_alerted(p_exception_id uuid)
+-- ── mark_alerted: an address accepted the alert ──
+-- It states the version and the due time the alert was listed with, so that a different
+-- report or a changed answer arriving while it went out stays due. A record still waiting
+-- for a person after a week is alerted on again: open, flagged, or holding a different report
+-- nobody has reviewed. The same notification again is not that.
+create function public.payment_exception_mark_alerted(p_exception_id uuid, p_seen_version integer, p_seen_due timestamptz)
 returns boolean
 language plpgsql
 security definer
 set search_path = pg_catalog, pg_temp
 as $fn$
+declare
+  v_exc    public.payment_exceptions%rowtype;
+  v_alert  boolean;
+  v_repeat boolean;
+  v_remind boolean;
 begin
+  select * into v_exc from public.payment_exceptions where id = p_exception_id for update;
+  if not found or v_exc.evidence_version is distinct from p_seen_version then
+    return false;
+  end if;
+  v_alert  := (v_exc.state = 'open' or v_exc.post_settlement_report_at is not null)
+    and (v_exc.alert_sent_at is null or v_exc.alert_sent_at <= now() - interval '7 days');
+  v_repeat := coalesce(v_exc.repeat_alert_due_at = p_seen_due and p_seen_due <= now(), false);
+  v_remind := v_exc.different_report_at is not null and coalesce(v_exc.repeat_alerted_at <= now() - interval '7 days', false);
+  if not (v_alert or v_repeat or v_remind) then
+    return false;
+  end if;
   update public.payment_exceptions
-     set alert_sent_at = now()
-   where id = p_exception_id and alert_sent_at is null
-     and (state = 'open' or post_settlement_report_at is not null);
-  return found;
+     set alert_sent_at = case when v_alert then now() else alert_sent_at end,
+         repeat_alerted_at = case when v_repeat or v_remind then now() else repeat_alerted_at end,
+         repeat_alert_due_at = case when v_repeat then null else repeat_alert_due_at end
+   where id = p_exception_id;
+  return true;
 end
 $fn$;
 
-comment on function public.payment_exception_mark_alerted(uuid) is
-  'XP-PAYTECH-05. Stamp an exception as alerted. The only thing it can change is alert_sent_at.';
+comment on function public.payment_exception_mark_alerted(uuid, integer, timestamptz) is
+  'XP-PAYTECH-05. Stamp an exception as alerted, unless it changed since the alert was listed. It can change only when an alert was sent and when the next alert about repeats is due.';
 
 
 -- ── escalate_watching: a report on an in-flight payment must not sit unseen ──
@@ -1019,6 +1781,9 @@ as $fn$
      and p.user_id = p_user_id
      and p.course_id = p_course_id
      and p.status <> 'completed'
+     -- A report that failed its check proves nothing, so on its own it blocks nobody.
+     -- It stays in front of an administrator.
+     and not (e.payment_received = 'not_established' and e.last_signal = 'unverified_report')
    order by e.first_reported_at
    limit 1;
 $fn$;
@@ -1032,17 +1797,18 @@ revoke all on function public.payment_exception_refuse(text) from public, anon, 
 revoke all on function public.payment_exception_audit(text, text, uuid, text, uuid, text, text, text, text, jsonb) from public, anon, authenticated, service_role;
 revoke all on function public.payment_exceptions_guard() from public, anon, authenticated, service_role;
 revoke all on function public.payment_exceptions_follow_payment() from public, anon, authenticated, service_role;
-revoke all on function public.payment_exception_report(uuid, text, text, text) from public, anon, authenticated;
-revoke all on function public.payment_exception_decide(uuid, text, uuid, text, text, text, text) from public, anon, authenticated;
-revoke all on function public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text) from public, anon, authenticated;
-revoke all on function public.payment_exception_mark_alerted(uuid) from public, anon, authenticated;
+revoke all on function public.payment_completion_notices_guard() from public, anon, authenticated, service_role;
+revoke all on function public.payment_exception_report(uuid, text, text, text, text, numeric) from public, anon, authenticated;
+revoke all on function public.payment_exception_decide(uuid, text, uuid, text, text, text, text, integer) from public, anon, authenticated;
+revoke all on function public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text, integer, boolean) from public, anon, authenticated;
+revoke all on function public.payment_exception_mark_alerted(uuid, integer, timestamptz) from public, anon, authenticated;
 revoke all on function public.payment_exception_escalate_watching(integer) from public, anon, authenticated;
 revoke all on function public.payment_exception_blocking_reference(uuid, uuid) from public, anon, authenticated;
 
-grant execute on function public.payment_exception_report(uuid, text, text, text) to service_role;
-grant execute on function public.payment_exception_decide(uuid, text, uuid, text, text, text, text) to service_role;
-grant execute on function public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text) to service_role;
-grant execute on function public.payment_exception_mark_alerted(uuid) to service_role;
+grant execute on function public.payment_exception_report(uuid, text, text, text, text, numeric) to service_role;
+grant execute on function public.payment_exception_decide(uuid, text, uuid, text, text, text, text, integer) to service_role;
+grant execute on function public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text, integer, boolean) to service_role;
+grant execute on function public.payment_exception_mark_alerted(uuid, integer, timestamptz) to service_role;
 grant execute on function public.payment_exception_escalate_watching(integer) to service_role;
 grant execute on function public.payment_exception_blocking_reference(uuid, uuid) to service_role;
 
@@ -1079,7 +1845,7 @@ declare
     'payment_untouched:expired',
     'refund_replay:already_recorded',
     'paid_after_refund:flagged:resolved',
-    'paid_again_after_refund:replayed',
+    'paid_again_after_refund:repeated',
     'facts_stay_final:refund_confirmed:confirmed',
     'reviewed:cleared',
     'nothing_more_to_review:no_report_to_review',
@@ -1088,7 +1854,7 @@ declare
     'hint_then_completion:resolved:settled_normally',
     'hint_on_completed:ignored',
     'dismiss:not_received',
-    'pending_cannot_reopen:resolved:replayed',
+    'pending_cannot_reopen:resolved:repeated',
     'new_evidence:reopened',
     'downgrade:payment_evidence_downgrade',
     'mismatch_dismissed:resolved',
@@ -1096,7 +1862,57 @@ declare
     'then_closed:open',
     'unverified_on_closed:open:not_established',
     'escalated:1:open',
-    'escalated_then_completed:resolved:settled_normally'
+    'escalated_then_completed:resolved:settled_normally',
+    'stale_review:evidence_changed',
+    'repeat_after_review:repeated:resolved',
+    'repeat_counted:1:due',
+    'repeat_alert_stamped:not_due',
+    'repeats_reviewed:0',
+    'changed_notification_1:reopened',
+    'changed_notification_2:reopened',
+    'changed_notification_3:reopened',
+    'notifications_spent:repeated:resolved',
+    'different_is_not_a_repeat:marked:due',
+    'provider_answer_not_limited:reopened:confirmed_by_provider',
+    'reopened_by_administrator:open:reported',
+    'unverified_after_review:repeated:resolved:marked',
+    'second_notification_while_open:open:due',
+    'completion_noted:completion_noted',
+    'normal_payment_has_no_record:0',
+    'its_notification_again:repeated:resolved:unmarked',
+    'other_notification_on_completed:repeated:resolved:marked:2',
+    'notice_is_final:completion_notice_immutable',
+    'failed_signature_on_completed:repeated:resolved:marked',
+    'two_notifications_then_completion:resolved:flagged:2',
+    'one_notification_then_completion:resolved:unflagged:1',
+    'provider_answer_said_before:resolved',
+    'provider_mismatch_after_refund:flagged',
+    'same_provider_mismatch_after_refund:resolved:unflagged:1',
+    'digest_past_the_cap:marked:overflow',
+    'form_from_before_the_overflow:evidence_changed',
+    'escalated_then_contradicted_then_completed:open',
+    'notification_questions_completed_payment:repeated:resolved',
+    'provider_questions_completed_payment:reopened:open',
+    'provider_answer_on_open_record:provider_answered:due',
+    'failed_signature_then_completion:resolved:flagged',
+    'notification_conflict_then_completion:resolved:flagged',
+    'provider_conflict_then_completion:open',
+    'notice_then_closure:open',
+    'reopen_on_provider_question:open',
+    'reopen_with_no_provider_question:resolved:flagged',
+    'confirmed_after_escalation_then_completion:open',
+    'provider_question_then_watching_then_completion:open',
+    'attested_money_then_completion:resolved:flagged',
+    'dismissal_then_completion:resolved:flagged',
+    'refund_of_part_of_what_the_provider_reported:refund_partial_not_supported',
+    'refund_of_what_the_provider_reported:recorded',
+    'no_version:evidence_version_required',
+    'repeats_leave_the_version:unmoved',
+    'flag_raised_again:evidence_changed',
+    'provider_then_said_not_paid:resolved:confirmed_by_provider',
+    'paid_after_a_sweep_said_not_paid_on_a_refund:flagged',
+    'alert_listed_before_a_change:still_due',
+    'paid_at_ours_takes_back_its_amount:none'
   ];
 begin
   select case e.mode when 'sandbox' then 'test' else 'live' end into v_mode
@@ -1119,7 +1935,7 @@ begin
     v_got := v_got || ('replay:' || (v_r ->> 'reportCount') || ':' || (v_r ->> 'outcome'));
 
     begin
-      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 100, 'XOF', now(), 'selftest note');
+      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 100, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
       v_got := v_got || 'refund_too_soon:ALLOWED'::text;
     exception when sqlstate 'P0001' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -1127,37 +1943,37 @@ begin
     end;
 
     begin
-      perform public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note');
+      perform public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
       v_got := v_got || 'refund_decision_too_soon:ALLOWED'::text;
     exception when sqlstate 'P0001' then
       get stacked diagnostics v_detail = pg_exception_detail;
       v_got := v_got || ('refund_decision_too_soon:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
     end;
 
-    v_r := public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('confirm:' || (v_r ->> 'paymentReceived'));
-    v_r := public.payment_exception_decide(v_e, 'withdraw_receipt', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'withdraw_receipt', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('withdraw_receipt:' || (v_r ->> 'paymentReceived'));
-    v_r := public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('confirm_again:' || (v_r ->> 'paymentReceived'));
 
     begin
-      perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note');
+      perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
       v_got := v_got || 'dismiss_confirmed:ALLOWED'::text;
     exception when sqlstate 'P0001' then
       get stacked diagnostics v_detail = pg_exception_detail;
       v_got := v_got || ('dismiss_confirmed:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
     end;
 
-    v_r := public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('require:' || (v_r ->> 'refundState'));
-    v_r := public.payment_exception_decide(v_e, 'withdraw_refund', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'withdraw_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('withdraw_refund:' || (v_r ->> 'refundState'));
-    v_r := public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('require_again:' || (v_r ->> 'refundState'));
 
     begin
-      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 101, 'XOF', now(), 'selftest note');
+      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 101, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
       v_got := v_got || 'overpaid:ALLOWED'::text;
     exception when sqlstate 'P0001' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -1165,18 +1981,18 @@ begin
     end;
 
     begin
-      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 50, 'XOF', now(), 'selftest note');
+      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 50, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
       v_got := v_got || 'partial:ALLOWED'::text;
     exception when sqlstate 'P0001' then
       get stacked diagnostics v_detail = pg_exception_detail;
       v_got := v_got || ('partial:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
     end;
 
-    v_r := public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 100, 'XOF', now(), 'selftest note');
+    v_r := public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 100, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('refund:' || (v_r ->> 'state'));
     v_got := v_got || ('payment_untouched:' || (select status from public.payments where id = v_a));
 
-    v_r := public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 100, 'XOF', now(), 'selftest note');
+    v_r := public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-1', 100, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('refund_replay:' || (v_r ->> 'outcome'));
 
     -- a second paid report after the refund: final facts, and a human hears of it
@@ -1185,11 +2001,11 @@ begin
     v_r := public.payment_exception_report(v_a, 'paid_hint', 'ipn');
     v_got := v_got || ('paid_again_after_refund:' || (v_r ->> 'outcome'));
     v_got := v_got || ('facts_stay_final:' || (select resolution || ':' || refund_state from public.payment_exceptions where id = v_e));
-    perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note');
+    perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('reviewed:' || (select case when post_settlement_report_at is null then 'cleared' else 'STILL_FLAGGED' end
                                          from public.payment_exceptions where id = v_e));
     begin
-      perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note');
+      perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
       v_got := v_got || 'nothing_more_to_review:ALLOWED'::text;
     exception when sqlstate 'P0001' then
       get stacked diagnostics v_detail = pg_exception_detail;
@@ -1238,7 +2054,7 @@ begin
     update public.payments set status = 'cancelled', failure_reason = 'selftest' where id = v_c;
     v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn');
     v_e := (v_r ->> 'exceptionId')::uuid;
-    v_r := public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('dismiss:' || (v_r ->> 'paymentReceived'));
     v_r := public.payment_exception_report(v_c, 'provider_pending', 'sweep');
     v_got := v_got || ('pending_cannot_reopen:' || (v_r ->> 'state') || ':' || (v_r ->> 'outcome'));
@@ -1260,7 +2076,7 @@ begin
     update public.payments set provider_token = 'xp-paytech-05-064-selftest-e', status = 'processing' where id = v_c;
     v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'ipn', 'ipn_amount_mismatch');
     v_e := (v_r ->> 'exceptionId')::uuid;
-    v_r := public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note');
+    v_r := public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
     v_got := v_got || ('mismatch_dismissed:' || (v_r ->> 'state'));
     v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn');
     v_got := v_got || ('hint_reopens_to_watching:' || (v_r ->> 'state'));
@@ -1287,6 +2103,453 @@ begin
     update public.payments set status = 'completed', completed_at = now() where id = v_c;
     v_got := v_got || ('escalated_then_completed:' || (select state || ':' || resolution from public.payment_exceptions where payment_id = v_c));
 
+    -- a reviewed notification repeated, then ones that differ, then the provider's word
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-05-064-SELFTEST-H', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-05-064-selftest-h', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    begin
+      perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e) - 1);
+      v_got := v_got || 'stale_review:ALLOWED'::text;
+    exception when sqlstate 'P0001' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+      v_got := v_got || ('stale_review:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
+    end;
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_got := v_got || ('repeat_after_review:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state'));
+    v_got := v_got || ('repeat_counted:' || (select repeat_count || ':' || case when repeat_alert_due_at is null then 'not_due' else 'due' end
+                                               from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_mark_alerted(v_e, (select evidence_version from public.payment_exceptions where id = v_e), (select repeat_alert_due_at from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('repeat_alert_stamped:' || (select case when repeat_alert_due_at is null then 'not_due' else 'due' end
+                                                     from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('repeats_reviewed:' || (select repeat_count from public.payment_exceptions where id = v_e));
+    foreach v_detail in array array['b', 'c', 'd'] loop
+      v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat(v_detail, 64));
+      v_got := v_got || ('changed_notification_' || (select notification_reopens from public.payment_exceptions where id = v_e)
+                         || ':' || (v_r ->> 'outcome'));
+      perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    end loop;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('e', 64));
+    v_got := v_got || ('notifications_spent:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state'));
+    v_got := v_got || ('different_is_not_a_repeat:'
+                       || (select case when different_report_at is null then 'unmarked' else 'marked' end
+                                  || ':' || case when repeat_alert_due_at <= now() then 'due' else 'not_due' end
+                             from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'provider_paid', 'ipn', null, repeat('a', 64));
+    v_got := v_got || ('provider_answer_not_limited:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'paymentReceived'));
+
+    -- an administrator finds money this record does not cover, with no repeat at all
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-05-064-SELFTEST-I', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-05-064-selftest-i', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('reopened_by_administrator:' || (v_r ->> 'state') || ':' || (v_r ->> 'paymentReceived'));
+
+    -- a report that failed its signature, after a review: counted, and it opens nothing
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'unverified_report', 'ipn', 'ipn_signature_mismatch', repeat('f', 64));
+    v_got := v_got || ('unverified_after_review:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state') || ':'
+                       || (select case when different_report_at is null then 'unmarked' else 'marked' end
+                             from public.payment_exceptions where id = v_e));
+
+    -- a second, different notification on a record someone was already told about
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-05-064-SELFTEST-J', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-05-064-selftest-j', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_mark_alerted(v_e, (select evidence_version from public.payment_exceptions where id = v_e), (select repeat_alert_due_at from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('b', 64));
+    v_got := v_got || ('second_notification_while_open:' || (v_r ->> 'state') || ':'
+                       || (select case when repeat_alert_due_at <= now() then 'due' else 'not_due' end
+                             from public.payment_exceptions where id = v_e));
+
+    -- a completed payment: the notification it covers, and then any other
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode, user_id, course_id)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-K', 'paytech', v_mode, null, null)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-k', status = 'processing' where id = v_c;
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', 'ipn_completing_payment', repeat('a', 64));
+    v_got := v_got || ('completion_noted:' || (v_r ->> 'outcome'));
+    v_got := v_got || ('normal_payment_has_no_record:' || (select count(*) from public.payment_exceptions where payment_id = v_c));
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_got := v_got || ('its_notification_again:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state') || ':'
+                       || (select case when different_report_at is null then 'unmarked' else 'marked' end
+                             from public.payment_exceptions where payment_id = v_c));
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('b', 64));
+    v_got := v_got || ('other_notification_on_completed:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state') || ':'
+                       || (select case when different_report_at is null then 'unmarked' else 'marked' end
+                                  || ':' || cardinality(evidence_fingerprints)
+                             from public.payment_exceptions where payment_id = v_c));
+    begin
+      update public.payment_completion_notices set fingerprint = repeat('c', 64) where payment_id = v_c;
+      v_got := v_got || 'notice_is_final:ALLOWED'::text;
+    exception when sqlstate 'P0001' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+      v_got := v_got || ('notice_is_final:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
+    end;
+
+    -- a failed signature on a completed payment, with no record yet
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-L', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-l', status = 'processing' where id = v_c;
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'unverified_report', 'ipn', 'ipn_signature_mismatch', repeat('a', 64));
+    v_got := v_got || ('failed_signature_on_completed:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state') || ':'
+                       || (select case when different_report_at is null then 'unmarked' else 'marked' end
+                             from public.payment_exceptions where payment_id = v_c));
+
+    -- completing while the record holds two different notifications, and then one
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-M', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-m', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('b', 64));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('two_notifications_then_completion:'
+                       || (select state || ':' || case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                                  || ':' || cardinality(evidence_fingerprints)
+                             from public.payment_exceptions where payment_id = v_c));
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-N', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-n', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('one_notification_then_completion:'
+                       || (select state || ':' || case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                                  || ':' || cardinality(reviewed_fingerprints)
+                             from public.payment_exceptions where payment_id = v_c));
+
+    -- the provider repeating itself cannot keep reopening, whatever a notification wrote
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-O', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-o', status = 'processing' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch');
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_report(v_c, 'currency_mismatch', 'ipn', 'ipn_currency_mismatch', repeat('a', 64));
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch');
+    v_got := v_got || ('provider_answer_said_before:' || (v_r ->> 'state'));
+
+    -- after a refund, a status check that says something new is flagged, once
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-P', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-p', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-P', 100, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'completion_refused', 'sweep', 'settlement_amount_mismatch');
+    v_got := v_got || ('provider_mismatch_after_refund:' || (v_r ->> 'outcome'));
+    perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'completion_refused', 'sweep', 'settlement_amount_mismatch');
+    v_got := v_got || ('same_provider_mismatch_after_refund:' || (v_r ->> 'state') || ':'
+                       || (select case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                                  || ':' || cardinality(provider_answers)
+                             from public.payment_exceptions where id = v_e));
+
+    -- past the digest cap: not stored, never reviewed, and a form from before it is stale
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-Q', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-q', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    for v_n in 1..20 loop
+      perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, md5(v_n::text) || md5(v_n::text));
+    end loop;
+    v_e := (select id from public.payment_exceptions where payment_id = v_c);
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    update public.payment_exceptions set notification_reopens = 3 where id = v_e;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_got := v_got || ('digest_past_the_cap:'
+                       || (select case when different_report_at is null then 'unmarked' else 'marked' end
+                                  || ':' || case when evidence_overflow_at is null then 'stored' else 'overflow' end
+                             from public.payment_exceptions where id = v_e));
+    begin
+      perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e) - 1);
+      v_got := v_got || 'form_from_before_the_overflow:ALLOWED'::text;
+    exception when sqlstate 'P0001' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+      v_got := v_got || ('form_from_before_the_overflow:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
+    end;
+
+    -- a conflict on an escalated record survives the payment completing
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-R', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-r', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    perform public.payment_exception_escalate_watching(0);
+    perform public.payment_exception_report(v_c, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch');
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('escalated_then_contradicted_then_completed:'
+                       || (select state from public.payment_exceptions where payment_id = v_c));
+
+    -- on a completed payment a notification's claim settles, and the provider's opens
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-S', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-s', status = 'processing' where id = v_c;
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'ipn', 'ipn_amount_mismatch', repeat('a', 64));
+    v_got := v_got || ('notification_questions_completed_payment:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state'));
+    v_r := public.payment_exception_report(v_c, 'provider_not_paid', 'admin');
+    v_got := v_got || ('provider_questions_completed_payment:' || (v_r ->> 'outcome') || ':' || (v_r ->> 'state'));
+
+    -- the provider saying something new about a record already alerted on
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-T', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-t', status = 'processing' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'ipn', 'ipn_amount_mismatch', repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_mark_alerted(v_e, (select evidence_version from public.payment_exceptions where id = v_e), (select repeat_alert_due_at from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch');
+    v_got := v_got || ('provider_answer_on_open_record:' || (v_r ->> 'outcome') || ':'
+                       || (select case when alert_sent_at is null then 'due' else 'not_due' end
+                             from public.payment_exceptions where id = v_e));
+
+    -- what a completion does not cover is flagged, whichever way it arrived
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-U', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-u', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'unverified_report', 'ipn', 'ipn_signature_mismatch', repeat('a', 64));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('failed_signature_then_completion:'
+                       || (select state || ':' || case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                             from public.payment_exceptions where payment_id = v_c));
+
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-V', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-v', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'amount_mismatch', 'ipn', 'ipn_amount_mismatch', repeat('a', 64));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('notification_conflict_then_completion:'
+                       || (select state || ':' || case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                             from public.payment_exceptions where payment_id = v_c));
+
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-W', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-w', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch');
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('provider_conflict_then_completion:'
+                       || (select state from public.payment_exceptions where payment_id = v_c));
+
+    -- a notification remembered for a completion that never came, then a closure
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-X', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-x', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', 'ipn_completing_payment', repeat('a', 64));
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_got := v_got || ('notice_then_closure:' || (select state from public.payment_exceptions where payment_id = v_c));
+
+    -- an administrator reopening a completed payment: the provider's question opens it
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-Y', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-y', status = 'processing' where id = v_c;
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'provider_not_paid', 'admin');
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_r := public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('reopen_on_provider_question:' || (v_r ->> 'state'));
+
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-Z', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-z', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_e := (select id from public.payment_exceptions where payment_id = v_c);
+    v_r := public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('reopen_with_no_provider_question:' || (v_r ->> 'state') || ':'
+                       || (select case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                             from public.payment_exceptions where id = v_e));
+
+    -- money an administrator confirmed on an escalated record stays open
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AA', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-aa', status = 'processing' where id = v_c;
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    perform public.payment_exception_escalate_watching(0);
+    v_e := (select id from public.payment_exceptions where payment_id = v_c);
+    perform public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('confirmed_after_escalation_then_completion:' || (select state from public.payment_exceptions where id = v_e));
+
+    -- a record the provider questioned goes back to watching, and the payment completes
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AB', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ab', status = 'processing' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch');
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('provider_question_then_watching_then_completion:' || (select state from public.payment_exceptions where id = v_e));
+
+    -- an administrator attests to money on an in-flight attempt, and it completes
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AC', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ac', status = 'processing' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'ipn', 'ipn_amount_mismatch', repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('attested_money_then_completion:'
+                       || (select state || ':' || case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                             from public.payment_exceptions where id = v_e));
+
+    -- a dismissal on an attempt that then completes
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AD', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ad', status = 'processing' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'ipn', 'ipn_amount_mismatch', repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_got := v_got || ('dismissal_then_completion:'
+                       || (select state || ':' || case when post_settlement_report_at is null then 'unflagged' else 'flagged' end
+                             from public.payment_exceptions where id = v_e));
+
+    -- the provider reported another amount, and that is what was refunded
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AE', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ae', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, 80);
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    begin
+      perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-AE', 79, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+      v_got := v_got || 'refund_of_part_of_what_the_provider_reported:ALLOWED'::text;
+    exception when sqlstate 'P0001' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+      v_got := v_got || ('refund_of_part_of_what_the_provider_reported:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
+    end;
+    v_r := public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-AE', 80, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('refund_of_what_the_provider_reported:' || (v_r ->> 'outcome'));
+
+    -- a decision that does not say what it showed, and a version only a change can move
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AF', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-af', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    begin
+      perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note');
+      v_got := v_got || 'no_version:ALLOWED'::text;
+    exception when sqlstate 'P0001' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+      v_got := v_got || ('no_version:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
+    end;
+    v_n := (select evidence_version from public.payment_exceptions where id = v_e);
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_got := v_got || ('repeats_leave_the_version:' || case when (select evidence_version from public.payment_exceptions where id = v_e) = v_n then 'unmoved' else 'MOVED' end);
+
+    -- a flag raised again on a flagged record makes an older form out of date
+    perform public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'confirm_received', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-AF', 100, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_n := (select evidence_version from public.payment_exceptions where id = v_e);
+    perform public.payment_exception_decide(v_e, 'reopen_after_review', v_actor, null, 'selftest note', null, null, v_n);
+    begin
+      perform public.payment_exception_decide(v_e, 'acknowledge_report', v_actor, null, 'selftest note', null, null, v_n);
+      v_got := v_got || 'flag_raised_again:ALLOWED'::text;
+    exception when sqlstate 'P0001' then
+      get stacked diagnostics v_detail = pg_exception_detail;
+      v_got := v_got || ('flag_raised_again:' || coalesce(v_detail::jsonb ->> 'reason', '?'));
+    end;
+
+    -- the provider confirmed money and then said it was not paid: a person may decide
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AG', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ag', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'provider_paid', 'admin');
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_report(v_c, 'provider_not_paid', 'admin');
+    v_r := public.payment_exception_decide(v_e, 'dismiss', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    v_got := v_got || ('provider_then_said_not_paid:' || (v_r ->> 'state') || ':' || (v_r ->> 'paymentReceived'));
+
+    -- after a refund, a sweep's "not paid" is kept, so that "paid" after it is seen
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-BA', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ba', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'provider_paid', 'admin');
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_decide(v_e, 'require_refund', v_actor, null, 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_record_refund(v_e, v_actor, null, 'SELFTEST-REF-BA', 100, 'XOF', now(), 'selftest note', null, null, (select evidence_version from public.payment_exceptions where id = v_e));
+    perform public.payment_exception_report(v_c, 'provider_not_paid', 'sweep');
+    v_r := public.payment_exception_report(v_c, 'provider_paid', 'sweep');
+    v_got := v_got || ('paid_after_a_sweep_said_not_paid_on_a_refund:' || (v_r ->> 'outcome'));
+
+    -- an alert listed before a change does not stamp what changed
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AH', 'paytech', 'test')
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ah', status = 'processing' where id = v_c;
+    update public.payments set status = 'expired', failure_reason = 'selftest' where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('a', 64));
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    v_n := (select evidence_version from public.payment_exceptions where id = v_e);
+    perform public.payment_exception_report(v_c, 'paid_hint', 'ipn', null, repeat('b', 64));
+    perform public.payment_exception_mark_alerted(v_e, v_n, null);
+    v_got := v_got || ('alert_listed_before_a_change:'
+                       || (select case when alert_sent_at is null then 'still_due' else 'STAMPED' end from public.payment_exceptions where id = v_e));
+
+    -- a completed payment the provider named another amount for, then paid at ours
+    insert into public.payments (amount, currency, method, status, reference, provider, provider_mode)
+    values (100, 'XOF', 'card', 'pending', 'XP-PAYTECH-06-064-SELFTEST-AI', 'paytech', v_mode)
+    returning id into v_c;
+    update public.payments set provider_token = 'xp-paytech-06-064-selftest-ai', status = 'processing' where id = v_c;
+    update public.payments set status = 'completed', completed_at = now() where id = v_c;
+    v_r := public.payment_exception_report(v_c, 'amount_mismatch', 'admin', 'settlement_amount_mismatch', null, 200);
+    v_e := (v_r ->> 'exceptionId')::uuid;
+    perform public.payment_exception_report(v_c, 'provider_paid', 'admin');
+    v_got := v_got || ('paid_at_ours_takes_back_its_amount:'
+                       || (select coalesce(provider_amount::text, 'none') from public.payment_exceptions where id = v_e));
+
     -- Roll back every write above; keep only the verdicts.
     raise exception 'xp-paytech-05-064-selftest-complete' using errcode = 'XPT64';
   exception when sqlstate 'XPT64' then
@@ -1296,8 +2559,9 @@ begin
   if v_got is distinct from v_want then
     raise exception 'XP-PAYTECH-05 064 self-test: the workflow does not behave as specified. Expected % got %', v_want, v_got;
   end if;
-  if exists (select 1 from public.payments where reference like 'XP-PAYTECH-05-064-SELFTEST-%')
-  or exists (select 1 from public.payment_exceptions) then
+  if exists (select 1 from public.payments where reference like 'XP-PAYTECH-0_-064-SELFTEST-%')
+  or exists (select 1 from public.payment_exceptions)
+  or exists (select 1 from public.payment_completion_notices) then
     raise exception 'XP-PAYTECH-05 064 self-test: a scratch row survived';
   end if;
 end
@@ -1324,6 +2588,16 @@ begin
     raise exception 'XP-PAYTECH-05 064: payment_exceptions must have no policy';
   end if;
 
+  -- nothing but the report function touches what a completion covers
+  foreach v_role in array array['anon', 'authenticated', 'service_role'] loop
+    if has_table_privilege(v_role, 'public.payment_completion_notices', 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER') then
+      raise exception 'XP-PAYTECH-06 064: % holds a privilege on payment_completion_notices', v_role;
+    end if;
+  end loop;
+  if not (select c.relrowsecurity from pg_class c where c.oid = 'public.payment_completion_notices'::regclass) then
+    raise exception 'XP-PAYTECH-06 064: row level security is not enabled on payment_completion_notices';
+  end if;
+
   -- the application can read and nothing else, at table or column level
   if not has_table_privilege('service_role', 'public.payment_exceptions', 'SELECT') then
     raise exception 'XP-PAYTECH-05 064: service_role cannot read payment_exceptions';
@@ -1339,10 +2613,11 @@ begin
     'public.payment_exception_audit(text, text, uuid, text, uuid, text, text, text, text, jsonb)',
     'public.payment_exceptions_guard()',
     'public.payment_exceptions_follow_payment()',
-    'public.payment_exception_report(uuid, text, text, text)',
-    'public.payment_exception_decide(uuid, text, uuid, text, text, text, text)',
-    'public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text)',
-    'public.payment_exception_mark_alerted(uuid)',
+    'public.payment_completion_notices_guard()',
+    'public.payment_exception_report(uuid, text, text, text, text, numeric)',
+    'public.payment_exception_decide(uuid, text, uuid, text, text, text, text, integer)',
+    'public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text, integer, boolean)',
+    'public.payment_exception_mark_alerted(uuid, integer, timestamptz)',
     'public.payment_exception_escalate_watching(integer)',
     'public.payment_exception_blocking_reference(uuid, uuid)'
   ] loop
@@ -1362,14 +2637,20 @@ begin
     'public.payment_exception_refuse(text)',
     'public.payment_exception_audit(text, text, uuid, text, uuid, text, text, text, text, jsonb)',
     'public.payment_exceptions_guard()',
-    'public.payment_exceptions_follow_payment()'
+    'public.payment_exceptions_follow_payment()',
+    'public.payment_completion_notices_guard()'
   ] loop
     if has_function_privilege('service_role', v_fn, 'EXECUTE') then
       raise exception 'XP-PAYTECH-05 064: service_role can EXECUTE %', v_fn;
     end if;
   end loop;
 
-  -- both triggers, enabled
+  -- every trigger, enabled
+  if (select count(*) from pg_trigger t
+       where t.tgrelid = 'public.payment_completion_notices'::regclass and t.tgname = 'payment_completion_notices_guard'
+         and not t.tgisinternal and t.tgenabled = 'O') <> 1 then
+    raise exception 'XP-PAYTECH-06 064: payment_completion_notices_guard is not installed';
+  end if;
   if (select count(*) from pg_trigger t
        where t.tgrelid = 'public.payment_exceptions'::regclass and t.tgname = 'payment_exceptions_guard'
          and not t.tgisinternal and t.tgenabled = 'O') <> 1 then
@@ -1446,6 +2727,8 @@ commit;
 --          → payments_transition_guard         | O
 --        select count(*) from public.payment_exceptions;
 --          → 0
+--        select count(*) from public.payment_completion_notices;
+--          → 0
 --        select status, count(*) from public.payments group by 1 order by 1;
 --          → identical to the counts captured before the run
 --
@@ -1454,10 +2737,12 @@ commit;
 -- Run it WHOLE, and roll back 064 BEFORE 063: 063's own rollback would leave this
 -- migration's trigger behind, and 063 then refuses to re-apply beside it.
 --
--- It refuses while any exception is watching, open or flagged after settlement,
--- because dropping the table would destroy the record of money that may be owed.
+-- It refuses while any exception is watching, open, flagged after settlement, holding
+-- unreviewed repeats or with an alert still due, because dropping the table would
+-- destroy the record of money that may be owed.
 -- Settle those first. Dropping
--- also destroys RESOLVED records, including refund facts. EXPORT THEM FIRST:
+-- also destroys RESOLVED records, including refund facts, and what each completion
+-- covers. EXPORT THEM FIRST:
 --     select * from public.payment_exceptions order by created_at;
 -- Each decision stays in audit_log, but the export is the only copy of the record.
 -- ════════════════════════════════════════════════════════════════════════════
@@ -1469,7 +2754,8 @@ commit;
 -- do $rb$
 -- begin
 --   if exists (select 1 from public.payment_exceptions
---               where state <> 'resolved' or post_settlement_report_at is not null) then
+--               where state <> 'resolved' or post_settlement_report_at is not null or repeat_count > 0
+--                  or repeat_alert_due_at is not null) then
 --     raise exception 'XP-PAYTECH-05 064 rollback: unsettled exceptions exist; settle them first';
 --   end if;
 -- end
@@ -1479,10 +2765,12 @@ commit;
 -- drop function if exists public.payment_exceptions_follow_payment();
 -- drop function if exists public.payment_exception_blocking_reference(uuid, uuid);
 -- drop function if exists public.payment_exception_escalate_watching(integer);
--- drop function if exists public.payment_exception_mark_alerted(uuid);
--- drop function if exists public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text);
--- drop function if exists public.payment_exception_decide(uuid, text, uuid, text, text, text, text);
--- drop function if exists public.payment_exception_report(uuid, text, text, text);
+-- drop function if exists public.payment_exception_mark_alerted(uuid, integer, timestamptz);
+-- drop function if exists public.payment_exception_record_refund(uuid, uuid, text, text, numeric, text, timestamptz, text, text, text, integer, boolean);
+-- drop function if exists public.payment_exception_decide(uuid, text, uuid, text, text, text, text, integer);
+-- drop function if exists public.payment_exception_report(uuid, text, text, text, text, numeric);
+-- drop table if exists public.payment_completion_notices;
+-- drop function if exists public.payment_completion_notices_guard();
 -- drop table if exists public.payment_exceptions;
 -- drop function if exists public.payment_exceptions_guard();
 -- drop function if exists public.payment_exception_audit(text, text, uuid, text, uuid, text, text, text, text, jsonb);
@@ -1492,6 +2780,9 @@ commit;
 -- begin
 --   if to_regclass('public.payment_exceptions') is not null then
 --     raise exception 'XP-PAYTECH-05 064 rollback: payment_exceptions survived';
+--   end if;
+--   if to_regclass('public.payment_completion_notices') is not null then
+--     raise exception 'XP-PAYTECH-06 064 rollback: payment_completion_notices survived';
 --   end if;
 --   if exists (select 1 from pg_trigger where tgrelid = 'public.payments'::regclass
 --                and tgname = 'payment_exceptions_follow_payment') then

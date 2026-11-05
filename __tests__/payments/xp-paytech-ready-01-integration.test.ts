@@ -79,16 +79,21 @@ const FIXTURE_CONTRACT = {
 } as const
 
 // ── hoisted state shared with the module mocks ─────────────────────────────
+// The first import of the server action pulls in the Supabase SSR client.
+vi.setConfig({ testTimeout: 30_000 })
+
 const H = vi.hoisted(() => ({
   makeClient: null as unknown as (_role: 'service_role' | 'authenticated') => unknown,
   user: null as null | { id: string; email: string; email_confirmed_at: string | null },
   logs: [] as { level: string; module: string; args: unknown[] }[],
   rpcFault: null as null | Record<string, unknown>,
   /** Fails only the named function, leaving every other call working. */
-  rpcFaultFor: null as null | { fn: string; error: Record<string, unknown> },
+  rpcFaultFor: null as null | { fn: string; error: Record<string, unknown>; when?: (args: Record<string, unknown>) => boolean },
   denyAdmin: false,
   emails: [] as { to: string; reference: string }[],
   emailMode: 'ok' as 'ok' | 'fail' | 'fail_second' | 'dry',
+  /** Runs while an alert goes out, for races. */
+  emailDuring: null as null | (() => Promise<void>),
   contract: null as null | Record<string, unknown>,
 }))
 
@@ -115,6 +120,7 @@ vi.mock('@/lib/auth/session', () => ({
 vi.mock('@/lib/email', () => ({
   sendPaymentExceptionAlert: async (to: string, data: { reference: string }) => {
     H.emails.push({ to, reference: data.reference })
+    if (H.emailDuring) await H.emailDuring()
     if (H.emailMode === 'fail') return { success: false, error: 'simulated' }
     if (H.emailMode === 'fail_second' && H.emails.length % 2 === 0) return { success: false, error: 'simulated' }
     if (H.emailMode === 'dry') return { success: true, dryRun: true }
@@ -250,7 +256,7 @@ H.makeClient = (role) => {
     from: (table: string) => new Query(role, sub, table),
     rpc: async (fn: string, args: Record<string, unknown>) => {
       if (H.rpcFault) { const f = H.rpcFault; H.rpcFault = null; return { data: null, error: f } }
-      if (H.rpcFaultFor?.fn === fn) return { data: null, error: H.rpcFaultFor.error }
+      if (H.rpcFaultFor?.fn === fn && (H.rpcFaultFor.when?.(args) ?? true)) return { data: null, error: H.rpcFaultFor.error }
       const names = Object.keys(args)
       const text = `select public.${ident(fn)}(${names.map((n, i) => `${ident(n)} => $${i + 1}`).join(', ')}) as r`
       try { return { data: (await asRole(role, sub, text, names.map(n => args[n])))[0]?.r ?? null, error: null } }
@@ -466,7 +472,7 @@ async function setEnvironment(mode: 'live' | 'sandbox') {
 async function ipn(
   token: string,
   over: Record<string, unknown> = {},
-  opts: { signAmount?: number; secret?: string; form?: boolean; ref?: string } = {},
+  opts: { signAmount?: number; secret?: string; form?: boolean; ref?: string; rawClientPhone?: string } = {},
 ) {
   const row = await rowFor(token).catch(() => null)
   const ref = opts.ref ?? row?.reference ?? P.refs.get(token) ?? 'SCX-NOT-A-ROW'
@@ -485,7 +491,11 @@ async function ipn(
   const res = await POST(new Request('https://xp-preview.vercel.app/api/payments/paytech/ipn', {
     method: 'POST',
     headers: { 'content-type': opts.form ? 'application/x-www-form-urlencoded' : 'application/json' },
-    body: opts.form ? new URLSearchParams(payload as Record<string, string>).toString() : JSON.stringify(payload),
+    body: opts.form
+      ? new URLSearchParams(payload as Record<string, string>).toString()
+      : opts.rawClientPhone
+        ? JSON.stringify(payload).replace('"770000000"', opts.rawClientPhone)
+        : JSON.stringify(payload),
   }))
   return { status: res.status, body: await res.json() as Record<string, unknown> }
 }
@@ -572,7 +582,7 @@ async function exceptionAudit() {
 }
 
 const refundFields = (exceptionId: string) => ({
-  exceptionId, note: NOTE, attest: 'yes', externalReference: 'PT-REFUND-0001',
+  exceptionId, note: NOTE, attest: 'yes', attestAll: 'yes', externalReference: 'PT-REFUND-0001',
   amount: String(PRICE_C1), currency: 'XOF', refundedOn: new Date().toISOString().slice(0, 10),
 })
 
@@ -586,14 +596,33 @@ async function ageException(token: string, hours: number) {
      alter table public.payment_exceptions enable trigger payment_exceptions_guard;`)
 }
 
-type ExName = 'acknowledgeExceptionReport' | 'confirmExceptionReceipt' | 'withdrawExceptionReceipt' | 'dismissException' | 'requireExceptionRefund'
+type ExName = 'acknowledgeExceptionReport' | 'reopenExceptionAfterReview' | 'confirmExceptionReceipt' | 'withdrawExceptionReceipt' | 'dismissException' | 'requireExceptionRefund'
   | 'withdrawExceptionRefund' | 'recordExceptionAccess' | 'recordExceptionRefund' | 'recheckException'
+
+/** One alert run, as the sweep and a new report start it. */
+async function sendAlerts() {
+  const { sendPendingExceptionAlerts } = await import('@/lib/payments/payment-exceptions')
+  return sendPendingExceptionAlerts()
+}
 
 /** Run an exception action; return its notice, or where it sent a refused caller. */
 async function exAction(name: ExName, fields: Record<string, string>) {
   const mod = await import('@/app/(admin)/admin/payments/exception-actions')
   const fd = new FormData()
   for (const [k, v] of Object.entries(fields)) fd.set(k, v)
+  // The page sends the version of the record it read. A test about a stale or a missing
+  // one says so.
+  if (!('evidenceVersion' in fields) && /^[0-9a-f-]{36}$/.test(fields.exceptionId ?? '')) {
+    const [row] = await asSuper(`select to_jsonb(e) ->> 'evidence_version' as v from public.payment_exceptions e where e.id = $1`, [fields.exceptionId])
+    if (row?.v !== null && row?.v !== undefined) fd.set('evidenceVersion', String(row.v))
+  }
+  // A refund decision's own attestation has its own test. Everywhere else the box is ticked.
+  if (name === 'requireExceptionRefund' && !('attestAll' in fields)) fd.set('attestAll', 'yes')
+  if (!('evidenceCount' in fields) && /^[0-9a-f-]{36}$/.test(fields.exceptionId ?? '')) {
+    const [row] = await asSuper(`select cardinality(evidence_fingerprints) + cardinality(provider_answers) + greatest(cardinality(provider_amounts) - 1, 0)
+      + (case when evidence_overflow_at is null then 0 else 1 end) as n from public.payment_exceptions where id = $1`, [fields.exceptionId])
+    if (row) fd.set('evidenceCount', String(row.n))
+  }
   try {
     await mod[name](fd)
   } catch (e) {
@@ -603,6 +632,13 @@ async function exAction(name: ExName, fields: Record<string, string>) {
   }
   throw new Error('the action did not redirect')
 }
+
+/** What the page's form sends for a record it has just shown in full. */
+const reviewedForm = (e: { id: string; evidence_version?: number; evidence_fingerprints: string[]; provider_answers?: string[]; provider_amounts?: unknown[]; evidence_overflow_at?: string | null; post_settlement_report_at?: string | null }) => ({
+  exceptionId: e.id, note: NOTE, attest: 'yes', attestAll: 'yes',
+  ...(e.evidence_version === undefined ? {} : { evidenceVersion: String(e.evidence_version) }),
+  evidenceCount: String(e.evidence_fingerprints.length + (e.provider_answers?.length ?? 0) + Math.max((e.provider_amounts?.length ?? 0) - 1, 0) + (e.evidence_overflow_at ? 1 : 0)),
+})
 
 // ── lifecycle ──────────────────────────────────────────────────────────────
 describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => {
@@ -640,7 +676,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       ($3, 'c3', 'Brouillon', 20000, 'XOF', false)`, [C1, C2, C3])
 
     H.user = null; H.logs = []; H.rpcFault = null; H.contract = FIXTURE_CONTRACT
-    H.rpcFaultFor = null; H.denyAdmin = false; H.emails = []; H.emailMode = 'ok'
+    H.rpcFaultFor = null; H.denyAdmin = false; H.emails = []; H.emailMode = 'ok'; H.emailDuring = null
     P.next = 0; P.requests = []; P.statusCalls = []; P.refs = new Map(); P.status = new Map(); P.during = null; P.duringStatus = null
 
     vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
@@ -1702,7 +1738,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
       await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
       await exAction('recordExceptionRefund', refundFields(e.id))
-      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
       await expect(db.exec(ROLLBACK_064)).rejects.toThrow(/settle them first/)
       await db.exec('rollback').catch(() => undefined)
       expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
@@ -1712,7 +1748,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       H.contract = null
       const { token: settled } = await closedAttempt('expired', user(L2), C2)
       await ipn(settled)
-      await exAction('dismissException', { exceptionId: (await exceptionFor(settled)).id, note: NOTE, attest: 'yes' })
+      await exAction('dismissException', { exceptionId: (await exceptionFor(settled)).id, note: NOTE, attest: 'yes', attestAll: 'yes' })
       expect((await exceptionFor(settled)).state).toBe('resolved')
       H.contract = FIXTURE_CONTRACT
 
@@ -1807,12 +1843,14 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       expect(await exceptionFor(token)).toBeNull()
     })
 
-    it('a repeated paid notification on a completed payment is a plain replay', async () => {
+    it('a repeated paid notification on a completed payment changes nothing about it, and is counted', async () => {
       const token = await startAndToken(user(L1))
       says(token, 'completed')
       await ipn(token)
       expect((await ipn(token)).body.detail).toBe('already_completed')
-      expect(await exceptionFor(token)).toBeNull()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'settled_normally', repeat_count: 1 })
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await dbHasAccess(L1, C1)).toBe(true)
     })
 
     it('a notification without our credentials writes nothing', async () => {
@@ -1855,14 +1893,24 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       expect((await ipn(token, {}, { secret: 'sk_wrong' })).status).toBe(503)
     })
 
-    it('on a completed payment a bad signature is noise, but a SIGNED unknown event is a conflict', async () => {
+    it('on a completed payment a bad signature is kept without touching it', async () => {
       const token = await startAndToken(user(L1))
       says(token, 'completed')
       await ipn(token)
       await ipn(token, {}, { secret: 'sk_wrong' })
-      expect(await exceptionFor(token)).toBeNull()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', different_signal: 'unverified_report' })
+      expect(e.different_report_at).not.toBeNull()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await dbHasAccess(L1, C1)).toBe(true)
+    })
+
+    it('on a completed payment a signed unknown event is kept, and cannot open it: its type is not signed', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
       await ipn(token, { type_event: 'refund_complete' })
-      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'unverified_report', detail: 'ipn_unknown_event', payment_received: 'confirmed_by_provider' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', different_signal: 'unverified_report', detail: 'ipn_unknown_event', payment_received: 'confirmed_by_provider' })
       expect((await rowFor(token)).status).toBe('completed')
       expect(await dbHasAccess(L1, C1)).toBe(true)
     })
@@ -1892,7 +1940,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const token = await completed()
       H.contract = null
       expect((await ipn(token, { type_event: 'sale_canceled' })).status).toBe(200)
-      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'cancel_hint', payment_received: 'confirmed_by_provider' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', different_signal: 'cancel_hint', payment_received: 'confirmed_by_provider' })
       expect((await rowFor(token)).status).toBe('completed')
       expect(await dbHasAccess(L1, C1)).toBe(true)
     })
@@ -1919,9 +1967,9 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       says(token, 'completed')
       await ipn(token)
       expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
-      H.contract = null
+      says(token, 'failed')
       await ipn(token, { type_event: 'sale_canceled' })
-      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'cancel_hint', resolution: null })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_not_paid', resolution: null })
     })
   })
 
@@ -2109,7 +2157,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const token = await startAndToken(user(L1))
       says(token, 'completed', 1)
       H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'storage down', details: null } }
-      expect(await adminAction('closeUnpaidPaytechPayment', closeFields((await rowFor(token)).id))).toBe('close_refused_provider_says_paid')
+      expect(await adminAction('closeUnpaidPaytechPayment', closeFields((await rowFor(token)).id))).toBe('close_refused_report_unrecorded')
       expect((await rowFor(token)).status).toBe('processing')
     })
 
@@ -2118,7 +2166,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const token = await startAndToken(user(L1))
       await ipn(token, { final_item_price: '1' })
       const e = await exceptionFor(token)
-      await exAction('dismissException', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('dismissException', { exceptionId: e.id, note: NOTE, attest: 'yes', attestAll: 'yes' })
       expect((await exceptionFor(token)).state).toBe('resolved')
 
       await ipn(token)
@@ -2241,7 +2289,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
 
     it('opens again once an operator finds nothing to return', async () => {
       const { exception } = await openException()
-      expect(await exAction('dismissException', { exceptionId: exception.id, note: NOTE, attest: 'yes' })).toBe('exception_dismiss_done')
+      expect(await exAction('dismissException', { exceptionId: exception.id, note: NOTE, attest: 'yes', attestAll: 'yes' })).toBe('exception_dismiss_done')
       expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
     })
 
@@ -2293,7 +2341,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       await ipn(token)
       return { token, id, exception: await exceptionFor(token) }
     }
-    const decisions = (e: { id: string }) => ({ exceptionId: e.id, note: NOTE })
+    const decisions = (e: { id: string }) => ({ exceptionId: e.id, note: NOTE, attestAll: 'yes' })
 
     it('received, refund required, refund confirmed: four separate facts and no invalid transition', async () => {
       const { token, exception: e } = await reported()
@@ -2477,7 +2525,8 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       it('the database refuses a currency or a future date on its own', async () => {
         const { e } = await ready()
         const call = (currency: string, when: string) => asRole('service_role', null,
-          `select public.payment_exception_record_refund($1, $2, null, 'REF-DIRECT-1', 45000, $3, $4::timestamptz, 'a long enough note')`,
+          `select public.payment_exception_record_refund($1, $2, null, 'REF-DIRECT-1', 45000, $3, $4::timestamptz, 'a long enough note', null, null,
+             (select evidence_version from public.payment_exceptions where id = $1))`,
           [e.id, ADM, currency, when])
         await expect(call('EUR', new Date().toISOString())).rejects.toMatchObject({ detail: expect.stringContaining('refund_currency_mismatch') })
         await expect(call('XOF', new Date(Date.now() + 86_400_000).toISOString())).rejects.toMatchObject({ detail: expect.stringContaining('refund_date_invalid') })
@@ -2521,7 +2570,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         const token = await startAndToken(user(L1))
         says(token, 'completed')
         await ipn(token)
-        H.contract = null
+        says(token, 'failed')
         await ipn(token, { type_event: 'sale_canceled' })
         const e = await exceptionFor(token)
         await exAction('requireExceptionRefund', decisions(e))
@@ -2541,7 +2590,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
     })
 
     describe('nothing to return', () => {
-      it('records that no funds arrived, and any later paid report reopens it, even a repeat', async () => {
+      it('records that no funds arrived, and a different notification reopens it', async () => {
         const { token, exception: e } = await reported()
         expect(await exAction('dismissException', { ...decisions(e), attest: 'yes' })).toBe('exception_dismiss_done')
         expect(await exceptionFor(token)).toMatchObject({
@@ -2549,7 +2598,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         })
         const emails = H.emails.length
 
-        await ipn(token)
+        await ipn(token, { client_phone: '771111111' })
 
         expect(await exceptionFor(token)).toMatchObject({
           state: 'open', resolution: null, resolved_at: null, resolved_by: null,
@@ -2568,7 +2617,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider', resolution: null })
       })
 
-      it('a new kind of conflict reopens a settled record and alerts; the same one repeated does not', async () => {
+      it('a notification\'s claim on a settled payment is counted and alerted on, and reopens nothing', async () => {
         const token = await startAndToken(user(L1))
         says(token, 'pending')
         await ipn(token)
@@ -2576,14 +2625,11 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         await ipn(token)
         expect((await exceptionFor(token)).resolution).toBe('settled_normally')
 
+        H.emails = []
         await ipn(token, { final_item_price: '1' })
-        expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'amount_mismatch', resolution: null })
+        expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', different_signal: 'amount_mismatch', resolution: 'settled_normally' })
+        await sweep()
         expect(H.emails.map(m => m.to)).toEqual(OWNERS)
-
-        const e = await exceptionFor(token)
-        await exAction('dismissException', { ...decisions(e), attest: 'yes' })
-        await ipn(token, { final_item_price: '1' })
-        expect((await exceptionFor(token)).state).toBe('resolved')
       })
 
       it('"still payable" cannot undo a review, and the sweep keeps working', async () => {
@@ -2593,7 +2639,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         says(token, 'pending')
         const res = await sweep()
         expect(res.body.exception_unrecorded).toBeUndefined()
-        expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', last_signal: 'provider_pending', payment_received: 'not_received' })
+        expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', different_signal: 'provider_pending', provider_answer: 'provider_pending', payment_received: 'not_received' })
       })
 
       it('clearing a mismatch on an in-flight payment does not claim the money never came', async () => {
@@ -2618,10 +2664,10 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         const token = await startAndToken(user(L1))
         says(token, 'completed')
         await ipn(token)
-        H.contract = null
+        says(token, 'failed')
         await ipn(token, { type_event: 'sale_canceled' })
         const e = await exceptionFor(token)
-        expect(await exAction('dismissException', { ...decisions(e), attest: 'yes' })).toBe('exception_dismiss_done')
+        expect(await exAction('dismissException', { ...decisions(e), attest: 'yes', attestAll: 'yes' })).toBe('exception_dismiss_done')
         expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', payment_received: 'confirmed_by_provider' })
         expect((await rowFor(token)).status).toBe('completed')
       })
@@ -2692,7 +2738,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         H.contract = FIXTURE_CONTRACT
         says(token, 'failed')
         await exAction('recheckException', { exceptionId: e.id })
-        expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_not_paid', payment_received: 'reported' })
+        expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint', provider_answer: 'provider_not_paid', payment_received: 'reported' })
       })
 
       it('can question a completed payment on request, and reverses nothing', async () => {
@@ -2733,7 +2779,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const before = facts(await exceptionFor(token))
       const money = await counts()
 
-      const res = await ipn(token)
+      const res = await ipn(token, { client_phone: '771111111' })
 
       expect(res.status).toBe(200)
       const after = await exceptionFor(token)
@@ -2771,19 +2817,19 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
     })
 
-    it('repeats while it awaits review only count; a report after a review flags again', async () => {
+    it('repeats while it awaits review only count, and a different report after a review flags again', async () => {
       const { token, id } = await refunded()
-      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
       const audit = (await exceptionAudit()).length
       const emails = H.emails.length
-      await ipn(token)
-      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
+      await ipn(token, { client_phone: '771111111' })
       expect(H.emails).toHaveLength(emails)
-      expect((await exceptionAudit()).length).toBe(audit)
+      expect((await exceptionAudit()).length).toBe(audit + 1)
       expect((await exceptionFor(token)).report_count).toBe(4)
 
       await exAction('acknowledgeExceptionReport', { exceptionId: id, note: NOTE, attest: 'yes' })
-      await ipn(token)
+      await ipn(token, { client_phone: '772222222' })
       expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
       expect(H.emails).toHaveLength(emails + OWNERS.length)
     })
@@ -2795,9 +2841,9 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const e = await exceptionFor(token)
       await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
       await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
-      await exAction('recordExceptionAccess', { exceptionId: e.id, note: NOTE })
+      await exAction('recordExceptionAccess', { exceptionId: e.id, note: NOTE, attestAll: 'yes' })
       const before = await counts()
-      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
       expect(await exceptionFor(token)).toMatchObject({ resolution: 'access_honoured', state: 'resolved' })
       expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
       expect(await counts()).toEqual(before)
@@ -2814,7 +2860,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       H.contract = FIXTURE_CONTRACT
       says(token, word as string, amount as number)
 
-      const res = await ipn(token)
+      const res = await ipn(token, { client_phone: '771111111' })
 
       expect(res.status).toBe(200)
       const after = await exceptionFor(token)
@@ -2839,10 +2885,13 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       expect(H.emails.map(m => m.to)).toEqual(OWNERS)
     })
 
-    it('a provider answering "paid" with a different amount does not flag it on a sweep or a re-check', async () => {
+    it('a provider answering "paid" with a different amount flags it on a sweep, once', async () => {
       const { token, id } = await refunded()
       H.contract = FIXTURE_CONTRACT
       says(token, 'completed', 1)
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+      await exAction('acknowledgeExceptionReport', reviewedForm(await exceptionFor(token)))
       await sweep()
       await exAction('recheckException', { exceptionId: id })
       expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
@@ -2870,7 +2919,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const { token: other } = await closedAttempt('expired', user(L2), C1)
       await ipn(other)
       const newer = await exceptionFor(other)
-      await exAction('dismissException', { exceptionId: newer.id, note: NOTE, attest: 'yes' })
+      await exAction('dismissException', { exceptionId: newer.id, note: NOTE, attest: 'yes', attestAll: 'yes' })
 
       const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
       expect((await paymentExceptionQueue())!.map(e => e.id)).toEqual([id, newer.id])
@@ -2882,10 +2931,5137 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
     })
   })
 
+  describe('XP-PAYTECH-06 — a repeat cannot keep blocking a learner', () => {
+    /** The form an administrator submits, stating how much evidence it showed. */
+    const reviewed = reviewedForm
+
+    async function dismissed() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      H.emails = []
+      return { token }
+    }
+
+    async function refundedAndReviewed() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })
+      H.emails = []
+      return { token, id: e.id as string }
+    }
+
+    it('after "nothing to return", the same notification is counted and changes nothing else', async () => {
+      const { token } = await dismissed()
+      const before = await exceptionFor(token)
+      const money = await counts()
+      const audit = (await exceptionAudit()).length
+
+      expect((await ipn(token)).status).toBe(200)
+
+      expect(await exceptionFor(token)).toMatchObject({
+        state: 'resolved', resolution: 'nothing_to_return', payment_received: 'not_received', refund_state: 'not_required',
+        resolved_at: before.resolved_at, resolved_by: before.resolved_by, last_signal: before.last_signal,
+        report_count: before.report_count + 1, repeat_count: 1, notification_reopens: 0,
+      })
+      expect(H.emails).toHaveLength(0)
+      expect(await counts()).toEqual(money)
+      expect((await exceptionAudit()).map(a => a.event_type).slice(audit)).toEqual(['payment.exception_repeat_recorded'])
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('thirty replays never block, never send on arrival, and write one audit row', async () => {
+      const { token } = await dismissed()
+      const audit = (await exceptionAudit()).length
+      for (let i = 0; i < 30; i++) await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 30, report_count: 31 })
+      expect(H.emails).toHaveLength(0)
+      expect((await exceptionAudit()).length).toBe(audit + 1)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('after a recorded refund, the same notification does not flag or block, and no settled fact moves', async () => {
+      const { token } = await refundedAndReviewed()
+      const before = await exceptionFor(token)
+
+      await ipn(token)
+
+      expect(await exceptionFor(token)).toMatchObject({
+        state: 'resolved', resolution: 'refund_confirmed', refund_state: 'confirmed',
+        refund_external_reference: before.refund_external_reference, post_settlement_report_at: null, repeat_count: 1,
+      })
+      expect(H.emails).toHaveLength(0)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('after a recorded access decision too', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      expect(await exAction('recordExceptionAccess', { exceptionId: e.id, note: NOTE, evidenceCount: '1' })).toBe('exception_record_access_done')
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ resolution: 'access_honoured', post_settlement_report_at: null, repeat_count: 1 })
+    })
+
+    it('after a flag is reviewed, the notification behind it no longer flags', async () => {
+      const { token, id } = await refundedAndReviewed()
+      await ipn(token, { client_phone: '771111111' })
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+      expect(await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))).toBe('exception_acknowledge_report_done')
+      H.emails = []
+
+      await ipn(token, { client_phone: '771111111' })
+
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, repeat_count: 1 })
+      expect(H.emails).toHaveLength(0)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('the same values as form fields are the same notification', async () => {
+      const { token } = await dismissed()
+      await ipn(token, {}, { form: true })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1 })
+    })
+
+    it('altered unsigned fields can reopen a record three times at most, and then only count', async () => {
+      const { token } = await dismissed()
+      for (const n of [1, 2, 3]) {
+        await ipn(token, { client_phone: `77000000${n}` })
+        const e = await exceptionFor(token)
+        expect(e).toMatchObject({ state: 'open', notification_reopens: n })
+        expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+        await exAction('dismissException', reviewed(e))
+      }
+      H.emails = []
+
+      await ipn(token, { client_phone: '770000004' })
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', notification_reopens: 3, repeat_count: 1 })
+      expect(H.emails).toHaveLength(0)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('altered unsigned fields can flag a settled record three times at most too', async () => {
+      const { token, id } = await refundedAndReviewed()
+      for (const n of [1, 2, 3]) {
+        await ipn(token, { client_phone: `77000000${n}` })
+        expect(await exceptionFor2(id)).toMatchObject({ notification_reopens: n })
+        expect((await exceptionFor2(id)).post_settlement_report_at).not.toBeNull()
+        await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor2(id)))
+      }
+      await ipn(token, { client_phone: '770000004' })
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, notification_reopens: 3, repeat_count: 1 })
+    })
+
+    it('distinct digests are bounded, and every report is still counted', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      for (let n = 0; n < 20; n++) await ipn(token, { client_phone: `7700000${String(n).padStart(2, '0')}` })
+      await sweep()
+      expect((await exceptionFor(token)).repeat_alert_due_at).toBeNull()
+
+      for (let n = 20; n < 23; n++) await ipn(token, { client_phone: `7700000${String(n).padStart(2, '0')}` })
+
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(20)
+      expect(e.report_count).toBe(23)
+      expect(e.repeat_alert_due_at).not.toBeNull()
+    })
+
+    it('no one can shrink what was seen, even the table owner', async () => {
+      const { token } = await dismissed()
+      await expect(asSuper(`update public.payment_exceptions set evidence_fingerprints = '{}', reviewed_fingerprints = '{}'
+        where payment_id = (select id from public.payments where provider_token = $1)`, [token]))
+        .rejects.toThrow(/exception_identity_immutable|payment exception refused/)
+    })
+
+    it('a digest of the wrong shape is refused', async () => {
+      H.contract = null
+      const { id } = await closedAttempt('expired')
+      await expect(asRole('service_role', null,
+        `select public.payment_exception_report($1, 'paid_hint', 'ipn', null, 'not-a-digest')`, [id])).rejects.toThrow(/payment exception refused/)
+    })
+  })
+
+  describe('XP-PAYTECH-06 — genuinely new evidence is never held back', () => {
+    const reviewed = reviewedForm
+
+    async function dismissed() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      H.emails = []
+      return { token }
+    }
+
+    /** Use up everything notifications alone may do, leaving the record resolved. */
+    async function spent() {
+      const { token } = await dismissed()
+      for (const n of [1, 2, 3]) {
+        await ipn(token, { client_phone: `77000000${n}` })
+        await exAction('dismissException', reviewed(await exceptionFor(token)))
+      }
+      expect((await exceptionFor(token)).notification_reopens).toBe(3)
+      H.emails = []
+      return { token }
+    }
+
+    async function refundedAndReviewed() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })
+      H.emails = []
+      return { token, id: e.id as string }
+    }
+
+    it.each([
+      ['another payer', { client_phone: '771111111' }, 'paid_hint'],
+      ['another method', { payment_method: 'Orange Money' }, 'paid_hint'],
+      ['another claimed amount', { final_item_price: '1' }, 'amount_mismatch'],
+      ['another currency', { currency: 'EUR' }, 'currency_mismatch'],
+    ])('after "nothing to return", %s reopens it at once, alerts and blocks', async (_label, over, signal) => {
+      const { token } = await dismissed()
+
+      await ipn(token, over)
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: signal, resolution: null, repeat_count: 0 })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      const r = await checkout(user(L1), C1)
+      expect(r.redirectUrl).toBeUndefined()
+      expect(r.reference).toBe((await rowFor(token)).reference)
+    })
+
+    it.each([
+      ['amount', { final_item_price: '1' }, { final_item_price: '2' }, 'amount_mismatch'],
+      ['currency', { currency: 'EUR' }, { currency: 'USD' }, 'currency_mismatch'],
+    ])('a different %s claim after a reviewed one reopens it, while the same claim only counts', async (_label, first, second, signal) => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, first)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await ipn(token, first)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1 })
+
+      await ipn(token, second)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: signal })
+    })
+
+    it('new evidence clears the repeat count, so an open record never shows a stale one', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      expect((await exceptionFor(token)).repeat_alert_due_at).not.toBeNull()
+
+      await ipn(token, { client_phone: '771111111' })
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', repeat_count: 0, repeat_alert_due_at: null })
+    })
+
+    it('after a recorded refund, a different notification flags it, alerts and blocks, and no settled fact moves', async () => {
+      const { token } = await refundedAndReviewed()
+      const before = await exceptionFor(token)
+
+      await ipn(token, { client_phone: '771111111' })
+
+      const after = await exceptionFor(token)
+      expect(after.post_settlement_report_at).not.toBeNull()
+      expect(after).toMatchObject({
+        state: 'resolved', resolution: 'refund_confirmed', refund_state: before.refund_state,
+        refund_external_reference: before.refund_external_reference,
+      })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('the provider confirming payment reopens it, even on the very notification that was reviewed', async () => {
+      const { token } = await dismissed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+
+      await ipn(token)
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider', repeat_count: 0 })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('the provider is not limited on a notification, once notifications have had their say', async () => {
+      const { token } = await spent()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await ipn(token, { client_phone: '770000009' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider', notification_reopens: 3 })
+    })
+
+    it('nor on a sweep', async () => {
+      const { token } = await spent()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider', notification_reopens: 3 })
+    })
+
+    it('another attempt by the same learner is its own evidence', async () => {
+      const first = await dismissed()
+      const second = await closedAttempt('expired')
+
+      await ipn(second.token)
+
+      expect(await exceptionFor(second.token)).toMatchObject({ state: 'open', repeat_count: 0 })
+      expect((await exceptionFor(first.token)).repeat_count).toBe(0)
+      expect((await exceptionFor(second.token)).evidence_fingerprints[0])
+        .not.toBe((await exceptionFor(first.token)).evidence_fingerprints[0])
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a report that failed its signature, once reviewed, does not hide a signed one with the same content', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, {}, { secret: 'not-the-secret' })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ first_signal: 'unverified_report', state: 'open' })
+      await exAction('dismissException', reviewed(e))
+
+      await ipn(token)
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint', payment_received: 'reported', repeat_count: 0 })
+    })
+
+    it('a review cannot cover a notification the administrator was not shown', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const shown = await exceptionFor(token)
+
+      await ipn(token, { client_phone: '771111111' })
+
+      expect(await exAction('dismissException', reviewed(shown))).toBe('exception_refused_evidence_changed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', reviewed_fingerprints: [] })
+      expect((await exceptionAudit()).at(-1)).toMatchObject({ event_type: 'payment.exception_decision_refused', outcome: 'failure' })
+
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect((await exceptionFor(token)).reviewed_fingerprints).toHaveLength(2)
+    })
+
+    it('a refund or a flag review cannot cover one either', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      const refundForm = reviewed(await exceptionFor(token))
+      await ipn(token, { client_phone: '771111111' })
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...refundForm })).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).refund_state).toBe('required')
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '2', attestAll: 'yes' })).toBe('exception_refund_recorded')
+
+      await ipn(token, { client_phone: '772222222' })
+      const reviewForm = reviewed(await exceptionFor(token))
+      await ipn(token, { client_phone: '773333333' })
+      expect(await exAction('acknowledgeExceptionReport', reviewForm)).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+    })
+
+    it('a form that does not say what it showed reviews nothing, so a repeat still acts', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('dismissException', { exceptionId: e.id, note: NOTE, attest: 'yes', evidenceCount: 'many' })
+      expect((await exceptionFor(token)).reviewed_fingerprints).toEqual([])
+      await ipn(token)
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+
+    it('while a record is open, a repeat keeps it open and the learner blocked', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', report_count: 2, repeat_count: 0 })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('a repeat still reaches a human: the sweep alerts once, and again only after a week', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      await ipn(token)
+      expect(H.emails).toHaveLength(0)
+
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(JSON.stringify(H.emails)).not.toContain('770000000')
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      await ipn(token)
+      const e = await exceptionFor(token)
+      const days = (new Date(e.repeat_alert_due_at).getTime() - Date.now()) / 86_400_000
+      expect(days).toBeGreaterThan(6.9)
+      expect(days).toBeLessThanOrEqual(7)
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      await asSuper(`update public.payment_exceptions set repeat_alert_due_at = now() - interval '1 minute' where id = $1`, [e.id])
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await exceptionFor(token)).repeat_alert_due_at).toBeNull()
+    })
+
+    it('a failed alert about a repeat stays due', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      H.emailMode = 'fail'
+      await sweep()
+      expect((await exceptionFor(token)).repeat_alert_due_at).not.toBeNull()
+      H.emailMode = 'ok'
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await exceptionFor(token)).repeat_alert_due_at).toBeNull()
+    })
+
+    it('the queue keeps it in view above newer resolved records, and reviewing it clears the count', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      const other = await closedAttempt('expired', user(L2), C1)
+      await ipn(other.token)
+      await exAction('dismissException', reviewed(await exceptionFor(other.token)))
+
+      const { countOpenPaymentExceptions, paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      const queue = (await paymentExceptionQueue())!
+      expect(queue.map(e => e.id)[0]).toBe(id)
+      expect(queue).toHaveLength(2)
+      expect(queue[0]).toMatchObject({ repeatCount: 1, evidenceCount: 1 })
+      expect(JSON.stringify(queue)).not.toContain((await exceptionFor(token)).evidence_fingerprints[0])
+      expect(await countOpenPaymentExceptions()).toBe(1)
+
+      expect(await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))).toBe('exception_acknowledge_report_done')
+      expect(await exceptionFor(token)).toMatchObject({ repeat_count: 0, repeat_alert_due_at: null, state: 'resolved' })
+      expect(await countOpenPaymentExceptions()).toBe(0)
+    })
+
+    it('a second, different notification on an open record reaches a human, and a refund cannot pass over it', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      expect((await exceptionFor(token)).alert_sent_at).not.toBeNull()
+      H.emails = []
+
+      await ipn(token, { client_phone: '771111111' })
+      expect(H.emails).toHaveLength(0)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      expect((await paymentExceptionQueue())![0]).toMatchObject({ state: 'open', evidenceCount: 2, repeatCount: 0 })
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '2', attestAll: '' })).toBe('close_attestation_required')
+      expect((await exceptionFor(token)).refund_state).toBe('required')
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '2', attestAll: 'yes' })).toBe('exception_refund_recorded')
+      expect((await exceptionFor(token)).repeat_alert_due_at).toBeNull()
+      expect((await exceptionAudit()).at(-1).metadata).toMatchObject({ notifications: 2, seenVersion: expect.any(Number) })
+    })
+
+    it.each(['dismiss', 'refund', 'access'] as const)('a %s decision covers an alert still due about a second notification', async (kind) => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
+      const e = await exceptionFor(token)
+      expect(e.repeat_alert_due_at).not.toBeNull()
+      const shown = { exceptionId: e.id, note: NOTE, attest: 'yes', evidenceCount: '2', attestAll: 'yes' }
+
+      if (kind === 'dismiss') {
+        expect(await exAction('dismissException', shown)).toBe('exception_dismiss_done')
+      } else {
+        await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+        if (kind === 'refund') {
+          await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+          expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '2', attestAll: 'yes' })).toBe('exception_refund_recorded')
+        } else {
+          await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+          expect(await exAction('recordExceptionAccess', shown)).toBe('exception_record_access_done')
+        }
+      }
+
+      expect((await exceptionFor(token)).repeat_alert_due_at).toBeNull()
+      expect((await exceptionAudit()).at(-1).metadata).toMatchObject({ notifications: 2, seenVersion: expect.any(Number) })
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('an access decision cannot pass over a second notification either', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      expect(await exAction('recordExceptionAccess', { exceptionId: e.id, note: NOTE, evidenceCount: '2' })).toBe('close_attestation_required')
+      expect(await exAction('recordExceptionAccess', { exceptionId: e.id, note: NOTE, evidenceCount: '2', attestAll: 'yes' })).toBe('exception_record_access_done')
+    })
+
+    it('past the limit, a different notification is marked as different, not as a repeat, and alerts at the next sweep', async () => {
+      const { token } = await spent()
+      await ipn(token)
+      await sweep()
+      H.emails = []
+
+      await ipn(token, { client_phone: '770000009' })
+
+      const e = await exceptionFor(token)
+      expect(e.different_report_at).not.toBeNull()
+      expect(e).toMatchObject({ state: 'resolved', notification_reopens: 3 })
+      expect(H.emails).toHaveLength(0)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+
+      await ipn(token, { client_phone: '770000008' })
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      expect(await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))).toBe('exception_acknowledge_report_done')
+      expect(await exceptionFor(token)).toMatchObject({ different_report_at: null, repeat_count: 0 })
+    })
+
+    it('past the limit, a different claim is named for the administrator, and writes nothing a later decision compares', async () => {
+      const { token } = await spent()
+      const before = await exceptionFor(token)
+      await ipn(token, { final_item_price: '1' })
+      expect(await exceptionFor(token)).toMatchObject({
+        state: 'resolved', different_signal: 'amount_mismatch', last_signal: before.last_signal, detail: before.detail,
+      })
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+      expect(await exceptionFor(token)).toMatchObject({ different_signal: null, different_report_at: null })
+    })
+
+    it('a variant past the limit cannot make the provider\'s same answer look new again', async () => {
+      const { token, id } = await refundedAndReviewed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed', PRICE_C1 + 1)
+      for (const n of [0, 1, 2, 3]) {
+        await ipn(token, { client_phone: `77000000${n}` })
+        expect((await exceptionFor2(id)).post_settlement_report_at).not.toBeNull()
+        await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor2(id)))
+      }
+      expect(await exceptionFor2(id)).toMatchObject({ notification_reopens: 3, detail: 'settlement_amount_mismatch' })
+
+      await ipn(token, { final_item_price: '7' })
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, detail: 'settlement_amount_mismatch' })
+      await ipn(token, { client_phone: '770000000' })
+
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, detail: 'settlement_amount_mismatch' })
+    })
+
+    it('a variant while a record is open cannot make the provider\'s same answer look new again', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch' })
+      await ipn(token, { final_item_price: '1' })
+      expect(await exceptionFor(token)).toMatchObject({ detail: 'ipn_amount_mismatch', provider_answer: 'settlement_amount_mismatch' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await ipn(token)
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1, notification_reopens: 0 })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('the provider\'s new mismatch reopens a reviewed one, however it arrives', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token, { final_item_price: '1' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      expect((await exceptionFor(token)).state).toBe('resolved')
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+
+      await sweep()
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', detail: 'settlement_amount_mismatch', notification_reopens: 0 })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('a plain repeat is not marked as different', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ repeat_count: 1, different_report_at: null })
+    })
+
+    it('a report that failed its signature after a review does not vanish, and blocks nobody', async () => {
+      const { token } = await dismissed()
+      const before = await exceptionFor(token)
+
+      await ipn(token, {}, { secret: 'not-the-secret' })
+
+      const e = await exceptionFor(token)
+      expect(e.different_report_at).not.toBeNull()
+      expect(e).toMatchObject({ state: 'resolved', repeat_count: 1, last_signal: before.last_signal, payment_received: 'not_received' })
+      expect(H.emails).toHaveLength(0)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+      await ipn(token, {}, { secret: 'not-the-secret' })
+      expect(await exceptionFor(token)).toMatchObject({ repeat_count: 1, different_report_at: null })
+    })
+
+    it('after a refund too, without moving a settled fact', async () => {
+      const { token, id } = await refundedAndReviewed()
+      await ipn(token, {}, { secret: 'not-the-secret' })
+      const e = await exceptionFor2(id)
+      expect(e.different_report_at).not.toBeNull()
+      expect(e).toMatchObject({ resolution: 'refund_confirmed', refund_state: 'confirmed', post_settlement_report_at: null, repeat_count: 1 })
+    })
+
+    it('the provider contradicting a completed payment reopens it, even on the very notification that was reviewed', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      H.contract = null
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', different_signal: 'cancel_hint' })
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1 })
+
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_not_paid', repeat_count: 0 })
+
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1 })
+    })
+
+    it('the provider reporting another amount after a refund flags it, once, and uses up nothing', async () => {
+      const { token, id } = await refundedAndReviewed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed', PRICE_C1 + 1)
+
+      await ipn(token)
+
+      const e = await exceptionFor2(id)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e).toMatchObject({ detail: 'settlement_amount_mismatch', notification_reopens: 0, resolution: 'refund_confirmed' })
+
+      await exAction('acknowledgeExceptionReport', reviewed(e))
+      await ipn(token)
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, repeat_count: 1 })
+    })
+
+    it('a provider that keeps answering "paid" after a refund is not news on a reviewed notification', async () => {
+      const { token, id } = await refundedAndReviewed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await ipn(token)
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, repeat_count: 1 })
+    })
+
+    it('an in-flight payment with a reviewed report that came again warns before a manual close', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const { watchedPaymentIds } = await import('@/lib/payments/payment-exceptions')
+      const { id } = await rowFor(token)
+      expect((await watchedPaymentIds()).has(id)).toBe(false)
+
+      await ipn(token)
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1 })
+      expect((await watchedPaymentIds()).has(id)).toBe(true)
+    })
+
+    it('a flagged record that also receives a reviewed notification stays flagged and blocked', async () => {
+      const { token, id } = await refundedAndReviewed()
+      await ipn(token, { client_phone: '771111111' })
+      await ipn(token)
+      const e = await exceptionFor2(id)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.repeat_count).toBe(1)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+      await exAction('acknowledgeExceptionReport', reviewed(e))
+      expect(await exceptionFor2(id)).toMatchObject({ post_settlement_report_at: null, repeat_count: 0 })
+    })
+
+    it('past the digest cap a review still holds, and an unrecorded digest is new evidence', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      for (let n = 0; n < 21; n++) await ipn(token, { client_phone: `7700000${String(n).padStart(2, '0')}` })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await ipn(token, { client_phone: '770000000' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', repeat_count: 1 })
+
+      await ipn(token, { client_phone: '770000020' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', notification_reopens: 1 })
+    })
+
+    it('an administrator who finds real money can reopen a repeat and settle it', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: e.id, note: 'short', attest: 'yes' })).toBe('close_reason_required')
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: e.id, note: NOTE })).toBe('close_attestation_required')
+
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: e.id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+
+      expect(await exceptionFor(token)).toMatchObject({
+        state: 'open', resolution: null, payment_received: 'reported', refund_state: 'not_assessed',
+        repeat_count: 0, repeat_alert_due_at: null, different_report_at: null, reviewed_fingerprints: [],
+      })
+      expect((await exceptionAudit()).at(-1)).toMatchObject({
+        event_type: 'payment.exception_reopened_by_administrator', actor_id: ADM, reason: NOTE, outcome: 'success',
+      })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+      expect(await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })).toBe('exception_confirm_received_done')
+      expect(await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })).toBe('exception_require_refund_done')
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })).toBe('exception_refund_recorded')
+    })
+
+    it('money found later, with no repeat at all, can still be reopened', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+      const e = await exceptionFor(token)
+      expect(e.repeat_count).toBe(0)
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: e.id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+
+    it('on a settled record it flags instead, and no settled fact moves', async () => {
+      const { token, id } = await refundedAndReviewed()
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+      const e = await exceptionFor2(id)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'refund_confirmed', refund_state: 'confirmed', repeat_count: 0 })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+      expect(await exAction('acknowledgeExceptionReport', reviewed(e))).toBe('exception_acknowledge_report_done')
+      expect(token).toBeTruthy()
+    })
+
+    it('on a completed payment nobody has questioned it flags, and offers no refund of the legitimate payment', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e.resolution).toBe('settled_normally')
+
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: e.id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+
+      const after = await exceptionFor(token)
+      expect(after.post_settlement_report_at).not.toBeNull()
+      expect(after).toMatchObject({ state: 'resolved', resolution: 'settled_normally', refund_state: 'not_required' })
+      expect(await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })).toBe('exception_refused_exception_not_open')
+      expect(await exAction('recordExceptionRefund', refundFields(e.id))).toBe('exception_refused_exception_not_open')
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exAction('acknowledgeExceptionReport', reviewed(after))).toBe('exception_acknowledge_report_done')
+    })
+
+    it('a notification cannot turn that flag into an open record that offers a refund', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+      H.contract = null
+
+      await ipn(token, { type_event: 'sale_canceled' })
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.different_report_at).not.toBeNull()
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', repeat_count: 1, notification_reopens: 0 })
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('the provider contradicting that payment does open it, and the flag stays', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+      says(token, 'failed')
+
+      await ipn(token, { type_event: 'sale_canceled' })
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', last_signal: 'provider_not_paid', provider_answer: 'provider_not_paid' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+    })
+
+    it('an open record is not reopened, and a record with nothing to review says so', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('exception_refused_exception_not_resolved')
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      expect(await exAction('acknowledgeExceptionReport', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('exception_refused_no_report_to_review')
+    })
+
+    it('its ROLLBACK refuses while a repeat is unreviewed', async () => {
+      const { token } = await dismissed()
+      await ipn(token)
+      await expect(db.exec(ROLLBACK_064)).rejects.toThrow(/settle them first/)
+      await db.exec('rollback').catch(() => undefined)
+      expect((await exceptionFor(token)).repeat_count).toBe(1)
+    })
+  })
+
+  // ═══ XP-PAYTECH-06B: evidence that used to be lost ═══════════════════════════
+  describe('XP-PAYTECH-06B — a different paid notification on a completed payment reaches a person', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    const reviewed = reviewedForm
+    async function completed() {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      expect((await ipn(token)).body.detail).toBe('completed')
+      expect((await rowFor(token)).status).toBe('completed')
+      H.emails = []
+      return token
+    }
+
+    it('it is recorded, marked and alerted on, and the payment stays exactly as it was', async () => {
+      const token = await completed()
+      const before = await rowFor(token)
+      const ents = await entitlementsOf(L1)
+
+      expect((await ipn(token, { client_phone: '771234567', payment_method: 'Orange Money' })).status).toBe(200)
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', refund_state: 'not_required', repeat_count: 1 })
+      expect(e.different_report_at).not.toBeNull()
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(e.reviewed_fingerprints).toHaveLength(1)
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await rowFor(token)).toMatchObject({ status: before.status, completed_at: before.completed_at })
+      expect(await entitlementsOf(L1)).toEqual(ents)
+    })
+
+    it('it never blocks the learner, because the completed payment still holds', async () => {
+      const token = await completed()
+      await ipn(token, { client_phone: '771234567' })
+      const blocked = await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1])
+      expect(blocked[0].r).toBeNull()
+    })
+
+    it('the notification that completed the payment is what its completion covers, so a normal payment leaves no record', async () => {
+      const token = await completed()
+      expect(await exceptionFor(token)).toBeNull()
+      expect(await needsHuman()).toBe(0)
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a sweep completes the payment, and its notification arriving late is taken as the one the completion covers', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      H.emails = []
+
+      await ipn(token)
+      expect(await exceptionFor(token)).toBeNull()
+
+      await ipn(token, { client_phone: '771234567' })
+      expect((await exceptionFor(token)).different_report_at).not.toBeNull()
+    })
+
+    it('the same notification again is counted, not called different, and surfaces at most weekly', async () => {
+      const token = await completed()
+      for (let i = 0; i < 5; i++) await ipn(token)
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', repeat_count: 5 })
+      expect(e.different_report_at).toBeNull()
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      await sweep()
+      expect(H.emails).toHaveLength(OWNERS.length)
+      H.emails = []
+      await ipn(token)
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('on a completed payment an administrator flagged, it still counts and alerts', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes' })
+      await sweep()
+      H.emails = []
+
+      await ipn(token, { client_phone: '771234567' })
+
+      const e = await exceptionFor(token)
+      expect(e.different_report_at).not.toBeNull()
+      expect(e.repeat_count).toBe(1)
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('on an open record, it is added and alerted on, without rewriting what the record says', async () => {
+      const token = await completed()
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_not_paid' })
+      await sweep()
+      H.emails = []
+      const held = (await exceptionFor(token)).evidence_fingerprints.length
+
+      await ipn(token, { client_phone: '771234567' })
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', last_signal: 'provider_not_paid' })
+      expect(e.evidence_fingerprints).toHaveLength(held + 1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a record opened on a completed payment starts from the notification its completion covers', async () => {
+      const token = await completed()
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(e.reviewed_fingerprints).toHaveLength(1)
+      await sweep()
+      H.emails = []
+
+      await ipn(token)
+
+      const after = await exceptionFor(token)
+      expect(after.evidence_fingerprints).toHaveLength(2)
+      expect(after.state).toBe('open')
+      expect(after.repeat_alert_due_at).toBeNull()
+    })
+
+    it('the code that marks a completing notification is never written to a record', async () => {
+      const token = await completed()
+      const { id } = await rowFor(token)
+      await asRole('service_role', null,
+        `select public.payment_exception_report($1, 'paid_hint', 'ipn', 'ipn_completing_payment', $2)`, [id, 'b'.repeat(64)])
+      const e = await exceptionFor(token)
+      expect(e.detail).toBeNull()
+      expect(e.different_report_at).not.toBeNull()
+    })
+
+    it('a browser or the application cannot read or change what a completion covers', async () => {
+      const token = await completed()
+      for (const role of ['anon', 'authenticated', 'service_role']) {
+        await expect(asRole(role, null, `select * from public.payment_completion_notices`)).rejects.toThrow(/permission denied/)
+        await expect(asRole(role, null, `insert into public.payment_completion_notices (payment_id, fingerprint) values (gen_random_uuid(), repeat('a', 64))`)).rejects.toThrow(/permission denied/)
+      }
+      const [{ n }] = await asSuper(`select count(*)::int as n from public.payment_completion_notices where payment_id = (select id from public.payments where provider_token = $1)`, [token])
+      expect(n).toBe(1)
+    })
+
+    it('what a completion covers cannot be rewritten or removed, not even by the table owner', async () => {
+      await completed()
+      await expect(asSuper(`update public.payment_completion_notices set fingerprint = repeat('c', 64)`)).rejects.toMatchObject({ detail: expect.stringContaining('completion_notice_immutable') })
+      await expect(asSuper(`delete from public.payment_completion_notices`)).rejects.toMatchObject({ detail: expect.stringContaining('completion_notice_immutable') })
+    })
+
+    it('a failed signature on a completed payment is kept, even with no record yet', async () => {
+      const token = await completed()
+      await ipn(token, { hmac_compute: 'a'.repeat(64), client_phone: '771234567' })
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', different_signal: 'unverified_report' })
+      expect(e.different_report_at).not.toBeNull()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('a real second payment at another amount, which cannot match the signature, is kept too', async () => {
+      const token = await completed()
+      await ipn(token, { item_price: String(PRICE_C1 * 2) }, { signAmount: PRICE_C1 * 2 })
+
+      const e = await exceptionFor(token)
+      expect(e).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('recording it cannot fail silently: an unrecorded report is retried', async () => {
+      const token = await completed()
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'simulated', code: 'XX000' } }
+      const res = await ipn(token, { client_phone: '771234567' })
+      H.rpcFaultFor = null
+      expect(res.status).toBe(503)
+      expect((await ipn(token, { client_phone: '771234567' })).status).toBe(200)
+      expect((await exceptionFor(token)).different_report_at).not.toBeNull()
+    })
+
+    it('once reviewed, the same different notification only counts', async () => {
+      const token = await completed()
+      await ipn(token, { client_phone: '771234567' })
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+      expect(await needsHuman()).toBe(0)
+
+      await ipn(token, { client_phone: '771234567' })
+
+      const e = await exceptionFor(token)
+      expect(e.repeat_count).toBe(1)
+      expect(e.different_report_at).toBeNull()
+      expect(e.state).toBe('resolved')
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a payment that completes does not swallow notifications that disagreed', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+
+    it('two different notifications while in flight, then completion: flagged, alerted and counted', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { client_phone: '771111111' })
+      await ipn(token, { client_phone: '772222222', payment_method: 'Orange Money' })
+      expect((await exceptionFor(token)).state).toBe('watching')
+      H.emails = []
+
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('that flag blocks nobody and offers no refund on the completed payment', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { client_phone: '771111111' })
+      await ipn(token, { client_phone: '772222222' })
+      says(token, 'completed')
+      await ipn(token, { client_phone: '772222222' })
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const blocked = await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1])
+      expect(blocked[0].r).toBeNull()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('one notification while in flight, then completion: settled quietly, because one payment covers it', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      H.emails = []
+      says(token, 'completed')
+      await ipn(token)
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', repeat_count: 0 })
+      expect(e.post_settlement_report_at).toBeNull()
+      expect(e.different_report_at).toBeNull()
+      expect(await needsHuman()).toBe(0)
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a different notification that itself completes the payment is not lost', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { client_phone: '771111111' })
+      says(token, 'completed')
+
+      await ipn(token, { client_phone: '772222222' })
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('an escalated record with a second notification, then completion, stays in front of a person', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token, { client_phone: '771111111' })
+      await ageException(token, 48)
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      await ipn(token, { client_phone: '772222222' })
+      H.emails = []
+
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+      // The second notification was due, and the completion flagged the record.
+      expect(H.emails.map(m => m.to)).toEqual([...OWNERS, ...OWNERS])
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — contradictory evidence after a decision is kept and flagged', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    const reviewed = reviewedForm
+    async function refundedOnClosed() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      const e = await exceptionFor(token)
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), evidenceCount: String(e.evidence_fingerprints.length) })).toBe('exception_refund_recorded')
+      H.emails = []
+      return { token, id }
+    }
+    async function accessOnInFlight() {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await ageException(token, 48)
+      await sweep()
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      expect(await exAction('recordExceptionAccess', reviewed(await exceptionFor(token)))).toBe('exception_record_access_done')
+      H.emails = []
+      return { token, id }
+    }
+
+    it('after a refund, a sweep that hears a different amount flags it once, and repeating it does not', async () => {
+      const { token } = await refundedOnClosed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed', 1)
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e).toMatchObject({ resolution: 'refund_confirmed', refund_state: 'confirmed', provider_answer: 'settlement_amount_mismatch' })
+      expect(await needsHuman()).toBe(1)
+      expect(H.emails.length).toBeGreaterThan(0)
+
+      await exAction('acknowledgeExceptionReport', reviewed(e))
+      await sweep()
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('that news is not used up by a sweep, so a notification can still flag afterwards', async () => {
+      const { token } = await refundedOnClosed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed', 1)
+      await sweep()
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+
+      await ipn(token, { client_phone: '771234567' })
+
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+    })
+
+    it('after a refund, the provider answering "paid" with the right amount is no news, however often', async () => {
+      const { token } = await refundedOnClosed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      for (let i = 0; i < 3; i++) await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('after a refund, "not paid" is what the provider should say, so a sweep and a re-check leave it', async () => {
+      const { token, id } = await refundedOnClosed()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await sweep()
+      await exAction('recheckException', { exceptionId: id })
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('access honoured, the payment then completes, and the provider says it failed: flagged and alerted', async () => {
+      const { token } = await accessOnInFlight()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await ipn(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      H.emails = []
+      says(token, 'failed')
+
+      await ipn(token, { type_event: 'sale_canceled' })
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ resolution: 'access_honoured', provider_answer: 'provider_not_paid' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('access honoured on a closed attempt, and a scheduled check says it was never paid: flagged, once', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      await exAction('recordExceptionAccess', reviewed(await exceptionFor(token)))
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ resolution: 'access_honoured', provider_answer: 'provider_not_paid' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+
+      await exAction('acknowledgeExceptionReport', reviewed(e))
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+    })
+
+    it('a sweep hearing "not paid" on an ordinary closed attempt writes nothing at all', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('failed')
+      says(token, 'failed')
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('on a dismissed record, a scheduled "not paid" is left alone, and its report count does not climb', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const before = await exceptionFor(token)
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', report_count: before.report_count, provider_answer: null })
+    })
+
+    it('a flagged refund record absorbs nothing: each different notification is kept, marked and alerted on', async () => {
+      const { token } = await refundedOnClosed()
+      await ipn(token, { client_phone: '771000000' })
+      const flagged = await exceptionFor(token)
+      expect(flagged.post_settlement_report_at).not.toBeNull()
+      expect(flagged.notification_reopens).toBe(1)
+      await sweep()
+      H.emails = []
+
+      for (let n = 1; n <= 5; n++) await ipn(token, { client_phone: `77100000${n}` })
+
+      const e = await exceptionFor(token)
+      expect(e.different_report_at).not.toBeNull()
+      expect(e.repeat_count).toBe(5)
+      expect(e.notification_reopens).toBe(1)
+      expect(e.evidence_fingerprints).toHaveLength(flagged.evidence_fingerprints.length + 5)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('each different notification leaves one audit row, and a repeat of one does not', async () => {
+      const { token } = await refundedOnClosed()
+      await ipn(token, { client_phone: '771000000' })
+      const before = (await exceptionAudit()).length
+
+      await ipn(token, { client_phone: '771000001' })
+      await ipn(token, { client_phone: '771000002' })
+      await ipn(token, { client_phone: '771000002' })
+
+      const rows = (await exceptionAudit()).slice(before)
+      expect(rows.filter(r => r.event_type === 'payment.exception_different_report_recorded')).toHaveLength(2)
+      expect(rows.every(r => !JSON.stringify(r.metadata).match(/[a-f0-9]{64}/))).toBe(true)
+    })
+
+    it('provider news on a flagged record alerts again, and stays flagged after a dismissal', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes' })
+      says(token, 'failed')
+
+      await ipn(token, { type_event: 'sale_canceled' })
+      const open = await exceptionFor(token)
+      expect(open).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid' })
+      expect(open.post_settlement_report_at).not.toBeNull()
+
+      await exAction('dismissException', reviewed(open))
+
+      const after = await exceptionFor(token)
+      expect(after.state).toBe('resolved')
+      expect(after.post_settlement_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a provider repeating itself cannot keep blocking a learner', () => {
+    const reviewed = reviewedForm
+    const answer = (token: string, amount: number, currency: string) =>
+      P.status.set(token, { success: 1, payment: { status: 'pending', amount, currency, ref_command: P.refs.get(token) } })
+
+    it('a notification rewriting the record while it is open does not make the same answer new', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch' })
+      await ipn(token, { currency: 'EUR' })
+      expect((await exceptionFor(token)).last_signal).toBe('currency_mismatch')
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await sweep()
+
+      expect((await exceptionFor(token)).state).toBe('resolved')
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('past the limit, repeated cycles of a variant and a sweep cannot reopen the record', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      for (const n of [1, 2, 3]) {
+        await ipn(token, { client_phone: `77000000${n}` })
+        await exAction('dismissException', reviewed(await exceptionFor(token)))
+      }
+      expect((await exceptionFor(token)).notification_reopens).toBe(3)
+
+      for (let cycle = 0; cycle < 6; cycle++) {
+        await ipn(token, { currency: 'EUR', client_phone: `7711111${cycle}` })
+        await sweep()
+        const e = await exceptionFor(token)
+        expect(e.state, `cycle ${cycle}`).toBe('resolved')
+        expect(e.notification_reopens).toBe(3)
+      }
+    })
+
+    it('a provider alternating between two answers reopens once for each, and then only counts', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      await age(token, 90)
+      const states: string[] = []
+      for (const [amount, currency] of [[PRICE_C1 + 1, 'XOF'], [PRICE_C1, 'EUR'], [PRICE_C1 + 1, 'XOF'], [PRICE_C1, 'EUR'], [PRICE_C1 + 1, 'XOF']] as const) {
+        answer(token, amount, currency)
+        await sweep()
+        const e = await exceptionFor(token)
+        states.push(e.state)
+        if (e.state === 'open') await exAction('dismissException', reviewed(e))
+      }
+      expect(states).toEqual(['open', 'open', 'resolved', 'resolved', 'resolved'])
+      expect((await exceptionFor(token)).provider_answers).toEqual(['settlement_amount_mismatch', 'settlement_currency_mismatch'])
+    })
+
+    it('the queue still shows what the provider last said, whatever a notification wrote', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      await ipn(token, { currency: 'EUR' })
+      const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      const [row] = (await paymentExceptionQueue())!
+      expect(row).toMatchObject({ lastSignal: 'currency_mismatch', providerAnswer: 'settlement_amount_mismatch' })
+      // What a form sends back counts the provider's answer as well as the notification.
+      expect(row.evidenceCount).toBe(2)
+    })
+
+    it('a crafted notification cannot write the provider\'s answer', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { detail: 'settlement_amount_mismatch', signal: 'provider_not_paid', provider_answer: 'settlement_amount_mismatch' })
+      expect(await exceptionFor(token)).toMatchObject({ provider_answer: null, provider_answers: [] })
+    })
+
+    it('the provider saying not paid, then paid, then not paid: counted and alerted, not reopened', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      says(token, 'completed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      says(token, 'failed')
+      H.emails = []
+
+      await ipn(token, { type_event: 'sale_canceled' })
+
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.repeat_count).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — digest limits and alert windows suppress nothing for good', () => {
+    const reviewed = reviewedForm
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    async function atTheCap() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      for (let n = 0; n < 20; n++) await ipn(token, { client_phone: `7700000${String(n).padStart(2, '0')}` })
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(20)
+      expect(e.evidence_overflow_at).toBeNull()
+      return { token, e }
+    }
+
+    it('a 21st digest makes a form from before it out of date, and its decision cannot cancel the alert', async () => {
+      const { token, e } = await atTheCap()
+      await sweep()
+      const form = reviewed(e)
+
+      await ipn(token, { client_phone: '770000099' })
+
+      expect(await exAction('dismissException', form)).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect((await exceptionFor(token)).repeat_alert_due_at).not.toBeNull()
+    })
+
+    it('the same goes for acknowledging a mark', async () => {
+      const { token } = await atTheCap()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await asSuper(`alter table public.payment_exceptions disable trigger payment_exceptions_guard`)
+      await asSuper(`update public.payment_exceptions set notification_reopens = 3 where payment_id = (select id from public.payments where provider_token = $1)`, [token])
+      await asSuper(`alter table public.payment_exceptions enable trigger payment_exceptions_guard`)
+      await ipn(token, { client_phone: '770000001' })
+      const form = reviewed(await exceptionFor(token))
+
+      await ipn(token, { client_phone: '770000099' })
+
+      expect(await exAction('acknowledgeExceptionReport', form)).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).different_report_at).not.toBeNull()
+    })
+
+    it('after a review, the next one past the cap makes a form out of date again', async () => {
+      const { token } = await atTheCap()
+      await ipn(token, { client_phone: '770000099' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      expect((await exceptionFor(token)).evidence_overflow_at).toBeNull()
+      expect((await exceptionFor(token)).evidence_fingerprints).toHaveLength(20)
+    })
+
+    it('a digest that could not be stored can never read as reviewed', async () => {
+      const { token } = await atTheCap()
+      await ipn(token, { client_phone: '770000099' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await ipn(token, { client_phone: '770000099' })
+
+      const e = await exceptionFor(token)
+      expect(['open', 'resolved']).toContain(e.state)
+      expect(e.state === 'open' || e.different_report_at !== null).toBe(true)
+    })
+
+    it('a flood past the cap writes a bounded audit trail and cannot lock an administrator out', async () => {
+      const { token } = await atTheCap()
+      const before = (await exceptionAudit()).length
+      for (let n = 0; n < 10; n++) await ipn(token, { client_phone: `7799999${n}` })
+      expect((await exceptionAudit()).length - before).toBeLessThanOrEqual(1)
+
+      const form = reviewed(await exceptionFor(token))
+      for (let n = 0; n < 5; n++) await ipn(token, { client_phone: `7788888${n}` })
+      expect(await exAction('dismissException', form)).toBe('exception_dismiss_done')
+    })
+
+    it('below the cap, an alert window delays an alert and no notification can push it further', async () => {
+      const { token } = await atTheCap()
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await asSuper(`alter table public.payment_exceptions disable trigger payment_exceptions_guard`)
+      await asSuper(`update public.payment_exceptions set notification_reopens = 3 where payment_id = (select id from public.payments where provider_token = $1)`, [token])
+      await asSuper(`alter table public.payment_exceptions enable trigger payment_exceptions_guard`)
+      H.emails = []
+
+      // An alert about this record has only just gone out, so the next waits its week.
+      await ipn(token, { client_phone: '770000001' })
+      const first = (await exceptionFor(token)).repeat_alert_due_at
+      expect(first).not.toBeNull()
+      expect(new Date(first).getTime()).toBeGreaterThan(Date.now() + 6 * 24 * 3600 * 1000)
+      for (let n = 3; n < 8; n++) await ipn(token, { client_phone: `77000000${n}` })
+      expect((await exceptionFor(token)).repeat_alert_due_at).toBe(first)
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      await asSuper(`alter table public.payment_exceptions disable trigger payment_exceptions_guard`)
+      await asSuper(`update public.payment_exceptions set repeat_alert_due_at = now() - interval '1 minute' where payment_id = (select id from public.payments where provider_token = $1)`, [token])
+      await asSuper(`alter table public.payment_exceptions enable trigger payment_exceptions_guard`)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a decision that does not say what it was shown cancels no alert', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { client_phone: '771111111' })
+      await sweep()
+      await ipn(token, { client_phone: '772222222' })
+      expect((await exceptionFor(token)).repeat_alert_due_at).not.toBeNull()
+      const { id } = await exceptionFor(token)
+
+      expect(await exAction('dismissException', { exceptionId: id, note: NOTE, attest: 'yes', attestAll: 'yes', evidenceVersion: '' }))
+        .toBe('exception_refused_evidence_version_required')
+
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      expect(e.repeat_alert_due_at).not.toBeNull()
+      expect(e.reviewed_fingerprints).toEqual([])
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('a report with no digest that failed its signature is marked, not merely counted', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const { id } = await rowFor(token)
+
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'unverified_report', 'ipn', 'ipn_signature_mismatch')`, [id])
+
+      expect((await exceptionFor(token)).different_report_at).not.toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the sweep cannot starve an alert or stop unnoticed', () => {
+    const insertOpen = async (n: number) => {
+      for (let i = 0; i < n; i++) {
+        const [{ id }] = await asSuper(
+          `insert into public.payments (amount, currency, method, status, reference, provider, provider_mode, provider_token, user_id, course_id)
+           values (100, 'XOF', 'card', 'pending', $1, 'paytech', 'test', $2, $3, $4) returning id`,
+          [`SCX-ALERT-${i}`, `alert-token-${i}`, L1, C2],
+        )
+        await asRole('service_role', null, `update public.payments set status = 'failed', failure_reason = 'closed_for_test' where id = $1`, [id])
+        await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'sweep')`, [id])
+      }
+    }
+
+    it('with every address failing, every record still gets its turn', async () => {
+      await insertOpen(30)
+      H.emails = []
+      H.emailMode = 'fail'
+      const { sendPendingExceptionAlerts } = await import('@/lib/payments/payment-exceptions')
+      const seen = new Set<string>()
+      const random = vi.spyOn(Math, 'random')
+      for (const r of [0, 0.2, 0.4, 0.6, 0.8]) {
+        random.mockReturnValue(r)
+        H.emails = []
+        await sendPendingExceptionAlerts()
+        for (const m of H.emails) seen.add(m.reference)
+      }
+      random.mockRestore()
+      expect(seen.size).toBe(30)
+    })
+
+    it('a healthy run drains a backlog of 30 in two runs', async () => {
+      await insertOpen(30)
+      const { sendPendingExceptionAlerts } = await import('@/lib/payments/payment-exceptions')
+      await sendPendingExceptionAlerts()
+      await sendPendingExceptionAlerts()
+      const [{ n }] = await asSuper(`select count(*)::int as n from public.payment_exceptions where alert_sent_at is null`)
+      expect(n).toBe(0)
+    })
+
+    it('alerts still go out when PayTech processing is unavailable', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await asSuper(`alter table public.payment_exceptions disable trigger payment_exceptions_guard`)
+      await asSuper(`update public.payment_exceptions set alert_sent_at = null`)
+      await asSuper(`alter table public.payment_exceptions enable trigger payment_exceptions_guard`)
+      H.emails = []
+      vi.stubEnv('PAYTECH_TEST_API_KEY', '')
+
+      const res = await sweep()
+
+      expect(res.status).toBe(503)
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('an unauthenticated caller reaches none of it', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await asSuper(`alter table public.payment_exceptions disable trigger payment_exceptions_guard`)
+      await asSuper(`update public.payment_exceptions set alert_sent_at = null`)
+      await asSuper(`alter table public.payment_exceptions enable trigger payment_exceptions_guard`)
+      H.emails = []
+      expect((await sweep('Bearer wrong')).status).toBe(401)
+      expect((await sweep(null)).status).toBe(401)
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a finished sweep leaves a dated row with counts only, and the page can read it', async () => {
+      const { lastSweepFinishedAt } = await import('@/lib/payments/payment-exceptions')
+      expect(await lastSweepFinishedAt()).toEqual({ readable: true, at: null })
+
+      expect((await sweep()).status).toBe(200)
+
+      const after = await lastSweepFinishedAt()
+      expect(after.readable).toBe(true)
+      expect(after.at).not.toBeNull()
+      const [row] = await asSuper(`select metadata, outcome, actor_type from public.audit_log where event_type = 'payment.reconciliation_sweep_finished'`)
+      expect(row).toMatchObject({ outcome: 'success', actor_type: 'system' })
+      expect(Object.values(row.metadata).every(v => typeof v === 'number')).toBe(true)
+    })
+
+    it('a sweep that could not run leaves no such row', async () => {
+      vi.stubEnv('PAYTECH_TEST_API_KEY', '')
+      expect((await sweep()).status).toBe(503)
+      const { lastSweepFinishedAt } = await import('@/lib/payments/payment-exceptions')
+      expect((await lastSweepFinishedAt()).at).toBeNull()
+    })
+
+    it('a sweep on a database this deployment may not act on writes nothing', async () => {
+      await setEnvironment('live')
+      expect((await sweep()).status).toBe(503)
+      await setEnvironment('sandbox')
+      const { lastSweepFinishedAt } = await import('@/lib/payments/payment-exceptions')
+      expect((await lastSweepFinishedAt()).at).toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — reports arriving together', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+
+    it('two different notifications at once on a completed payment: one is covered and the other reaches a person', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+
+      await Promise.all([ipn(token, { client_phone: '771111111' }), ipn(token, { client_phone: '772222222' })])
+
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(e.different_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('a notification and a sweep at once: the payment completes once and the notification is covered', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await age(token, 90)
+
+      await Promise.all([ipn(token), sweep(), sweep()])
+
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await counts()).audits).toBe(1)
+      expect((await entitlementsOf(L1))).toHaveLength(1)
+      expect(await needsHuman()).toBe(0)
+    })
+
+    it('two different notifications and a sweep at once, then completion: nothing is lost', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await age(token, 90)
+      await Promise.all([ipn(token, { client_phone: '771111111' }), ipn(token, { client_phone: '772222222' }), sweep()])
+      says(token, 'completed')
+
+      await Promise.all([sweep(), ipn(token, { client_phone: '772222222' })])
+
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).evidence_fingerprints).toHaveLength(2)
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('twelve copies of one notification at once on a completed payment never block and never call it different', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      H.emails = []
+
+      await Promise.all(Array.from({ length: 12 }, () => ipn(token)))
+
+      const e = await exceptionFor(token)
+      expect(e.repeat_count).toBe(12)
+      expect(e.different_report_at).toBeNull()
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a payment completing while a different notification is being checked: that one is still kept', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      P.duringStatus = async () => { expect((await ipn(token, { client_phone: '771111111' })).body.detail).toBe('completed') }
+
+      const res = await ipn(token, { client_phone: '772222222' })
+
+      expect(res.status).toBe(200)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await counts()).audits).toBe(1)
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(e.different_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('a review racing a different notification: refused, so it cannot be marked reviewed unseen', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { client_phone: '771111111' })
+      const e = await exceptionFor(token)
+      const form = { exceptionId: e.id, note: NOTE, attest: 'yes', evidenceCount: String(e.evidence_fingerprints.length) }
+
+      const [, notice] = await Promise.all([ipn(token, { client_phone: '772222222' }), exAction('dismissException', form)])
+
+      const after = await exceptionFor(token)
+      if (notice === 'exception_dismiss_done') {
+        // The decision went first, so what arrived after it is judged as new evidence.
+        expect(after.state).toBe('open')
+        expect(after.reviewed_fingerprints).toEqual(e.evidence_fingerprints)
+      } else {
+        expect(notice).toBe('exception_refused_evidence_changed')
+        expect(after.state).toBe('open')
+        expect(after.reviewed_fingerprints).toEqual([])
+      }
+      expect(after.evidence_fingerprints).toHaveLength(2)
+    })
+
+    it('a sweep completing the payment while its notification is being checked does not count it as a repeat', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await age(token, 90)
+      H.emails = []
+      P.duringStatus = async () => { await sweep() }
+
+      await ipn(token)
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', repeat_count: 0 })
+      expect(e.post_settlement_report_at).toBeNull()
+      expect(await needsHuman()).toBe(0)
+    })
+
+    it('a closure racing a paid notification leaves the record open for a person', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'failed')
+      await age(token, 90)
+
+      await Promise.all([ipn(token), sweep()])
+
+      expect((await rowFor(token)).status).toBe('failed')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+  })
+
+  describe('XP-PAYTECH-06B — 064 refuses a database it could not protect', () => {
+    /** Take 064 out, change the database, and put it all back whatever happens. */
+    async function refusedWhen(change: string, undo: string, why: RegExp) {
+      await db.exec(ROLLBACK_064)
+      await db.exec(change)
+      try {
+        await expect(db.exec(M064)).rejects.toThrow(why)
+        await db.exec('rollback').catch(() => undefined)
+      } finally {
+        await db.exec(undo)
+        await db.exec(M064)
+      }
+    }
+
+    it('service_role without BYPASSRLS, because checkout would then see nothing blocking it', async () => {
+      await refusedWhen('alter role service_role nobypassrls', 'alter role service_role bypassrls', /does not bypass row level security/)
+    })
+
+    it('an entitlements table without a column an access decision reads', async () => {
+      await refusedWhen(
+        'alter table public.entitlements rename column created_at to created_on',
+        'alter table public.entitlements rename column created_on to created_at',
+        /does not have the columns 037 created/,
+      )
+    })
+
+    it('running it twice says that, rather than naming a trigger', async () => {
+      await expect(db.exec(M064)).rejects.toThrow(/tables already exist/)
+      await db.exec('rollback').catch(() => undefined)
+    })
+
+    it('its rollback removes the second table and its guard as well', async () => {
+      await db.exec(ROLLBACK_064)
+      const [{ t, g }] = await asSuper(`select to_regclass('public.payment_completion_notices') as t, to_regprocedure('public.payment_completion_notices_guard()') as g`)
+      await db.exec(M064)
+      expect(t).toBeNull()
+      expect(g).toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — what happens to a learner through all of this', () => {
+    it('a legitimate notification delivered twice on a closed, reviewed attempt never blocks a new checkout', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('dismissException', { exceptionId: e.id, note: NOTE, attest: 'yes', evidenceCount: String(e.evidence_fingerprints.length) })
+      await ipn(token)
+      await ipn(token)
+
+      expect((await exceptionFor(token)).state).toBe('resolved')
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('a conflicting notification on an in-flight payment is held, the payment can still complete, and it is then only flagged', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { currency: 'EUR' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'currency_mismatch' })
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await dbHasAccess(L1, C1)).toBe(true)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+    })
+
+    it('a paid notification kept during a transient refusal survives if no retry ever comes', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      H.rpcFaultFor = { fn: 'complete_payment', error: { message: 'simulated', code: 'XX000' } }
+      const res = await ipn(token)
+      H.rpcFaultFor = null
+      expect(res.status).toBe(503)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'watching', last_signal: 'paid_hint' })
+      expect(e.evidence_fingerprints).toHaveLength(1)
+    })
+
+    it('its retry then completes the payment without counting as a repeat of itself', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      H.rpcFaultFor = { fn: 'complete_payment', error: { message: 'simulated', code: 'XX000' } }
+      await ipn(token)
+      H.rpcFaultFor = null
+      H.emails = []
+
+      expect((await ipn(token)).body.detail).toBe('completed')
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', repeat_count: 0 })
+      expect(e.different_report_at).toBeNull()
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('rolling back refuses while a second notification is still due an alert', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token, { client_phone: '771111111' })
+      await ageException(token, 48)
+      await sweep()
+      await ipn(token, { client_phone: '772222222' })
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      await expect(db.exec(ROLLBACK_064)).rejects.toThrow(/unsettled exceptions exist/)
+      await db.exec('rollback').catch(() => undefined)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a provider\'s answer is kept, wherever it lands', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    const reviewed = reviewedForm
+
+    it('a conflict on an escalated record survives the payment completing', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open' })
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('settlement_amount_mismatch')
+
+      says(token, 'completed')
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', resolution: null })
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('an escalated record with no conflict still settles by itself', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+      expect(await needsHuman()).toBe(0)
+    })
+
+    it.each([
+      ['a re-check', async (id: string) => { await exAction('recheckException', { exceptionId: id }) }],
+    ])('paid at another amount on a completed payment is recorded, on %s', async (_name, ask) => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      says(token, 'completed', PRICE_C1 + 1)
+
+      await ask(id)
+
+      expect(await exceptionFor(token)).toMatchObject({
+        state: 'open', last_signal: 'amount_mismatch', provider_answer: 'settlement_amount_mismatch',
+      })
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('paid at another amount on a cancellation notification is recorded too', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'completed', PRICE_C1 + 1)
+
+      await ipn(token, { type_event: 'sale_canceled' })
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch' })
+    })
+
+    it('paid in another currency is recorded as well', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      P.status.set(token, { success: 1, payment: { status: 'completed', amount: PRICE_C1, currency: 'EUR', ref_command: P.refs.get(token) } })
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_currency_mismatch' })
+    })
+
+    it('paid at the right amount is still no conflict', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('a scheduled "not paid" on a record awaiting a refund decision is recorded once, and alerted', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      await sweep()
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      const before = await exceptionFor(token)
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ provider_answer: 'provider_not_paid', refund_state: 'required' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      const audit = (await exceptionAudit()).map(r => r.event_type)
+      expect(audit).toContain('payment.exception_provider_answer_recorded')
+
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect((await exceptionFor(token)).report_count).toBe(before.report_count + 1)
+    })
+
+    it('that answer makes a refund form out of date, so the refund cannot pass over it', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      const form = { ...refundFields(id), ...reviewed(await exceptionFor(token)) }
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await sweep()
+
+      expect(await exAction('recordExceptionRefund', form)).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).refund_state).toBe('required')
+    })
+
+    it('a provider\'s new answer on a record already alerted on alerts again, and an old form is refused', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token, { final_item_price: '1' })
+      const old = await exceptionFor(token)
+      expect(old.state).toBe('open')
+      await sweep()
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+
+      await sweep()
+
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await exAction('dismissException', reviewed(old))).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+    })
+
+    it('"not paid" on a just-closed attempt adds to the record without raising a second alert', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'canceled')
+      await age(token, 20)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint', provider_answer: 'provider_not_paid' })
+    })
+
+    it('after a refund, the provider saying it can still be paid is flagged once', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(id), evidenceCount: reviewed(await exceptionFor(token)).evidenceCount })
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'pending')
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.provider_answer).toBe('provider_pending')
+      await exAction('acknowledgeExceptionReport', reviewed(e))
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+    })
+
+    it('"still payable" still cannot undo a dismissal', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'pending')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('a refunded payment is still asked about, so a different amount after the refund is found', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(id), attestAll: 'yes', evidenceCount: reviewed(await exceptionFor(token)).evidenceCount })
+      expect((await rowFor(token)).status).toBe('refunded')
+      says(token, 'completed', PRICE_C1 + 1)
+
+      await sweep()
+
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — an attempt the provider contradicts has an honest way out', () => {
+    const reviewed = reviewedForm
+    const close = (id: string) => adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: 'Vérifié, rien reçu au tableau de bord.', attest: 'yes' })
+    const answer = (token: string, status: string, amount = PRICE_C1 + 1) =>
+      P.status.set(token, { success: 1, payment: { status, amount, currency: 'XOF', ref_command: P.refs.get(token) } })
+
+    it.each(['pending', 'failed', 'canceled'])('the provider answers %s at another amount: recorded, closed by an attested check, no false refund', async (word) => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      answer(token, word)
+      await age(token, 90)
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('settlement_amount_mismatch')
+      expect((await rowFor(token)).status).not.toBe('failed')
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_conflict')
+
+      expect(await close(id)).toBe('close_done_exception')
+      expect((await rowFor(token)).status).toBe('expired')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+
+      const again = await checkout(user(L1), C1)
+      expect(again.error).toBeUndefined()
+      expect(again.redirectUrl).toBeDefined()
+      expect((await exceptionFor(token)).refund_state).toBe('not_required')
+    })
+
+    it('a notification hitting that conflict is acknowledged, and its digest is kept', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      answer(token, 'failed')
+      const res = await ipn(token)
+      expect(res.status).toBe(200)
+      expect(res.body.detail).toBe('conflict:settlement_amount_mismatch')
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      expect(e.last_signal).toBe('amount_mismatch')
+    })
+
+    it('in another currency, it behaves the same', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      P.status.set(token, { success: 1, payment: { status: 'failed', amount: PRICE_C1, currency: 'EUR', ref_command: P.refs.get(token) } })
+      await age(token, 90)
+      await sweep()
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_conflict')
+      expect(await close(id)).toBe('close_done_exception')
+    })
+
+    it('the provider saying PAID at another amount still cannot be closed as unpaid', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      answer(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect(await close(id)).toBe('close_refused_provider_says_paid')
+      expect(['pending', 'processing']).toContain((await rowFor(token)).status)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a cancellation claimed by a notification', () => {
+    const reviewed = reviewedForm
+
+    it('on a closed attempt whose access decision rests on it: flagged, and the payment does not move', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      await exAction('recordExceptionAccess', reviewed(await exceptionFor(token)))
+      H.emails = []
+
+      expect((await ipn(token, { type_event: 'sale_canceled' })).status).toBe(200)
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.resolution).toBe('access_honoured')
+      expect((await rowFor(token)).status).toBe('expired')
+    })
+
+    it('on an open record: kept, without rewriting what the record says', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await ipn(token, { type_event: 'sale_canceled' })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', last_signal: 'paid_hint' })
+      expect(e.evidence_fingerprints).toHaveLength(2)
+    })
+
+    it('on an in-flight payment being watched: kept', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      await ipn(token, { type_event: 'sale_canceled' })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'watching', last_signal: 'paid_hint' })
+      expect(e.evidence_fingerprints).toHaveLength(2)
+    })
+
+    it('with nothing on record, or on a settled refund: nothing is written, because it proves nothing', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      expect((await ipn(token, { type_event: 'sale_canceled' })).status).toBe(200)
+      expect(await exceptionFor(token)).toBeNull()
+
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(id), evidenceCount: reviewed(await exceptionFor(token)).evidenceCount })
+      const before = await exceptionFor(token)
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect((await exceptionFor(token)).report_count).toBe(before.report_count)
+    })
+
+    it('if it cannot be kept, it is retried', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'simulated', code: 'XX000' } }
+      const res = await ipn(token, { type_event: 'sale_canceled' })
+      H.rpcFaultFor = null
+      expect(res.status).toBe(503)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — what a completion covers cannot come apart from it', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+
+    it('if it cannot be remembered, nothing completes and the notification is retried', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'simulated', code: 'XX000' } }
+
+      expect((await ipn(token)).status).toBe(503)
+
+      H.rpcFaultFor = null
+      expect(['pending', 'processing']).toContain((await rowFor(token)).status)
+      expect((await counts()).completed).toBe(0)
+      expect((await ipn(token)).body.detail).toBe('completed')
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('so a later different notification cannot take its place, even if no retry ever comes', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token, { client_phone: '771111111' })
+
+      await ipn(token, { client_phone: '772222222' })
+
+      expect((await exceptionFor(token)).different_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+    })
+
+    it('a normal payment logs no warning about an exception', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      expect(H.logs.filter(l => l.level === 'warn' && l.args.includes('payment exception recorded'))).toHaveLength(0)
+    })
+
+    it('a completion refused for good keeps what it covered, on the record that says so', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status, revoked_at, revoked_reason)
+        values ($1, $2, 'MANUAL_ADMIN', 'REVOKED', now(), 'test')`, [L1, C1])
+      says(token, 'completed')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', last_signal: 'completion_refused' })
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      expect(e.reviewed_fingerprints).toHaveLength(0)
+    })
+
+    it('the same notification while a different one is on record does not complete it twice or count itself', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { client_phone: '771111111' })
+      says(token, 'completed')
+      await ipn(token, { client_phone: '771111111' })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', repeat_count: 0 })
+      expect(e.post_settlement_report_at).toBeNull()
+      expect((await counts()).audits).toBe(1)
+    })
+
+    it('a failed signature while in flight is not what the completion covers, so a real notification is told apart', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { hmac_compute: 'a'.repeat(64), client_phone: '771111111' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'watching', first_signal: 'unverified_report' })
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.reviewed_fingerprints).toEqual([])
+    })
+  })
+
+  describe('XP-PAYTECH-06B — only the provider can put a completed payment in question', () => {
+    const reviewed = reviewedForm
+    const completed = async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      return token
+    }
+    const refundOffered = async (token: string) => (await exceptionFor(token)).state === 'open'
+
+    it.each([
+      ['a rewritten amount', { final_item_price: '1' }, 'amount_mismatch'],
+      ['a rewritten currency', { currency: 'EUR' }, 'currency_mismatch'],
+      ['an unknown event', { type_event: 'refund_complete' }, 'unverified_report'],
+    ])('%s is recorded on a settled record, so no refund is offered on it', async (_name, over, signal) => {
+      const token = await completed()
+      expect((await ipn(token, over)).status).toBe(200)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', different_signal: signal })
+      expect(e.different_report_at).not.toBeNull()
+      expect(await refundOffered(token)).toBe(false)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await dbHasAccess(L1, C1)).toBe(true)
+    })
+
+    it('a cancellation during a provider outage is recorded the same way', async () => {
+      const token = await completed()
+      H.contract = null
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', different_signal: 'cancel_hint' })
+      expect(await refundOffered(token)).toBe(false)
+    })
+
+    it('an administrator can then ask, and it is the provider\'s answer that opens it', async () => {
+      const token = await completed()
+      H.contract = null
+      await ipn(token, { type_event: 'sale_canceled' })
+      const { id } = await exceptionFor(token)
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+
+      await exAction('recheckException', { exceptionId: id })
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_not_paid' })
+    })
+
+    it('an administrator asking and hearing it was paid leaves it settled', async () => {
+      const token = await completed()
+      H.contract = null
+      await ipn(token, { type_event: 'sale_canceled' })
+      const { id } = await exceptionFor(token)
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await exAction('recheckException', { exceptionId: id })
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('holding one notification, the most anyone can do is keep a weekly alert alive', async () => {
+      const token = await completed()
+      for (let i = 0; i < 6; i++) await ipn(token, { final_item_price: String(i + 1), client_phone: `77000000${i}` })
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.notification_reopens).toBe(0)
+      await sweep()
+      H.emails = []
+      await ipn(token, { final_item_price: '9', client_phone: '770000009' })
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('a review of that record covers what it showed', async () => {
+      const token = await completed()
+      await ipn(token, { final_item_price: '1' })
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+      await ipn(token, { final_item_price: '1' })
+      const e = await exceptionFor(token)
+      expect(e.repeat_count).toBe(1)
+      expect(e.different_report_at).toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a decision covers every report on the record', () => {
+    const reviewed = reviewedForm
+
+    it('dismissing more than one report needs its own attestation', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { client_phone: '771111111' })
+      await ipn(token, { client_phone: '772222222' })
+      const { attestAll: _attestAll, ...form } = reviewed(await exceptionFor(token))
+
+      expect(await exAction('dismissException', form)).toBe('close_attestation_required')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+    })
+
+    it('one report needs none', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { attestAll: _attestAll, ...form } = reviewed(await exceptionFor(token))
+      expect(await exAction('dismissException', form)).toBe('exception_dismiss_done')
+    })
+
+    it('a reopening by one administrator tells the others', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      H.emails = []
+      await exAction('reopenExceptionAfterReview', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes' })
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — what a person decided, or the provider said, outlasts a completion', () => {
+    const reviewed = reviewedForm
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+
+    it('money an administrator confirmed on an escalated record stays open when the payment completes', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      await exAction('confirmExceptionReceipt', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes' })
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+    })
+
+    it('a provider mismatch, a dismissal, a paid notification, then completion: open, for a person', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      says(token, 'pending')
+      await ipn(token)
+      expect((await exceptionFor(token)).state).toBe('watching')
+      H.emails = []
+      says(token, 'completed')
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('money an administrator attested to on an in-flight attempt is flagged when the payment completes', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: '1' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const { id } = await exceptionFor(token)
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+      expect((await exceptionFor(token)).state).toBe('open')
+      H.emails = []
+      says(token, 'completed')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(e.state).toBe('resolved')
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a reopening with nothing on the record is flagged on completion too, though it holds no notification', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'admin')`, [id])
+      await ageException(token, 48)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      await exAction('dismissException', { exceptionId: e.id, note: NOTE, attest: 'yes', evidenceCount: '0' })
+      await exAction('reopenExceptionAfterReview', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+    })
+
+    it('a dismissal on an attempt that then completes is flagged, and the payment holds', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: '1' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      H.emails = []
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'nothing_to_return', payment_received: 'confirmed_by_provider' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('reopening a completed payment keeps what its completion covered', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e.repeat_count).toBe(1)
+      expect(e.different_report_at).toBeNull()
+    })
+
+    it('the provider paid at another amount on a closed attempt: a refund of what was received can be recorded', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', PRICE_C1 - 5000)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+
+      const notice = await exAction('recordExceptionRefund', {
+        ...refundFields(id), amount: String(PRICE_C1 - 5000), evidenceCount: reviewed(await exceptionFor(token)).evidenceCount,
+      })
+
+      expect(notice).toBe('exception_refund_recorded')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'refund_confirmed', refund_amount: PRICE_C1 - 5000 })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('with that answer on record, only its whole amount or the whole payment can be recorded', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', PRICE_C1 - 5000)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      expect((await exceptionFor(token)).provider_amount).toBe(PRICE_C1 - 5000)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      const count = reviewed(await exceptionFor(token)).evidenceCount
+      const attempt = (amount: number) => exAction('recordExceptionRefund', { ...refundFields(id), amount: String(amount), evidenceCount: count })
+
+      expect(await attempt(1)).toBe('exception_refused_refund_partial_not_supported')
+      expect(await attempt(PRICE_C1 - 5001)).toBe('exception_refused_refund_partial_not_supported')
+      expect(await attempt(PRICE_C1 * 100)).toBe('exception_refused_refund_amount_invalid')
+      expect((await exceptionFor(token)).state).toBe('open')
+
+      expect(await attempt(PRICE_C1)).toBe('exception_refund_recorded')
+    })
+
+    it('a later "not paid" does not leave any amount recordable', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', PRICE_C1 - 5000)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      says(token, 'failed')
+      await sweep()
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), amount: '5', evidenceCount: form.evidenceCount, attestAll: 'yes' })).toBe('exception_refused_refund_partial_not_supported')
+    })
+
+    it.each([['pending', 0], ['pending', -1]])('the provider answering %s at %d claims no amount, so it is what any pending answer is', async (word, amount) => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      P.status.set(token, { success: 1, payment: { status: word, amount, currency: 'XOF', ref_command: P.refs.get(token) } })
+      expect((await ipn(token)).status).toBe(200)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'watching', provider_answer: null, provider_amount: null })
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: 'Vérifié, rien reçu au tableau de bord.', attest: 'yes' })).toBe('close_refused_provider_says_pending')
+    })
+
+    it.each([['failed', 0], ['canceled', 0]])('the provider answering %s at %d claims no amount, and closes the attempt as it says', async (word, amount) => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      P.status.set(token, { success: 1, payment: { status: word, amount, currency: 'XOF', ref_command: P.refs.get(token) } })
+      expect((await ipn(token)).status).toBe(200)
+      expect((await rowFor(token)).status).toBe(word === 'failed' ? 'failed' : 'cancelled')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint', provider_amount: null })
+      expect((await exceptionFor(token)).provider_answers).not.toContain('settlement_amount_mismatch')
+    })
+
+    it.each([[0], [-45000]])('the provider saying paid at %d is kept as a conflict, and proves no money', async (amount) => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      P.status.set(token, { success: 1, payment: { status: 'completed', amount, currency: 'XOF', ref_command: P.refs.get(token) } })
+      expect((await ipn(token)).status).toBe(200)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'amount_mismatch', provider_amount: null, payment_received: 'reported' })
+    })
+
+    it('an amount on an unpaid answer is not what was received, so it cannot be refunded', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 - 5000)
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ provider_answer: 'settlement_amount_mismatch', provider_amount: null })
+    })
+
+    it('the provider naming a different amount alerts again, leaves a trail, and only an amount it named can be recorded', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', PRICE_C1 - 5000)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      const tab = reviewed(await exceptionFor(token))
+      await sweep()
+      H.emails = []
+      says(token, 'completed', PRICE_C1 - 15000)
+
+      await sweep()
+
+      expect((await exceptionFor(token)).provider_amount).toBe(PRICE_C1 - 15000)
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      const audit = (await exceptionAudit()).at(-1)!
+      expect(audit.metadata).toMatchObject({ providerAmount: PRICE_C1 - 15000 })
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), ...tab, amount: String(PRICE_C1 - 15000) })).toBe('exception_refused_evidence_changed')
+      const fresh = reviewed(await exceptionFor(token))
+      const attempt = (amount: number) => exAction('recordExceptionRefund', { ...refundFields(id), amount: String(amount), evidenceCount: fresh.evidenceCount, attestAll: 'yes' })
+      expect(await attempt(PRICE_C1 - 20000)).toBe('exception_refused_refund_partial_not_supported')
+      expect(await attempt(PRICE_C1 - 15000)).toBe('exception_refund_recorded')
+    })
+
+    it('the provider then saying paid at our amount takes its other amount away', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', PRICE_C1 - 5000)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      says(token, 'completed')
+
+      await sweep()
+
+      expect((await exceptionFor(token)).provider_amount).toBeNull()
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), amount: String(PRICE_C1 - 5000), evidenceCount: form.evidenceCount, attestAll: 'yes' })).toBe('exception_refused_refund_partial_not_supported')
+    })
+
+    it('if the provider\'s closing answer cannot be kept, the alert about the record still goes out', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      H.emails = []
+      says(token, 'failed')
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'simulated', code: 'XX000' } }
+      await ipn(token)
+      H.rpcFaultFor = null
+      expect((await rowFor(token)).status).toBe('failed')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('what a completion raises on an open record is audited', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await ipn(token)
+      says(token, 'completed')
+      await age(token, 90)
+      const before = (await exceptionAudit()).length
+      await sweep()
+      expect((await exceptionAudit()).slice(before).map(r => r.event_type)).toContain('payment.exception_evidence_raised')
+    })
+
+    it('only the provider\'s word about the amount can carry one', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      const report = (detail: string, amount: number) => asRole('service_role', null,
+        `select public.payment_exception_report($1, 'paid_hint', 'ipn', $2, null, $3)`, [id, detail, amount])
+      await expect(report('ipn_amount_mismatch', 1)).rejects.toMatchObject({ detail: expect.stringContaining('invalid_provider_amount') })
+      await expect(report('settlement_amount_mismatch', -1)).rejects.toMatchObject({ detail: expect.stringContaining('invalid_provider_amount') })
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('a notification claiming another amount does not make that amount recordable', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { final_item_price: '1' })
+      expect((await exceptionFor(token)).provider_amount).toBeNull()
+    })
+
+    it('a provider saying failed as it closes an attempt is kept on an access decision, and flags it', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      await exAction('recordExceptionAccess', reviewed(await exceptionFor(token)))
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await age(token, 90)
+
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('failed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ resolution: 'access_honoured', provider_answer: 'provider_not_paid' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a provider saying failed as it closes an attempt with confirmed receipt alerts again', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await sweep()
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await age(token, 90)
+
+      await sweep()
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('if that answer cannot be kept, the notification carrying it is retried', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'failed')
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'simulated', code: 'XX000' } }
+      const res = await ipn(token, { type_event: 'sale_canceled' })
+      H.rpcFaultFor = null
+      expect(res.status).toBe(503)
+    })
+
+    it('an open record that stays open at completion no longer calls the money only reported', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'reported' })
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+    })
+
+    it('what a completion does to a record is audited', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: '1' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      says(token, 'completed')
+      await age(token, 90)
+      const before = (await exceptionAudit()).length
+      await sweep()
+      expect((await exceptionAudit()).slice(before).map(r => r.event_type)).toContain('payment.exception_reported_after_settlement')
+    })
+
+    it('reopening a dismissed report that failed its check raises it, and it then blocks', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { hmac_compute: 'a'.repeat(64) })
+      await ageException(token, 48)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'not_established' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await exAction('reopenExceptionAfterReview', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'reported' })
+    })
+
+    it('a blank claimed amount claims nothing', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      const res = await ipn(token, { final_item_price: '  ' })
+      expect(res.body.detail).toBe('completed')
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('with no such answer from the provider, a partial refund is still refused', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), amount: String(PRICE_C1 - 5000), evidenceCount: form.evidenceCount })).toBe('exception_refused_refund_partial_not_supported')
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), amount: String(PRICE_C1 + 5000), evidenceCount: form.evidenceCount })).toBe('exception_refused_refund_amount_invalid')
+    })
+
+    it('the warning before a close stays once an administrator has confirmed money', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      await sweep()
+      const { paymentId, id } = { paymentId: (await rowFor(token)).id, id: (await exceptionFor(token)).id }
+      const { watchedPaymentIds } = await import('@/lib/payments/payment-exceptions')
+      expect((await watchedPaymentIds()).has(paymentId)).toBe(true)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      expect((await watchedPaymentIds()).has(paymentId)).toBe(true)
+    })
+
+    it('the warning before a close covers money the provider itself confirmed', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+      const { watchedPaymentIds } = await import('@/lib/payments/payment-exceptions')
+      expect((await watchedPaymentIds()).has((await rowFor(token)).id)).toBe(true)
+    })
+
+    it('a recent attempt behind more than 200 that keep answering pending is still reached', async () => {
+      H.contract = FIXTURE_CONTRACT
+      await asSuper(`insert into auth.users (id, email, email_confirmed_at)
+        select ('30000000-0000-4000-8000-' || lpad(i::text, 12, '0'))::uuid, 's' || i || '@example.test', now() from generate_series(0, 204) i`)
+      await asSuper(`insert into public.profiles (id, email, platform_role)
+        select ('30000000-0000-4000-8000-' || lpad(i::text, 12, '0'))::uuid, 's' || i || '@example.test', 'user' from generate_series(0, 204) i`)
+      await asSuper(`insert into public.payments (amount, currency, method, status, reference, provider, provider_mode, provider_token, user_id, course_id, created_at)
+        select 45000, 'XOF', 'card', 'processing', 'SCX-STALE-' || i, 'paytech', 'test', 'stale-token-' || i,
+               ('30000000-0000-4000-8000-' || lpad(i::text, 12, '0'))::uuid, $1::uuid, now() - interval '30 days' + make_interval(mins => i)
+          from generate_series(0, 204) i`, [C1])
+      for (let i = 0; i <= 204; i++) { P.refs.set(`stale-token-${i}`, `SCX-STALE-${i}`); says(`stale-token-${i}`, 'pending') }
+      const random = vi.spyOn(Math, 'random')
+      const asked = new Set<string>()
+      for (let r = 0; r < 12; r++) {
+        random.mockReturnValue(r / 12)
+        P.statusCalls = []
+        await sweep()
+        for (const t of P.statusCalls) asked.add(t)
+      }
+      random.mockRestore()
+      expect(asked.has('stale-token-204')).toBe(true)
+      expect(asked.has('stale-token-0')).toBe(true)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a report that proves nothing blocks nobody', () => {
+    it('a failed signature on a closed attempt stays in front of an administrator, and the learner can pay', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { hmac_compute: 'a'.repeat(64) })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'not_established' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+
+      const r = await checkout(user(L1), C1)
+      expect(r.error).toBeUndefined()
+      expect(r.redirectUrl).toBeDefined()
+    })
+
+    it('a valid paid notification on the same record does block', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { hmac_compute: 'a'.repeat(64) })
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ last_signal: 'paid_hint', payment_received: 'reported' })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('"still payable" on a closed attempt does block, because the old link could still be paid', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'pending')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_pending' })
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a malformed notification', () => {
+    it('nested too deep to read is refused, not thrown', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const res = await ipn(token, {}, { rawClientPhone: '['.repeat(30_000) + '1' + ']'.repeat(30_000) })
+      expect(res.status).toBe(400)
+      expect(await exceptionFor(token)).toBeNull()
+      expect(['pending', 'processing']).toContain((await rowFor(token)).status)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a completion does not settle what it does not cover', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    const reviewed = reviewedForm
+
+    it('a failed signature while in flight, then a sweep completes it: flagged, alerted and counted', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: String(PRICE_C1 * 2) }, { signAmount: PRICE_C1 * 2 })
+      expect((await exceptionFor(token)).state).toBe('watching')
+      H.emails = []
+      says(token, 'completed')
+      await age(token, 90)
+
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('an unsigned rewrite in flight cannot leave a refund on offer once the payment completes', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: '1' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'amount_mismatch' })
+      says(token, 'completed')
+
+      await ipn(token)
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'settled_normally', refund_state: 'not_required' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+      expect(await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })).toBe('exception_refused_exception_not_open')
+    })
+
+    it('money an administrator confirmed stays open when the payment completes', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: '1' })
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      says(token, 'completed')
+      await ipn(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+
+    it('a notification remembered for a completion that never came is not lost when the attempt closes', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', 'ipn_completing_payment', $2)`, [id, 'a'.repeat(64)])
+      expect(await exceptionFor(token)).toBeNull()
+
+      await asRole('service_role', null, `update public.payments set status = 'expired', failure_reason = 'closed_for_test' where id = $1`, [id])
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', first_signal: 'paid_hint', payment_received: 'reported' })
+      expect(e.evidence_fingerprints).toEqual(['a'.repeat(64)])
+      expect(e.reviewed_fingerprints).toEqual([])
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a closure with nothing remembered writes nothing', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('a paid notification with a remembered one before it is told apart while still in flight', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', 'ipn_completing_payment', $2)`, [id, 'a'.repeat(64)])
+      says(token, 'pending')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(2)
+      expect(e.reviewed_fingerprints).toEqual([])
+    })
+
+    it('the provider answering at another amount just as the payment completes is still kept', async () => {
+      const token = await (async () => {
+        H.contract = FIXTURE_CONTRACT
+        const t = await startAndToken(user(L1))
+        says(t, 'completed')
+        await ipn(t)
+        return t
+      })()
+      const { id } = await rowFor(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch')`, [id])
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch' })
+    })
+
+    it('reviewing that record is possible, and the same answer again changes nothing', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', PRICE_C1 + 1)
+      await age(token, 90)
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const before = await exceptionFor(token)
+      await sweep()
+      await sweep()
+      const after = await exceptionFor(token)
+      expect(after.report_count).toBe(before.report_count)
+      expect(after.last_reported_at).toBe(before.last_reported_at)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the provider saying it again, and saying it after a decision', () => {
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    const reviewed = reviewedForm
+    async function refunded() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(id), evidenceCount: reviewed(await exceptionFor(token)).evidenceCount })
+      H.emails = []
+      return { token, id }
+    }
+
+    it('"still payable" on a dismissed attempt is marked and alerted on once, and blocks nobody', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'pending')
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', different_signal: 'provider_pending', provider_answer: 'provider_pending' })
+      expect(e.different_report_at).not.toBeNull()
+      expect(await needsHuman()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+
+      await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))
+      H.emails = []
+      await sweep()
+      await sweep()
+      expect((await exceptionFor(token)).different_report_at).toBeNull()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('the sweep asking about a refunded payment again and again writes nothing', async () => {
+      const { token } = await refunded()
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'completed')
+      const before = await exceptionFor(token)
+      await sweep()
+      await sweep()
+      const after = await exceptionFor(token)
+      expect(after.report_count).toBe(before.report_count)
+      expect(after.last_signal).toBe(before.last_signal)
+      expect(after.last_reported_at).toBe(before.last_reported_at)
+    })
+
+    it('an administrator asking again and hearing the same "not paid" does not reopen a dismissal', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const { id } = await exceptionFor(token)
+      for (let i = 0; i < 3; i++) {
+        await exAction('recheckException', { exceptionId: id })
+        expect((await exceptionFor(token)).state).toBe('resolved')
+      }
+    })
+
+    it('a mistaken dismissal of what the provider said can be undone, and a refund reached', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'completed', PRICE_C1 + 1)
+      await ipn(token, { type_event: 'sale_canceled' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const { id } = await exceptionFor(token)
+      expect((await exceptionFor(token)).state).toBe('resolved')
+
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })).toBe('exception_require_refund_done')
+    })
+
+    it('with nothing from the provider, a reopening on a completed payment still only flags', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.post_settlement_report_at).not.toBeNull()
+    })
+
+    it('an administrator hearing "failed" does not turn a record that blocked nobody into a block', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token, { hmac_compute: 'a'.repeat(64) })
+      const { id } = await exceptionFor(token)
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+      const started = await rowFor(token)
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+
+      await exAction('recheckException', { exceptionId: id })
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ last_signal: 'unverified_report', provider_answer: 'provider_not_paid', state: 'open' })
+      const blocked = await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [started.user_id, started.course_id])
+      expect(blocked[0].r).toBeNull()
+    })
+
+    it('a paid notification on a record the provider opened, with no digest yet, is alerted on and audited', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'pending')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_pending' })
+      await sweep()
+      H.emails = []
+      const before = (await exceptionAudit()).length
+      H.contract = null
+
+      await ipn(token)
+
+      const e = await exceptionFor(token)
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      expect((await exceptionAudit()).length).toBeGreaterThan(before)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('on a flagged, dismissed record, a variant of a cancellation the provider has answered only counts', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'completed')
+      await ipn(token)
+      await exAction('reopenExceptionAfterReview', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes' })
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+
+      await ipn(token, { type_event: 'sale_canceled', client_phone: '771234567' })
+
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.repeat_count).toBe(1)
+    })
+
+    it('its rollback refuses while repeats are unreviewed, even with no alert due', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await ipn(token)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.repeat_count).toBe(1)
+      expect(e.repeat_alert_due_at).toBeNull()
+      await expect(db.exec(ROLLBACK_064)).rejects.toThrow(/unsettled exceptions exist/)
+      await db.exec('rollback').catch(() => undefined)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the sweep reaches attempts behind older ones', () => {
+    it('30 attempts stale, more than one run asks about: each is reached over a few runs', async () => {
+      H.contract = FIXTURE_CONTRACT
+      for (let i = 0; i < 30; i++) {
+        const uid = `30000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+        await asSuper(`insert into auth.users (id, email, email_confirmed_at) values ($1, $2, now())`, [uid, `s${i}@example.test`])
+        await asSuper(`insert into public.profiles (id, email, platform_role) values ($1, $2, 'user')`, [uid, `s${i}@example.test`])
+        await asSuper(
+          `insert into public.payments (amount, currency, method, status, reference, provider, provider_mode, provider_token, user_id, course_id, created_at)
+           values (45000, 'XOF', 'card', 'processing', $1, 'paytech', 'test', $2, $3, $4, now() - interval '2 hours' - make_interval(mins => $5::int))`,
+          [`SCX-STALE-${i}`, `stale-token-${i}`, uid, C1, 60 - i],
+        )
+        P.refs.set(`stale-token-${i}`, `SCX-STALE-${i}`)
+        says(`stale-token-${i}`, 'pending')
+      }
+      const random = vi.spyOn(Math, 'random')
+      const asked = new Set<string>()
+      for (const r of [0, 0.2, 0.4, 0.6, 0.8]) {
+        random.mockReturnValue(r)
+        P.statusCalls = []
+        await sweep()
+        for (const t of P.statusCalls) asked.add(t)
+      }
+      random.mockRestore()
+      expect(asked.size).toBe(30)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — behaviour pinned after the final mutation run', () => {
+    const reviewed = reviewedForm
+    const paymentAlerts = async () => { H.emails = []; await sweep(); return H.emails }
+    const report = (id: string, signal: string, source: string, detail: string | null = null, fingerprint: string | null = null) =>
+      asRole('service_role', null, `select public.payment_exception_report($1, $2, $3, $4, $5) as r`, [id, signal, source, detail, fingerprint])
+        .then(rows => rows[0].r as Record<string, unknown>)
+
+    // No caller reports from a notification without a digest today, and a real status check
+    // takes a later branch. This pins the guard against a direct call.
+    it('a mismatch already on record, with no digest, reopens no dismissal, whatever a notification wrote since', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      P.status.set(token, { success: 1, payment: { status: 'failed', amount: PRICE_C1 + 1, currency: 'XOF', ref_command: P.refs.get(token) } })
+      await age(token, 90)
+      await sweep()
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: 'Vérifié, rien reçu au tableau de bord.', attest: 'yes' })).toBe('close_done_exception')
+      await report(id, 'paid_hint', 'ipn', null, 'a'.repeat(64))
+      expect((await exceptionFor(token)).last_signal).toBe('paid_hint')
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await report(id, 'amount_mismatch', 'ipn', 'settlement_amount_mismatch')
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'nothing_to_return' })
+    })
+
+    it('past the digest cap, the queue counts the overflow, so its own form is not refused as out of date', async () => {
+      const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      for (let n = 0; n < 21; n++) await report(id, 'paid_hint', 'ipn', null, String(n).padStart(64, 'a'))
+      const [shown] = (await paymentExceptionQueue())!
+      expect(shown).toMatchObject({ evidenceCount: 21, notificationCount: 21, evidenceOverflow: true })
+
+      const notice = await exAction('dismissException', { ...reviewed(await exceptionFor(token)), evidenceCount: String(shown.evidenceCount) })
+
+      expect(notice).toBe('exception_dismiss_done')
+    })
+
+    it('only a successful sweep of this exact event counts as a finished one', async () => {
+      const { lastSweepFinishedAt } = await import('@/lib/payments/payment-exceptions')
+      const write = (event: string, outcome: string) => asSuper(
+        `insert into public.audit_log (event_type, actor_type, outcome, metadata) values ($1, 'system', $2, '{}'::jsonb)`, [event, outcome])
+      await write('payment.reconciliation_sweep_finished', 'failure')
+      await write('payment.exception_recorded', 'success')
+      expect(await lastSweepFinishedAt()).toEqual({ readable: true, at: null })
+
+      await sweep()
+      const finished = (await lastSweepFinishedAt()).at
+      expect(finished).not.toBeNull()
+      await asSuper(`select pg_sleep(0.01)`)
+      await write('payment.reconciliation_sweep_finished', 'failure')
+      await write('payment.exception_recorded', 'success')
+      expect((await lastSweepFinishedAt()).at).toBe(finished)
+    })
+
+    it('the rollback refuses while an alert is due, even with no repeat counted', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      await sweep()
+      await report(id, 'paid_hint', 'ipn', null, 'b'.repeat(64))
+      await exAction('dismissException', { exceptionId: (await exceptionFor(token)).id, note: NOTE, attest: 'yes', attestAll: 'yes' })
+      await db.exec(`alter table public.payment_exceptions disable trigger payment_exceptions_guard;
+        update public.payment_exceptions set repeat_alert_due_at = now() where payment_id = '${id}';
+        alter table public.payment_exceptions enable trigger payment_exceptions_guard;`)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', repeat_count: 0 })
+      expect(e.post_settlement_report_at).toBeNull()
+      expect(e.repeat_alert_due_at).not.toBeNull()
+
+      await expect(db.exec(ROLLBACK_064)).rejects.toThrow(/unsettled exceptions exist/)
+      await db.exec('rollback').catch(() => undefined)
+    })
+
+    it('the same notification remembered twice before a completion is one notification, and opens no record', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+
+      expect((await report(id, 'paid_hint', 'ipn', 'ipn_completing_payment', 'a'.repeat(64))).outcome).toBe('completion_noted')
+      expect((await report(id, 'paid_hint', 'ipn', 'ipn_completing_payment', 'a'.repeat(64))).outcome).toBe('replayed')
+
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('a retry after a failed completion settles what the failure kept, and alerts nobody', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await asSuper(`create trigger harness_fault before insert on public.entitlements for each row execute function public.harness_fail()`)
+      expect((await ipn(token)).status).toBe(503)
+      await asSuper(`drop trigger harness_fault on public.entitlements`)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'watching', report_count: 1 })
+
+      expect((await ipn(token)).body.detail).toBe('completed')
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+      expect((await paymentAlerts())).toHaveLength(0)
+    })
+
+    it('a closed attempt is never taken as completing: the paid notification opens a record', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+
+      const r = await report(id, 'paid_hint', 'ipn', 'ipn_completing_payment', 'a'.repeat(64))
+
+      expect(r.outcome).toBe('created')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', first_signal: 'paid_hint', evidence_fingerprints: ['a'.repeat(64)] })
+      const [{ n }] = await asSuper(`select count(*)::int as n from public.payment_completion_notices where payment_id = $1`, [id])
+      expect(n).toBe(0)
+    })
+
+    it('the first notification on a record the provider opened is audited and alerted on', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(before.state).toBe('open')
+      expect(before.alert_sent_at).not.toBeNull()
+      expect(before.evidence_fingerprints).toEqual([])
+      H.emails = []
+      H.contract = null
+
+      await ipn(token)
+
+      const after = await exceptionFor(token)
+      expect(after.evidence_fingerprints).toHaveLength(1)
+      expect(after.repeat_alert_due_at).not.toBeNull()
+      expect((await exceptionAudit()).map(a => a.event_type)).toContain('payment.exception_different_report_recorded')
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('"not paid" on a report nobody has confirmed is kept, and alerts nobody again', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(before).toMatchObject({ state: 'open', payment_received: 'reported' })
+      expect(before.alert_sent_at).not.toBeNull()
+      H.emails = []
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+
+      const after = await exceptionFor(token)
+      expect(after.provider_answers).toEqual(['provider_not_paid'])
+      expect(after.alert_sent_at).toEqual(before.alert_sent_at)
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('the provider closing an attempt: its answer is kept on the record that closure opened', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      expect((await exceptionFor(token)).state).toBe('watching')
+      says(token, 'failed')
+      await age(token, 90)
+
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('failed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid', provider_answers: ['provider_not_paid'] })
+    })
+
+    it('if that answer cannot be kept, the check says so, and the record the closure opened is still alerted on', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      says(token, 'pending')
+      await ipn(token)
+      says(token, 'failed')
+      H.emails = []
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'storage down', details: null } }
+
+      const notice = await adminAction('verifyPaytechPayment', { paymentId: id })
+
+      H.rpcFaultFor = null
+      expect(notice).toBe('verify_exception_unrecorded')
+      expect((await rowFor(token)).status).toBe('failed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answers: [] })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('an attempt still in flight, paid at another amount: the amount reaches the record and the queue', async () => {
+      const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed', PRICE_C1 - 5000)
+
+      await ipn(token)
+
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'completion_refused', provider_amount: PRICE_C1 - 5000 })
+      expect((await paymentExceptionQueue())![0].providerAmount).toBe(PRICE_C1 - 5000)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the provider changing its amount', () => {
+    const reviewed = reviewedForm
+    const needsHuman = async () => (await import('@/lib/payments/payment-exceptions')).countOpenPaymentExceptions()
+    const named = (e: { provider_amounts?: unknown[] }) => (e.provider_amounts ?? []).map(Number)
+    async function namedAndAwaitingRefund(amount: number) {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', amount)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      return { token, id: id as string }
+    }
+    async function refundedAt(amount: number) {
+      const { token, id } = await namedAndAwaitingRefund(amount)
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), amount: String(amount), evidenceCount: form.evidenceCount })).toBe('exception_refund_recorded')
+      H.emails = []
+      return { token, id }
+    }
+
+    it('after a refund, another amount flags the record, alerts and leaves a trail, and only once', async () => {
+      const { token } = await refundedAt(5000)
+      says(token, 'completed', 9000)
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e).toMatchObject({ resolution: 'refund_confirmed', refund_amount: 5000, provider_amount: 9000 })
+      expect(named(e)).toEqual([5000, 9000])
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await needsHuman()).toBe(1)
+      expect((await exceptionAudit()).at(-1)).toMatchObject({
+        event_type: 'payment.exception_reported_after_settlement', metadata: { providerAmount: 9000 },
+      })
+
+      await exAction('acknowledgeExceptionReport', reviewed(e))
+      H.emails = []
+      await sweep()
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('after a refund of another amount, "paid at ours" flags the record and takes nothing off it', async () => {
+      const { token } = await refundedAt(5000)
+      says(token, 'completed')
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.provider_amount).toBeNull()
+      expect(named(e)).toEqual([5000, PRICE_C1])
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await exceptionAudit()).at(-1)!.event_type).toBe('payment.exception_reported_after_settlement')
+    })
+
+    it('after an access decision, another amount flags the record too', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', 5000)
+      await sweep()
+      const { id } = await exceptionFor(token)
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, C1])
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('recordExceptionAccess', { exceptionId: id, note: NOTE, evidenceCount: form.evidenceCount })).toBe('exception_record_access_done')
+      H.emails = []
+      says(token, 'completed', 90000)
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.resolution).toBe('access_honoured')
+      expect(named(e)).toEqual([5000, 90000])
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('on a dismissed record, another amount from the provider reopens it', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id: paymentId } = await rowFor(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'amount_mismatch', 'sweep', 'settlement_amount_mismatch')`, [paymentId])
+      await asRole('service_role', null, `update public.payments set status = 'expired', failure_reason = 'closed_for_test' where id = $1`, [paymentId])
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      says(token, 'completed', 5000)
+
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      expect(e.provider_amount).toBe(5000)
+    })
+
+    it('on a completed payment dismissed after one other amount, a second one reopens it', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      says(token, 'completed', 5000)
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_amount: 5000 })
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const { id } = await exceptionFor(token)
+      expect((await exceptionFor(token)).state).toBe('resolved')
+      says(token, 'completed', 9000)
+
+      await exAction('recheckException', { exceptionId: id })
+
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      expect(e.provider_amount).toBe(9000)
+      expect(named(e)).toEqual([5000, 9000])
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('an amount it has named before is not news: alternating raises at most one alert a week, and flags nothing', async () => {
+      const { token } = await namedAndAwaitingRefund(5000)
+      says(token, 'completed', 9000)
+      await sweep()
+      H.emails = []
+      const before = await exceptionFor(token)
+      for (const amount of [5000, 9000, 5000]) {
+        says(token, 'completed', amount)
+        await sweep()
+      }
+      const e = await exceptionFor(token)
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(e.provider_amount).toBe(5000)
+      expect(named(e)).toEqual([5000, 9000])
+      expect(e.alert_sent_at).toEqual(before.alert_sent_at)
+      expect(e.post_settlement_report_at).toBeNull()
+    })
+
+    it('saying the same amount again on a refunded record writes nothing', async () => {
+      const { token } = await refundedAt(5000)
+      const before = await exceptionFor(token)
+      await sweep()
+      await sweep()
+      const after = await exceptionFor(token)
+      expect(after.report_count).toBe(before.report_count)
+      expect(after.last_reported_at).toBe(before.last_reported_at)
+      expect(after.post_settlement_report_at).toBeNull()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('the amounts it can name are bounded, and the next one still reaches a person and is kept as the last', async () => {
+      H.contract = null
+      const { token, id: paymentId } = await closedAttempt('expired')
+      for (let amount = 1; amount <= 21; amount++) {
+        await asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, $2)`, [paymentId, amount])
+      }
+      await sweep()
+      H.emails = []
+      const atCap = await exceptionFor(token)
+      expect(named(atCap)).toHaveLength(20)
+      expect(atCap.provider_amount).toBe(21)
+      expect(atCap.repeat_alert_due_at).toBeNull()
+      expect(atCap.repeat_alerted_at).not.toBeNull()
+
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, 22)`, [paymentId])
+
+      const past = await exceptionFor(token)
+      expect(named(past)).toHaveLength(20)
+      expect(past.provider_amount).toBe(22)
+      expect(past.alert_sent_at).toEqual(atCap.alert_sent_at)
+      expect(new Date(past.repeat_alert_due_at).getTime()).toBe(new Date(atCap.repeat_alerted_at).getTime() + 7 * 24 * 3600 * 1000)
+    })
+
+    it('a payment completing takes the other amount away, tells someone, and only what it was paid at can be refunded', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed', 5000)
+      await age(token, 90)
+      await sweep()
+      expect((await exceptionFor(token)).provider_amount).toBe(5000)
+      H.emails = []
+      says(token, 'completed')
+
+      await sweep()
+
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      expect(e.provider_amount).toBeNull()
+      expect(named(e)).toEqual([5000, PRICE_C1])
+      expect((await exceptionAudit()).map(a => a.event_type)).toContain('payment.exception_provider_answer_recorded')
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      const form = reviewed(await exceptionFor(token))
+      const attempt = (amount: number) => exAction('recordExceptionRefund', { ...refundFields(e.id), amount: String(amount), evidenceCount: form.evidenceCount, attestAll: 'yes' })
+      expect(await attempt(5000)).toBe('exception_refused_refund_partial_not_supported')
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await attempt(PRICE_C1)).toBe('exception_refund_recorded_access_live')
+    })
+
+    it('when the provider says it was paid more than we charged, the amount charged needs a further attestation', async () => {
+      const { token, id } = await namedAndAwaitingRefund(90000)
+      const form = reviewed(await exceptionFor(token))
+      const attempt = (amount: number) => exAction('recordExceptionRefund', { ...refundFields(id), amount: String(amount), evidenceCount: form.evidenceCount })
+
+      expect(await attempt(PRICE_C1)).toBe('exception_refused_refund_charged_attestation_required')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await attempt(90000)).toBe('exception_refund_recorded')
+    })
+
+    async function completedThenNamed(amount: number) {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      says(token, 'completed', amount)
+      await ipn(token, { type_event: 'sale_canceled' })
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      return { token, id: id as string }
+    }
+    const refundOf = async (token: string, id: string, amount: number) => exAction('recordExceptionRefund', {
+      ...refundFields(id), amount: String(amount), evidenceCount: reviewed(await exceptionFor(token)).evidenceCount, attestAll: 'yes',
+    })
+
+    it('a completed payment is never refunded below what it was paid at, whatever the provider says now', async () => {
+      const { token, id } = await completedThenNamed(5000)
+
+      expect(await refundOf(token, id, 5000)).toBe('exception_refused_refund_partial_not_supported')
+
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await refundOf(token, id, PRICE_C1)).toBe('exception_refund_recorded_access_live')
+      expect((await rowFor(token)).status).toBe('refunded')
+    })
+
+    it('a completed payment the provider says was paid more can be refunded at that, and at the amount charged only under a further attestation', async () => {
+      const { token, id } = await completedThenNamed(90000)
+      expect(await refundOf(token, id, PRICE_C1)).toBe('exception_refused_refund_charged_attestation_required')
+      expect(await refundOf(token, id, 90000)).toBe('exception_refund_recorded_access_live')
+    })
+
+    it('the provider naming the other amount again after a completion does not reopen the way to a partial refund', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed', 5000)
+      await age(token, 90)
+      await sweep()
+      says(token, 'completed')
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      const { id } = await exceptionFor(token)
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      says(token, 'completed', 5000)
+
+      await exAction('recheckException', { exceptionId: id })
+
+      expect((await exceptionFor(token)).provider_amount).toBe(5000)
+      expect(await refundOf(token, id, 5000)).toBe('exception_refused_refund_partial_not_supported')
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('on a closed attempt, a lower amount named after a higher one can be recorded only under the attestation covering both', async () => {
+      const { token, id } = await namedAndAwaitingRefund(90000)
+      says(token, 'completed', 5000)
+      await sweep()
+      const form = reviewed(await exceptionFor(token))
+      const attempt = (extra: Record<string, string>) => exAction('recordExceptionRefund', { ...refundFields(id), amount: '5000', evidenceCount: form.evidenceCount, ...extra })
+
+      expect(await attempt({ attestAll: '' })).toBe('close_attestation_required')
+      expect(await attempt({ attestAll: 'yes' })).toBe('exception_refund_recorded')
+      expect(named(await exceptionFor(token))).toEqual([90000, 5000])
+    })
+
+    it('when it said less, either its amount or the amount charged can still be recorded', async () => {
+      const { token, id } = await namedAndAwaitingRefund(5000)
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), amount: String(PRICE_C1), evidenceCount: form.evidenceCount })).toBe('exception_refund_recorded')
+      expect((await exceptionFor(token)).refund_amount).toBe(PRICE_C1)
+    })
+
+    it('a new amount makes a form from before it out of date, and the queue counts it the same way', async () => {
+      const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      const { token, id } = await namedAndAwaitingRefund(5000)
+      const stale = reviewed(await exceptionFor(token))
+      expect(stale.evidenceCount).toBe('1')
+      says(token, 'completed', 9000)
+      await sweep()
+      const attempt = (form: Record<string, string>) => exAction('recordExceptionRefund', { ...refundFields(id), ...form, amount: '9000' })
+
+      expect(await attempt(stale)).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).state).toBe('open')
+
+      const [shown] = (await paymentExceptionQueue())!
+      expect(shown).toMatchObject({ evidenceCount: 2, providerAmounts: [5000, 9000] })
+      expect(await attempt({ evidenceCount: String(shown.evidenceCount), evidenceVersion: String(shown.evidenceVersion), attestAll: 'yes' })).toBe('exception_refund_recorded')
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the alert about a further notification', () => {
+    it('on an open record it is at most weekly, so a sender cannot make it more frequent', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      await sweep()
+      const report = (fingerprint: string) => asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', null, $2)`, [id, fingerprint])
+      await report('b'.repeat(64))
+      expect(new Date((await exceptionFor(token)).repeat_alert_due_at).getTime()).toBeLessThanOrEqual(Date.now() + 1000)
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      const alerted = await exceptionFor(token)
+      expect(alerted.repeat_alerted_at).not.toBeNull()
+      expect(alerted.repeat_alert_due_at).toBeNull()
+
+      await report('c'.repeat(64))
+
+      const due = new Date((await exceptionFor(token)).repeat_alert_due_at).getTime()
+      expect(due).toBe(new Date(alerted.repeat_alerted_at).getTime() + 7 * 24 * 3600 * 1000)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — what the last full review found', () => {
+    const blocked = async () => (await checkout(user(L1), C1)).redirectUrl === undefined
+
+    async function refunded() {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const { id } = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+      expect(await exAction('recordExceptionRefund', { ...refundFields(id), ...reviewedForm(await exceptionFor(token)) })).toBe('exception_refund_recorded')
+      return { token, id: id as string }
+    }
+
+    /** Open, with a flag an administrator's reopening left on it, and a refund required. */
+    async function openWithFlag() {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { item_price: '1' })
+      await exAction('dismissException', reviewedForm(await exceptionFor(token)))
+      says(token, 'completed')
+      await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })
+      const { id } = await exceptionFor(token)
+      says(token, 'failed')
+      await exAction('recheckException', { exceptionId: id })
+      await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      return { token, id: id as string }
+    }
+
+    describe('a form loaded before a flag was raised or cleared', () => {
+      it('an acknowledgement loaded with no flag showing cannot clear one an administrator then raised', async () => {
+        const { token, id } = await refunded()
+        await ipn(token)
+        const stale = reviewedForm(await exceptionFor(token))
+        expect(stale.flagShown).toBeUndefined()
+        expect(await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+        const flagged = await exceptionFor(token)
+        expect(flagged.post_settlement_report_at).not.toBeNull()
+        expect(await blocked()).toBe(true)
+
+        expect(await exAction('acknowledgeExceptionReport', stale)).toBe('exception_refused_evidence_changed')
+
+        expect((await exceptionFor(token)).post_settlement_report_at).toBe(flagged.post_settlement_report_at)
+        expect(await blocked()).toBe(true)
+
+        expect(await exAction('acknowledgeExceptionReport', reviewedForm(flagged))).toBe('exception_acknowledge_report_done')
+        expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+        expect(await blocked()).toBe(false)
+      })
+
+      it('an acknowledgement cannot clear the flag a completion raised after it was loaded', async () => {
+        H.contract = FIXTURE_CONTRACT
+        const token = await startAndToken(user(L1))
+        says(token, 'pending')
+        await ipn(token, { item_price: '1' })
+        await exAction('dismissException', reviewedForm(await exceptionFor(token)))
+        await ipn(token, { item_price: '1' })
+        const before = await exceptionFor(token)
+        expect(before.repeat_count).toBeGreaterThan(0)
+        const stale = reviewedForm(before)
+        says(token, 'completed')
+        await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })
+        expect((await rowFor(token)).status).toBe('completed')
+        const flagged = await exceptionFor(token)
+        expect(flagged.post_settlement_report_at).not.toBeNull()
+
+        expect(await exAction('acknowledgeExceptionReport', stale)).toBe('exception_refused_evidence_changed')
+
+        expect((await exceptionFor(token)).post_settlement_report_at).toBe(flagged.post_settlement_report_at)
+      })
+
+      it('a dismissal from before the flag is refused, and one from after it agrees with the record', async () => {
+        const { token } = await openWithFlag()
+        const e = await exceptionFor(token)
+        expect(await exAction('dismissException', { ...reviewedForm(e), evidenceVersion: String(e.evidence_version - 1) })).toBe('exception_refused_evidence_changed')
+        expect(await exAction('dismissException', reviewedForm(e))).toBe('exception_dismiss_done')
+      })
+
+      it('a refund form showing the flag agrees with the record', async () => {
+        const { token, id } = await openWithFlag()
+        await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+        await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+
+        expect(await exAction('recordExceptionRefund', { ...refundFields(id), ...reviewedForm(await exceptionFor(token)) })).toBe('exception_refund_recorded_access_live')
+      })
+
+      it('a refund form is out of date once someone else has reviewed the flag it showed', async () => {
+        const { token, id } = await openWithFlag()
+        await exAction('confirmExceptionReceipt', { exceptionId: id, note: NOTE, attest: 'yes' })
+        await exAction('requireExceptionRefund', { exceptionId: id, note: NOTE })
+        const shown = await exceptionFor(token)
+        const form = { ...refundFields(id), ...reviewedForm(shown) }
+        expect(await exAction('acknowledgeExceptionReport', reviewedForm(shown))).toBe('exception_acknowledge_report_done')
+
+        expect(await exAction('recordExceptionRefund', form)).toBe('exception_refused_evidence_changed')
+
+        expect((await exceptionFor(token)).refund_state).toBe('required')
+      })
+
+      it('a flag already showing does not ask for the further attestation by itself', async () => {
+        const { token, id } = await refunded()
+        await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+        const e = await exceptionFor(token)
+        expect(e.evidence_fingerprints).toHaveLength(1)
+        const { attestAll, ...form } = reviewedForm(e)
+        expect(attestAll).toBe('yes')
+
+        expect(await exAction('acknowledgeExceptionReport', form)).toBe('exception_acknowledge_report_done')
+      })
+    })
+
+    describe('a cancellation the provider answers as paid', () => {
+      it('leaves nothing on the payment it completes, and tells nobody', async () => {
+        H.contract = FIXTURE_CONTRACT
+        const token = await startAndToken(user(L1))
+        says(token, 'completed')
+
+        await ipn(token, { type_event: 'sale_canceled' })
+
+        expect((await rowFor(token)).status).toBe('completed')
+        expect(await exceptionFor(token)).toBeNull()
+        H.emails = []
+        await sweep()
+        expect(H.emails).toHaveLength(0)
+      })
+    })
+
+    describe('a flag an administrator raised', () => {
+      it('the queue says so until it is reviewed, and not for a flag a notification raised', async () => {
+        const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+        const { token, id } = await refunded()
+
+        await exAction('reopenExceptionAfterReview', { exceptionId: id, note: NOTE, attest: 'yes' })
+        const flagged = await exceptionFor(token)
+        expect(flagged.administrator_flagged_at).not.toBeNull()
+        expect((await paymentExceptionQueue())![0].administratorFlaggedAt).toBe(flagged.administrator_flagged_at)
+
+        await exAction('acknowledgeExceptionReport', reviewedForm(flagged))
+        expect((await exceptionFor(token)).administrator_flagged_at).toBeNull()
+
+        const paymentId = (await rowFor(token)).id
+        await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', null, $2)`, [paymentId, 'b'.repeat(64)])
+        expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+        expect((await paymentExceptionQueue())![0].administratorFlaggedAt).toBeNull()
+      })
+    })
+
+    describe('a request that does not say what it showed', () => {
+      async function twoNotifications() {
+        H.contract = null
+        const { token } = await closedAttempt('expired')
+        await ipn(token)
+        await ipn(token, { item_price: '1' })
+        const e = await exceptionFor(token)
+        expect(e.evidence_fingerprints).toHaveLength(2)
+        return { token, id: e.id as string }
+      }
+
+      it('needs the further attestation to dismiss, and the record stays open', async () => {
+        const { token, id } = await twoNotifications()
+
+        expect(await exAction('dismissException', { exceptionId: id, note: NOTE, attest: 'yes' })).toBe('close_attestation_required')
+
+        expect((await exceptionFor(token)).state).toBe('open')
+      })
+
+      it('needs it to record access, and to record a refund', async () => {
+        const { id } = await twoNotifications()
+        expect(await exAction('recordExceptionAccess', { exceptionId: id, note: NOTE })).toBe('close_attestation_required')
+        const { attestAll, ...bare } = refundFields(id)
+        expect(attestAll).toBe('yes')
+        expect(await exAction('recordExceptionRefund', bare)).toBe('close_attestation_required')
+      })
+
+      it('a form that says it showed one report still does not need it', async () => {
+        H.contract = null
+        const { token } = await closedAttempt('expired')
+        await ipn(token)
+        const { id } = await exceptionFor(token)
+
+        expect(await exAction('dismissException', { exceptionId: id, note: NOTE, attest: 'yes', evidenceCount: '1' })).toBe('exception_dismiss_done')
+      })
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a form from before a change is refused, whatever a count would say', () => {
+    const reviewed = reviewedForm
+    const report = (id: string, fingerprint: string) =>
+      asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', null, $2)`, [id, fingerprint])
+    const unverified = (id: string, fingerprint: string) =>
+      asRole('service_role', null, `select public.payment_exception_report($1, 'unverified_report', 'ipn', 'ipn_signature_mismatch', $2)`, [id, fingerprint])
+
+    /** A refund already recorded on a closed attempt, then a further paid report: flagged. */
+    async function flaggedAfterRefund() {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })).toBe('exception_refund_recorded')
+      await ipn(token, { client_phone: '771111111' })
+      const flagged = await exceptionFor(token)
+      expect(flagged.post_settlement_report_at).not.toBeNull()
+      return { token, id, exceptionId: e.id as string, flagged }
+    }
+
+    it('a flag raised again on a flagged record makes an older acknowledgement stale', async () => {
+      const { token, exceptionId } = await flaggedAfterRefund()
+      const tab = reviewed(await exceptionFor(token))
+      expect(await exAction('reopenExceptionAfterReview', { exceptionId, note: NOTE, attest: 'yes' })).toBe('exception_reopen_after_review_done')
+      const raised = (await exceptionFor(token)).administrator_flagged_at
+      expect(raised).not.toBeNull()
+
+      expect(await exAction('acknowledgeExceptionReport', tab)).toBe('exception_refused_evidence_changed')
+
+      const after = await exceptionFor(token)
+      expect(after.post_settlement_report_at).not.toBeNull()
+      expect(after.administrator_flagged_at).toBe(raised)
+      expect(await exAction('acknowledgeExceptionReport', reviewed(after))).toBe('exception_acknowledge_report_done')
+    })
+
+    it('a review and a new notification that cancel out cannot pass an older form', async () => {
+      const { token, id, exceptionId } = await flaggedAfterRefund()
+      const tab = reviewed(await exceptionFor(token))
+      expect(await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))).toBe('exception_acknowledge_report_done')
+      await unverified(id, 'c'.repeat(64))
+      const held = await exceptionFor(token)
+      expect(held.evidence_fingerprints).toContain('c'.repeat(64))
+      expect(held.repeat_alert_due_at).not.toBeNull()
+
+      expect(await exAction('acknowledgeExceptionReport', tab)).toBe('exception_refused_evidence_changed')
+
+      const after = await exceptionFor2(exceptionId)
+      expect(after.reviewed_fingerprints).not.toContain('c'.repeat(64))
+      expect(after.repeat_alert_due_at).toBe(held.repeat_alert_due_at)
+    })
+
+    it('an amount named after a form loaded makes that refund form stale', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed')
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      const e = await exceptionFor(token)
+      expect(e.payment_received).toBe('confirmed_by_provider')
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      const tab = { ...refundFields(e.id), ...reviewed(await exceptionFor(token)) }
+
+      says(token, 'completed', 500)
+      await exAction('recheckException', { exceptionId: e.id })
+      expect((await exceptionFor(token)).provider_amount).toBe(500)
+
+      expect(await exAction('recordExceptionRefund', tab)).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).refund_state).toBe('required')
+    })
+
+    it.each([
+      ['confirmExceptionReceipt', 'reported'],
+      ['requireExceptionRefund', 'confirmed'],
+      ['withdrawExceptionRefund', 'required'],
+      ['withdrawExceptionReceipt', 'confirmed'],
+      ['reopenExceptionAfterReview', 'dismissed'],
+    ] as const)('%s refuses a form from before a change as well', async (action, stage) => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      const { id: exceptionId } = await exceptionFor(token)
+      const base = { exceptionId, note: NOTE, attest: 'yes', attestAll: 'yes' }
+      if (stage === 'confirmed' || stage === 'required') await exAction('confirmExceptionReceipt', base)
+      if (stage === 'required') await exAction('requireExceptionRefund', base)
+      if (stage === 'dismissed') await exAction('dismissException', base)
+      const tab = reviewed(await exceptionFor(token))
+      await unverified(id, 'd'.repeat(64))
+
+      expect(await exAction(action, tab)).toBe('exception_refused_evidence_changed')
+      expect(await exAction(action, reviewed(await exceptionFor(token)))).toBe(
+        action === 'confirmExceptionReceipt' ? 'exception_confirm_received_done'
+          : action === 'requireExceptionRefund' ? 'exception_require_refund_done'
+          : action === 'withdrawExceptionRefund' ? 'exception_withdraw_refund_done'
+          : action === 'withdrawExceptionReceipt' ? 'exception_withdraw_receipt_done'
+          : 'exception_reopen_after_review_done')
+    })
+
+    it.each(['acknowledgeExceptionReport', 'recordExceptionAccess', 'reopenExceptionAfterReview', 'requireExceptionRefund'] as const)(
+      '%s with no version says nothing about what it showed, and is refused', async (action) => {
+        const { token, exceptionId } = await flaggedAfterRefund()
+        const before = await exceptionFor(token)
+        const notice = await exAction(action, { exceptionId, note: NOTE, attest: 'yes', attestAll: 'yes', evidenceCount: '1', evidenceVersion: '' })
+        expect(notice).toBe('exception_refused_evidence_version_required')
+        const after = await exceptionFor(token)
+        expect(after.post_settlement_report_at).toBe(before.post_settlement_report_at)
+        expect(after.repeat_alert_due_at).toBe(before.repeat_alert_due_at)
+      })
+
+    it('a dismissal with no version ends no alert', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      H.emailMode = 'fail'
+      await ipn(token)
+      H.emailMode = 'ok'
+      const e = await exceptionFor(token)
+      const notice = await exAction('dismissException', { exceptionId: e.id, note: NOTE, attest: 'yes', evidenceCount: '1', evidenceVersion: '' })
+      expect(notice).toBe('exception_refused_evidence_version_required')
+      const after = await exceptionFor(token)
+      expect(after.state).toBe('open')
+      expect(after.alert_sent_at).toBeNull()
+    })
+
+    it('a flood cannot keep every form out of date: the version stops at the cap, and repeats never move it', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      const start = (await exceptionFor(token)).evidence_version as number
+      for (let i = 0; i < 10; i++) await ipn(token)
+      await ipn(token, { type_event: 'sale_canceled' })
+      const afterRepeats = (await exceptionFor(token)).evidence_version as number
+      expect(afterRepeats).toBeLessThanOrEqual(start + 1)
+
+      for (let i = 0; i < 30; i++) await report(id, (i + 100).toString(16).padStart(64, 'a'))
+      const atCap = await exceptionFor(token)
+      expect(atCap.evidence_overflow_at).not.toBeNull()
+      expect(atCap.evidence_version).toBeLessThanOrEqual(afterRepeats + 20)
+
+      const form = reviewed(atCap)
+      for (let i = 0; i < 10; i++) await report(id, (i + 200).toString(16).padStart(64, 'b'))
+      expect((await exceptionFor(token)).evidence_version).toBe(atCap.evidence_version)
+      expect(await exAction('dismissException', form)).toBe('exception_dismiss_done')
+    })
+
+    it('nobody sets the version, the table owner included: it moves by one whatever a write says', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await asSuper(`update public.payment_exceptions set evidence_version = 999 where id = $1`, [e.id])
+      expect((await exceptionFor(token)).evidence_version).toBe(e.evidence_version + 1)
+      await asSuper(`update public.payment_exceptions set evidence_version = 0 where id = $1`, [e.id])
+      expect((await exceptionFor(token)).evidence_version).toBe(e.evidence_version + 2)
+    })
+
+    it('a provider alternating between amounts it has named moves the version, so the form shows the current one', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed', 90000)
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      says(token, 'completed', 60000)
+      const e = await exceptionFor(token)
+      await exAction('recheckException', { exceptionId: e.id })
+      says(token, 'completed', 90000)
+      await exAction('recheckException', { exceptionId: e.id })
+      const tab = reviewed(await exceptionFor(token))
+      says(token, 'completed', 60000)
+      await exAction('recheckException', { exceptionId: e.id })
+
+      expect(await exAction('requireExceptionRefund', tab)).toBe('exception_refused_evidence_changed')
+      const now = await exceptionFor(token)
+      expect(now.provider_amount).toBe(60000)
+      expect(now.repeat_alert_due_at).not.toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — amounts that are not a claim, and answers that are', () => {
+    const reviewed = reviewedForm
+
+    it('an unpaid answer saying 0 claims nothing: no record, no alert, no conflict', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', 0)
+      await age(token, 90)
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+      expect(H.emails).toHaveLength(0)
+      expect((await rowFor(token)).status).toBe('processing')
+    })
+
+    it('a failed answer saying 0 closes the attempt as failed', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'failed', 0)
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('failed')
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('an unpaid answer naming a real other amount is still a conflict', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending', 5000)
+      await age(token, 90)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'amount_mismatch' })
+    })
+
+    it('paid at 0 on an attempt in flight proves no money: recorded, not completed, and it has an honest exit', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed', 0)
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('processing')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported' })
+      expect(e.provider_answers).toContain('settlement_amount_mismatch')
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: e.payment_id, reason: NOTE, attest: 'yes' })).toBe('close_done_exception')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      const freed = await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1])
+      expect(freed[0].r).toBeNull()
+    })
+
+    it('paid at a negative amount on a closed attempt is the same: reported, and it can be dismissed', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed', -5)
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported' })
+      expect(await exAction('dismissException', reviewed(e))).toBe('exception_dismiss_done')
+    })
+
+    it('a paid answer with no readable amount where the contract requires one is kept, not lost, on an attempt in flight', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      P.status.set(token, { success: 1, payment: { status: 'completed', currency: 'XOF', ref_command: P.refs.get(token) } })
+      await age(token, 90)
+      await sweep()
+      expect((await rowFor(token)).status).toBe('processing')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported', provider_answer: 'settlement_amount_unreadable' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: e.payment_id, reason: NOTE, attest: 'yes' })).toBe('close_done_exception')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+
+    it('the same answer on a closed attempt is kept once, on a sweep, and the next sweep adds no alert', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      P.status.set(token, { success: 1, payment: { status: 'completed', currency: 'XOF', ref_command: P.refs.get(token) } })
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported', provider_answer: 'settlement_amount_unreadable' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('an amount and a currency that both differ are both kept', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      P.status.set(token, { success: 1, payment: { status: 'completed', amount: 90000, currency: 'EUR', ref_command: P.refs.get(token) } })
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      const e = await exceptionFor(token)
+      expect(e.provider_answers).toEqual(expect.arrayContaining(['settlement_amount_mismatch', 'settlement_currency_mismatch']))
+      expect(e.provider_amount).toBe(90000)
+    })
+
+    it('the same on an attempt in flight', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      P.status.set(token, { success: 1, payment: { status: 'completed', amount: 90000, currency: 'EUR', ref_command: P.refs.get(token) } })
+      await age(token, 90)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.provider_answers).toEqual(expect.arrayContaining(['settlement_amount_mismatch', 'settlement_currency_mismatch']))
+      expect(e.provider_amount).toBe(90000)
+    })
+
+    it('a notification in JSON claiming a numeric currency is read as a claim, as the same one in a form is', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      const json = await ipn(token, { currency: 952 })
+      expect(json.body.detail).toBe('currency_mismatch')
+      expect(await exceptionFor(token)).toMatchObject({ last_signal: 'currency_mismatch' })
+    })
+
+    it('on a completed payment the provider then saying paid at our amount takes back its other amount', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'completed', 90000)
+      await ipn(token, { type_event: 'sale_canceled' })
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', provider_amount: 90000 })
+
+      says(token, 'completed')
+      await exAction('recheckException', { exceptionId: e.id })
+
+      const now = await exceptionFor(token)
+      expect(now.provider_amount).toBeNull()
+      expect(now.provider_amounts.map(Number)).toEqual(expect.arrayContaining([90000, PRICE_C1]))
+      expect(now.last_signal).not.toBe('provider_paid')
+      await exAction('requireExceptionRefund', reviewed(now))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(await exceptionFor(token)), amount: String(PRICE_C1) })).toBe('exception_refund_recorded_access_live')
+    })
+
+    it('a completed payment with no record, and the provider saying paid at our amount, stays with no record', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await age(token, 90)
+      await sweep()
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('the amount the provider last named, or any it named before, can be recorded as refunded, and only under its own attestation', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed', 90000)
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      const e = await exceptionFor(token)
+      says(token, 'completed', 60000)
+      await exAction('recheckException', { exceptionId: e.id })
+      await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))
+      const form = reviewed(await exceptionFor(token))
+
+      const attempt = (extra: Record<string, string>) => exAction('recordExceptionRefund', { ...refundFields(e.id), ...form, ...extra })
+      expect(await attempt({ amount: '90000', attestAll: '' })).toBe('close_attestation_required')
+      expect(await attempt({ amount: '70000' })).toBe('exception_refused_refund_amount_invalid')
+      expect(await attempt({ amount: String(PRICE_C1) })).toBe('exception_refused_refund_charged_attestation_required')
+      expect(await attempt({ amount: '90000' })).toBe('exception_refund_recorded')
+      expect((await exceptionFor(token)).refund_amount).toBe(90000)
+    })
+
+    it('a provider that said paid and then failed leaves a dismissal open to an attested check, and the money it confirmed on the record', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed')
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      const e = await exceptionFor(token)
+      expect(e.payment_received).toBe('confirmed_by_provider')
+      expect(await exAction('dismissException', reviewed(e))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+
+      says(token, 'failed')
+      await exAction('recheckException', { exceptionId: e.id })
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_not_paid')
+
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'nothing_to_return', payment_received: 'confirmed_by_provider' })
+    })
+
+    it('saying paid once more reopens that dismissal once, and a provider that keeps flipping cannot keep blocking the learner', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed')
+      await adminAction('verifyPaytechPayment', { paymentId: id })
+      const e = await exceptionFor(token)
+      const flip = async (word: string) => { says(token, word); await exAction('recheckException', { exceptionId: e.id }) }
+      await flip('failed')
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+
+      await flip('completed')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+      await flip('failed')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+
+      await flip('completed')
+      await flip('failed')
+      await flip('completed')
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('money an administrator confirmed is not dismissed that way: they withdraw their own confirmation first', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a person is not left stranded, or left unaware', () => {
+    const reviewed = reviewedForm
+    const ageAlert = (token: string, days: number) => {
+      if (!/^[A-Za-z0-9_-]+$/.test(token)) throw new Error('harness: unsafe identifier')
+      return db.exec(
+        `alter table public.payment_exceptions disable trigger payment_exceptions_guard;
+         update public.payment_exceptions set alert_sent_at = now() - make_interval(days => ${Number(days)})
+          where payment_id = (select id from public.payments where provider_token = '${token}');
+         alter table public.payment_exceptions enable trigger payment_exceptions_guard;`)
+    }
+
+    it('an attempt the provider keeps calling pending can be closed under attestation once it is old', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      const { id } = await rowFor(token)
+      await age(token, 6 * 24 * 60)
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_refused_provider_says_pending')
+      expect((await rowFor(token)).status).toBe('processing')
+
+      await age(token, 8 * 24 * 60)
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_done')
+      expect((await rowFor(token)).status).toBe('expired')
+    })
+
+    it('an open record alerted on more than a week ago is alerted on again, once a week and no more', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await sweep()
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      await ageAlert(token, 8)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a manual close whose attestation cannot be written does not happen', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      await asSuper(`create trigger harness_audit_fault before insert on public.audit_log for each row execute function public.harness_fail()`)
+      try {
+        expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_refused_audit_unavailable')
+      } finally {
+        await asSuper(`drop trigger harness_audit_fault on public.audit_log`)
+      }
+      expect((await rowFor(token)).status).toBe('processing')
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_done')
+      const rows = await asSuper(`select event_type, reason from public.audit_log where event_type in ('payment.manual_close_attested', 'payment.manually_closed') order by created_at, event_type`)
+      expect(rows.map(r => r.event_type)).toEqual(expect.arrayContaining(['payment.manual_close_attested', 'payment.manually_closed']))
+      expect(rows.every(r => r.reason === NOTE)).toBe(true)
+    })
+
+    it('a settled record that needs nothing is never reminded about', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await ageAlert(token, 8)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a report arriving while the alert goes out stays due', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      H.emailMode = 'fail'
+      await ipn(token)
+      H.emailMode = 'ok'
+      H.emailDuring = async () => {
+        H.emailDuring = null
+        await asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, 90000)`, [id])
+      }
+      H.emails = []
+      await sendAlerts()
+      expect((await exceptionFor(token)).alert_sent_at).toBeNull()
+
+      H.emails = []
+      await sendAlerts()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await exceptionFor(token)).alert_sent_at).not.toBeNull()
+    })
+
+    it('a different report arriving while the alert goes out stays due too', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const report = (fingerprint: string) => asRole('service_role', null, `select public.payment_exception_report($1, 'unverified_report', 'ipn', 'ipn_signature_mismatch', $2)`, [id, fingerprint])
+      await report('a'.repeat(64))
+      const first = (await exceptionFor(token)).repeat_alert_due_at
+      expect(first).not.toBeNull()
+      H.emailDuring = async () => {
+        H.emailDuring = null
+        await db.exec(`alter table public.payment_exceptions disable trigger payment_exceptions_guard;
+          update public.payment_exceptions set repeat_alert_due_at = now() where payment_id = '${id}';
+          alter table public.payment_exceptions enable trigger payment_exceptions_guard;`)
+      }
+      await sendAlerts()
+      expect((await exceptionFor(token)).repeat_alert_due_at).not.toBeNull()
+    })
+
+    it('a flag raised by a completion is alerted on at once, not at the next daily sweep', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { client_phone: '771111111' })
+      await ipn(token, { client_phone: '772222222' })
+      H.emails = []
+      says(token, 'completed')
+      await ipn(token, { client_phone: '772222222' })
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a normal completion sends nothing', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('the sweep budget includes the time spent alerting', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      H.emailMode = 'fail'
+      await ipn(token)
+      H.emailMode = 'ok'
+      const late = await startAndToken(user(L2))
+      says(late, 'pending')
+      await age(late, 90)
+      const real = Date.now
+      H.emailDuring = async () => {
+        H.emailDuring = null
+        const jump = real() + 60_000
+        vi.spyOn(Date, 'now').mockImplementation(() => jump)
+      }
+      H.emails = []
+      try {
+        const { body } = await sweep()
+        expect(H.emails.length).toBeGreaterThan(0)
+        expect(body.checked).toBe(0)
+      } finally {
+        vi.restoreAllMocks()
+      }
+    })
+
+    it('money a person confirmed stops being only their word when the payment completes, so there is nothing left to withdraw', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token)
+      await asRole('service_role', null, `select public.payment_exception_escalate_watching(0)`)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      expect((await exceptionFor(token)).payment_received).toBe('confirmed_by_operator')
+
+      says(token, 'completed')
+      await ipn(token)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).payment_received).toBe('confirmed_by_provider')
+
+      expect(await exAction('withdrawExceptionReceipt', { exceptionId: e.id, note: NOTE })).toBe('exception_refused_receipt_not_operator_confirmed')
+      expect((await exceptionFor(token)).payment_received).toBe('confirmed_by_provider')
+    })
+
+    it('the provider saying failed while another path completes the payment is kept, not lost', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'failed')
+      await age(token, 90)
+      P.duringStatus = async () => {
+        says(token, 'completed')
+        expect((await ipn(token)).body.detail).toBe('completed')
+        says(token, 'failed')
+      }
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid' })
+    })
+
+    it('a remembered notification that never completed keeps a later failed signature from hiding it', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', 'ipn_completing_payment', $2)`, [id, 'a'.repeat(64)])
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'unverified_report', 'ipn', 'ipn_signature_mismatch', $2)`, [id, 'b'.repeat(64)])
+      await asRole('service_role', null, `update public.payments set status = 'expired', failure_reason = 'closed_for_test' where id = $1`, [id])
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported' })
+      expect((await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r).not.toBeNull()
+    })
+
+    it('a different notification prompting an answer the provider already gave does not reopen a dismissed record on a completed payment', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await ipn(token, { type_event: 'sale_canceled' })
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      await exAction('dismissException', reviewed(e))
+      expect((await exceptionFor(token)).state).toBe('resolved')
+
+      await ipn(token, { type_event: 'sale_canceled', client_phone: '771234567' })
+
+      const after = await exceptionFor(token)
+      expect(after.state).toBe('resolved')
+      expect(after.notification_reopens).toBe(0)
+      expect(after.different_report_at).not.toBeNull()
+    })
+
+    it('an amount past the cap on a settled record is counted as needing a person', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      const report = (amount: number) => asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, $2)`, [id, amount])
+      for (let i = 0; i < 20; i++) await report(50_000 + i)
+      const e = await exceptionFor(token)
+      expect(e.provider_amounts).toHaveLength(20)
+      await exAction('requireExceptionRefund', reviewed(e))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(await exceptionFor(token)), amount: '50019' })).toBe('exception_refund_recorded')
+      const settled = await exceptionFor(token)
+      expect(settled).toMatchObject({ state: 'resolved', repeat_count: 0 })
+      const { countOpenPaymentExceptions: before } = await import('@/lib/payments/payment-exceptions')
+      expect(await before()).toBe(0)
+
+      await report(99_000)
+      const after = await exceptionFor(token)
+      expect(after.repeat_count).toBeGreaterThan(0)
+      expect(after.different_report_at).not.toBeNull()
+      const { countOpenPaymentExceptions } = await import('@/lib/payments/payment-exceptions')
+      expect(await countOpenPaymentExceptions()).toBe(1)
+    })
+
+    it('a refund decision on more than one report needs its own attestation', async () => {
+      H.contract = null
+      const { token, id } = await closedAttempt('expired')
+      await ipn(token)
+      await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', null, $2)`, [id, 'e'.repeat(64)])
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      const form = reviewed(await exceptionFor(token))
+      expect(await exAction('requireExceptionRefund', { ...form, attestAll: '' })).toBe('close_attestation_required')
+      expect(await exAction('requireExceptionRefund', form)).toBe('exception_require_refund_done')
+    })
+
+    it('what the administrator wrote is kept on the record for the next one to read', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const e = await exceptionFor(token)
+      expect(e.last_decision_note).toBe(NOTE)
+      expect(e.last_decision_at).not.toBeNull()
+      const { paymentExceptionQueue } = await import('@/lib/payments/payment-exceptions')
+      expect((await paymentExceptionQueue())![0]).toMatchObject({ lastDecisionNote: NOTE })
+    })
+
+    it('a refund recorded again writes an audit row, though it changes nothing', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })).toBe('exception_refund_already_recorded')
+      const rows = (await exceptionAudit()).filter(a => a.event_type === 'payment.exception_refund_repeated')
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ actor_type: 'admin', actor_id: ADM })
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the sweep looks where it did not', () => {
+    it('it asks about recently completed payments, and a provider now saying failed reaches a person', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      const before = await rowFor(token)
+      says(token, 'failed')
+      H.emails = []
+
+      const { body } = await sweep()
+
+      expect(body.completedChecked).toBe(1)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await rowFor(token)).toMatchObject({ status: 'completed', completed_at: before.completed_at })
+      expect((await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r).toBeNull()
+
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect((await exceptionFor(token)).report_count).toBeGreaterThanOrEqual(1)
+    })
+
+    it('a provider still saying paid at our amount leaves nothing behind', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('with no confirmed contract it asks nothing about them', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      H.contract = null
+      P.statusCalls = []
+      const { body } = await sweep()
+      expect(body.completedChecked).toBeUndefined()
+      expect(P.statusCalls).toEqual([])
+    })
+
+    it('with more stale attempts than both ends hold, the middle can still be reached', async () => {
+      H.contract = FIXTURE_CONTRACT
+      await db.exec(`alter table public.payments disable trigger payments_transition_guard;
+        insert into public.payments (amount, currency, method, status, reference, provider, provider_mode, provider_token, created_at)
+        select 45000, 'XOF', 'card', 'processing', 'SWEEP-MID-' || g, 'paytech', 'test', 'tokmiddle' || lpad(g::text, 6, '0'), now() - make_interval(hours => 1000 - g)
+          from generate_series(1, 600) g;
+        alter table public.payments enable trigger payments_transition_guard;`)
+      const random = vi.spyOn(Math, 'random').mockReturnValueOnce(0.5).mockReturnValueOnce(0.9)
+      try {
+        expect((await sweep()).body.checked).toBe(25)
+      } finally {
+        random.mockRestore()
+      }
+      const reached = await asSuper(`select reference from public.payments where reference like 'SWEEP-MID-%' and failure_reason = 'payment_identity_incomplete'`)
+      expect(reached.map(r => Number(String(r.reference).slice('SWEEP-MID-'.length))).some(n => n > 200 && n <= 400)).toBe(true)
+    }, 120_000)
+  })
+
+  describe('XP-PAYTECH-06B — pinned after the mutation set was rewritten', () => {
+    const reviewed = reviewedForm
+    const ageAlert = (token: string, days: number) => {
+      if (!/^[A-Za-z0-9_-]+$/.test(token)) throw new Error('harness: unsafe identifier')
+      return db.exec(
+        `alter table public.payment_exceptions disable trigger payment_exceptions_guard;
+         update public.payment_exceptions set alert_sent_at = now() - make_interval(days => ${Number(days)})
+          where payment_id = (select id from public.payments where provider_token = '${token}');
+         alter table public.payment_exceptions enable trigger payment_exceptions_guard;`)
+    }
+
+    it('a paid answer with no readable amount on a completed payment is kept for a person', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      P.status.set(token, { success: 1, payment: { status: 'completed', currency: 'XOF', ref_command: P.refs.get(token) } })
+      await ipn(token, { type_event: 'sale_canceled' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_unreadable' })
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('an amount and a currency that both differ on a completed payment are both kept', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      P.status.set(token, { success: 1, payment: { status: 'completed', amount: 90000, currency: 'EUR', ref_command: P.refs.get(token) } })
+      await ipn(token, { type_event: 'sale_canceled' })
+      const e = await exceptionFor(token)
+      expect(e.provider_answers).toEqual(expect.arrayContaining(['settlement_amount_mismatch', 'settlement_currency_mismatch']))
+      expect(e.provider_amount).toBe(90000)
+    })
+
+    it('the provider saying paid at our amount writes nothing on a record it has not questioned', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      await ipn(token, { client_phone: '771111111' })
+      const before = await exceptionFor(token)
+      await exAction('recheckException', { exceptionId: before.id })
+      const after = await exceptionFor(token)
+      expect(after.evidence_version).toBe(before.evidence_version)
+      expect(after.report_count).toBe(before.report_count)
+    })
+
+    it('money a person confirmed is not dismissed because the provider said not paid: they withdraw it first', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await exAction('recheckException', { exceptionId: e.id })
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_not_paid')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+      expect(await exAction('withdrawExceptionReceipt', reviewed(await exceptionFor(token)))).toBe('exception_withdraw_receipt_done')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+    })
+
+    it('the reason for a refund is kept on the record too', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: 'Confirmé après relecture du tableau.', attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: 'Le remboursement doit être effectué.' })
+      await exAction('recordExceptionRefund', { ...refundFields(e.id), note: 'Remboursé, référence relue au tableau.', evidenceCount: '1' })
+      expect((await exceptionFor(token)).last_decision_note).toBe('Remboursé, référence relue au tableau.')
+    })
+
+    it('a reminder is the sweep\'s alone: a report on one payment sends nothing about another', async () => {
+      H.contract = null
+      const { token: first } = await closedAttempt('expired')
+      await ipn(first)
+      await ageAlert(first, 8)
+      const { token: second } = await closedAttempt('expired', user(L2), C2)
+      H.emails = []
+      await ipn(second)
+      const reference = (await rowFor(second)).reference
+      expect(H.emails.length).toBeGreaterThan(0)
+      expect(H.emails.every(m => m.reference === reference)).toBe(true)
+    })
+
+    it('no reminder comes before the week is out', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await ageAlert(token, 3)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a flagged record waiting for a person is reminded about as well', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      await exAction('confirmExceptionReceipt', { exceptionId: e.id, note: NOTE, attest: 'yes' })
+      await exAction('requireExceptionRefund', { exceptionId: e.id, note: NOTE })
+      await exAction('recordExceptionRefund', { ...refundFields(e.id), evidenceCount: '1' })
+      await ipn(token, { client_phone: '771111111' })
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+      await ageAlert(token, 8)
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a provider that names an amount, then one it named, marks a settled record once it has moved', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      const report = (amount: number) => asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, $2)`, [id, amount])
+      await report(90000)
+      await report(60000)
+      const e = await exceptionFor(token)
+      await exAction('requireExceptionRefund', reviewed(e))
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(await exceptionFor(token)), amount: '60000' })).toBe('exception_refund_recorded')
+      await report(90000)
+      const after = await exceptionFor(token)
+      expect(after.provider_amount).toBe(90000)
+      expect(after.repeat_count).toBe(1)
+      expect(after.different_report_at).not.toBeNull()
+      expect(after.post_settlement_report_at).toBeNull()
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a provider going back on what it said reaches a person', () => {
+    const reviewed = reviewedForm
+    const blocking = async () => (await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r
+    const raw = (token: string, status: string, amount: unknown, currency: unknown) =>
+      P.status.set(token, { success: 1, payment: { status, amount, currency, ref_command: P.refs.get(token) ?? 'X' } })
+
+    /** Closed, paid at an amount it named, then not paid, then dismissed. */
+    async function dismissedAfterNotPaid(say: (token: string) => void) {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      say(token)
+      await sweep()
+      says(token, 'failed')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_not_paid')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+      H.emails = []
+      return token
+    }
+
+    it('paid at an amount it already named, after a dismissal on "not paid", reopens the record', async () => {
+      const token = await dismissedAfterNotPaid(t => says(t, 'completed', 50000))
+      says(token, 'completed', 50000)
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await blocking()).not.toBeNull()
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('paid in a currency it already named, after a dismissal on "not paid", reopens the record too', async () => {
+      const token = await dismissedAfterNotPaid(t => raw(t, 'completed', PRICE_C1, 'USD'))
+      raw(token, 'completed', PRICE_C1, 'USD')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('after that it is marked and alerted on at most weekly, and it blocks nobody', async () => {
+      const token = await dismissedAfterNotPaid(t => says(t, 'completed', 50000))
+      says(token, 'completed', 50000)
+      await sweep()
+      says(token, 'failed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      H.emails = []
+
+      says(token, 'completed', 50000)
+      await sweep()
+
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'nothing_to_return' })
+      expect(e.different_report_at).not.toBeNull()
+      expect(e.repeat_alert_due_at).not.toBeNull()
+      expect(await blocking()).toBeNull()
+      const { countOpenPaymentExceptions } = await import('@/lib/payments/payment-exceptions')
+      expect(await countOpenPaymentExceptions()).toBe(1)
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+
+      // It keeps changing its mind: the alert stays weekly, whatever it says next.
+      H.emails = []
+      says(token, 'failed')
+      await sweep()
+      says(token, 'completed', 50000)
+      await sweep()
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect(await blocking()).toBeNull()
+    })
+
+    it('on a completed payment, not paid, dismissed, paid, then not paid again is marked and alerted on', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      says(token, 'completed')
+      await sweep()
+      H.emails = []
+      says(token, 'failed')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.different_report_at).not.toBeNull()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect((await rowFor(token)).status).toBe('completed')
+      const audit = (await exceptionAudit()).map(a => a.event_type)
+      expect(audit).toContain('payment.exception_provider_answer_recorded')
+    })
+
+    it('a sweep hearing "not paid" again after "paid" writes that down, so the dismissal it allows is open', async () => {
+      const token = await dismissedAfterNotPaid(t => says(t, 'completed', 50000))
+      says(token, 'completed', 50000)
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).not.toBe('provider_not_paid')
+      says(token, 'failed')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_not_paid')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+    })
+
+    it('"not paid" is what a dismissed attempt the provider never called paid should hear, every day, and writes nothing', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      const before = await exceptionFor(token)
+      H.contract = FIXTURE_CONTRACT
+      says(token, 'failed')
+      await sweep()
+      await sweep()
+      expect(await exceptionFor(token)).toEqual(before)
+    })
+
+    it('paid at nothing in another currency on a closed attempt proves no money, and can be dismissed', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      raw(token, 'completed', 0, 'USD')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported' })
+      expect(e.provider_answers).toEqual(expect.arrayContaining(['settlement_amount_mismatch', 'settlement_currency_mismatch']))
+      expect(await exAction('dismissException', reviewed(e))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+    })
+
+    it('money the provider confirmed can be dismissed if its last word is that the attempt can still be paid', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+      says(token, 'pending')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_pending')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', payment_received: 'confirmed_by_provider' })
+      expect(await blocking()).toBeNull()
+    })
+
+    it('a word the contract does not list, on a completed payment, reaches a person and leaves the shape in the log', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      const before = await rowFor(token)
+      says(token, 'reversed')
+      H.logs = []
+      H.emails = []
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised' })
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(H.logs.some(l => l.level === 'warn' && String(l.args[1]).includes('status response not recognised'))).toBe(true)
+      expect(await rowFor(token)).toMatchObject({ status: 'completed', completed_at: before.completed_at })
+      expect(await blocking()).toBeNull()
+    })
+
+    it('the same word on a closed attempt may mean money moved, so it opens a record for a person, and is logged', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      says(token, 'reversed')
+      H.logs = []
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised' })
+      expect(H.logs.some(l => l.level === 'warn' && String(l.args[1]).includes('status response not recognised'))).toBe(true)
+    })
+
+    it('a form from before the payment completed is out of date, on a record the provider had already confirmed', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      raw(token, 'completed', PRICE_C1, 'USD')
+      await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })
+      const held = await exceptionFor(token)
+      expect(held).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+      await exAction('requireExceptionRefund', reviewed(held))
+      const stale = { ...refundFields(held.id), ...reviewed(await exceptionFor(token)) }
+      H.emails = []
+      says(token, 'completed')
+      await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })
+      expect((await rowFor(token)).status).toBe('completed')
+
+      expect(await exAction('recordExceptionRefund', stale)).toBe('exception_refused_evidence_changed')
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('an attested close past the week stays closed: a sweep hearing "pending" again does not block the learner', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      const { id } = await rowFor(token)
+      await age(token, 8 * 24 * 60)
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_done')
+      H.emails = []
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+      expect(H.emails).toHaveLength(0)
+      expect(await blocking()).toBeNull()
+    })
+
+    it('but it paying after that close is still news', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      const { id } = await rowFor(token)
+      await age(token, 8 * 24 * 60)
+      await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })
+      says(token, 'completed')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('a sweep stopped by its budget does not read as a finished sweep', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token } = await closedAttempt('expired')
+      H.emailMode = 'fail'
+      await ipn(token)
+      H.emailMode = 'ok'
+      const late = await startAndToken(user(L2))
+      says(late, 'pending')
+      await age(late, 90)
+      const real = Date.now
+      H.emailDuring = async () => {
+        H.emailDuring = null
+        const jump = real() + 60_000
+        vi.spyOn(Date, 'now').mockImplementation(() => jump)
+      }
+      try {
+        const { body } = await sweep()
+        expect(body.stoppedAtBudget).toBe(1)
+      } finally {
+        vi.restoreAllMocks()
+      }
+      expect(await asSuper(`select count(*)::int as n from public.audit_log where event_type = 'payment.reconciliation_sweep_finished'`)).toEqual([{ n: 0 }])
+    })
+
+    it('an amount past the limit leaves a trail, because nothing else keeps it', async () => {
+      H.contract = FIXTURE_CONTRACT
+      const { token, id } = await closedAttempt('expired')
+      const report = (amount: number) => asRole('service_role', null, `select public.payment_exception_report($1, 'completion_refused', 'sweep', 'settlement_amount_mismatch', null, $2)`, [id, amount])
+      for (let i = 0; i < 20; i++) await report(50_000 + i)
+      await report(99_000)
+      await report(98_000)
+      expect((await exceptionFor(token)).provider_amount).toBe(98_000)
+      const said = (await exceptionAudit()).map(a => (a.metadata as { providerAmount?: number }).providerAmount)
+      expect(said).toEqual(expect.arrayContaining([99_000, 98_000]))
+    })
+  })
+
   describe('XP-PAYTECH-05 — only an authorised administrator', () => {
     const ACTIONS = [
       'acknowledgeExceptionReport', 'confirmExceptionReceipt', 'withdrawExceptionReceipt', 'dismissException', 'requireExceptionRefund',
-      'withdrawExceptionRefund', 'recordExceptionAccess', 'recordExceptionRefund', 'recheckException',
+      'withdrawExceptionRefund', 'recordExceptionAccess', 'recordExceptionRefund', 'recheckException', 'reopenExceptionAfterReview',
     ] as const
 
     it.each(ACTIONS)('%s redirects a non-administrator and writes nothing', async (name) => {
@@ -2956,10 +8132,10 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       expect(H.emails).toEqual([])
     })
 
-    it('a partly failed alert stays due', async () => {
+    it('an alert every address refused stays due', async () => {
       H.contract = null
       const { token } = await closedAttempt('expired')
-      H.emailMode = 'fail_second'
+      H.emailMode = 'fail'
       await ipn(token)
       expect((await exceptionFor(token)).alert_sent_at).toBeNull()
     })
@@ -3037,7 +8213,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'settled_normally', payment_received: 'confirmed_by_provider' })
     })
 
-    it('an escalation does not resolve a real conflict on the same payment', async () => {
+    it('a notification\'s conflict on the same payment is flagged when it completes, with no refund on offer', async () => {
       H.contract = null
       const token = await startAndToken(user(L1))
       await ipn(token, { final_item_price: '1' })
@@ -3047,7 +8223,9 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       says(token, 'completed')
       await ipn(token)
       expect((await rowFor(token)).status).toBe('completed')
-      expect((await exceptionFor(token)).state).toBe('open')
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.post_settlement_report_at).not.toBeNull()
     })
   })
 
@@ -3192,7 +8370,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       await ipn(older)
       const { token: newer } = await closedAttempt('expired', user(L2), C1)
       await ipn(newer)
-      await exAction('dismissException', { exceptionId: (await exceptionFor(newer)).id, note: NOTE, attest: 'yes' })
+      await exAction('dismissException', { exceptionId: (await exceptionFor(newer)).id, note: NOTE, attest: 'yes', attestAll: 'yes' })
 
       const queue = (await paymentExceptionQueue())!
       expect(queue.map(e => e.state)).toEqual(['open', 'resolved'])
@@ -3213,8 +8391,1421 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       const { token: open } = await closedAttempt('expired', user(L2), C1)
       await ipn(open)
       expect(await countOpenPaymentExceptions()).toBe(1)
-      await exAction('dismissException', { exceptionId: (await exceptionFor(open)).id, note: NOTE, attest: 'yes' })
+      await exAction('dismissException', { exceptionId: (await exceptionFor(open)).id, note: NOTE, attest: 'yes', attestAll: 'yes' })
       expect(await countOpenPaymentExceptions()).toBe(0)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — what the provider says after a decision, and who hears of it', () => {
+    const reviewed = reviewedForm
+    const blocking = async () => (await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r as string | null
+    const raw = (token: string, status: unknown, amount: unknown, currency: unknown) =>
+      P.status.set(token, { success: 1, payment: { status, amount, currency, ref_command: P.refs.get(token) ?? 'X' } })
+    const weekPasses = async () => db.exec(`alter table public.payment_exceptions disable trigger payment_exceptions_guard;
+      update public.payment_exceptions set alert_sent_at = alert_sent_at - interval '8 days',
+         repeat_alerted_at = repeat_alerted_at - interval '8 days',
+         repeat_alert_due_at = repeat_alert_due_at - interval '8 days';
+      alter table public.payment_exceptions enable trigger payment_exceptions_guard;`)
+    const refundAll = async (token: string) => {
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e) })).toMatch(/exception_refund_recorded/)
+    }
+    const page = async () => {
+      const { renderToStaticMarkup } = await import('react-dom/server')
+      const { listPaymentExceptions } = await import('@/lib/payments/payment-exceptions')
+      const { default: ExceptionQueue } = await import('@/app/(admin)/admin/payments/ExceptionQueue')
+      return renderToStaticMarkup(ExceptionQueue({ exceptions: await listPaymentExceptions() } as never))
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    }
+    beforeEach(() => { H.contract = FIXTURE_CONTRACT })
+
+    // ── after a refund ──
+    it('paid after "not paid" on a refunded attempt flags it and blocks a new attempt, from the sweep as from a re-check', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      await refundAll(token)
+      H.emails = []
+      says(token, 'failed')
+      await sweep()
+      const afterFailed = await exceptionFor(token)
+      expect(afterFailed).toMatchObject({ state: 'resolved', resolution: 'refund_confirmed', provider_answer: 'provider_not_paid' })
+      expect(afterFailed.post_settlement_report_at).toBeNull()
+      expect(H.emails).toHaveLength(0)
+      expect(await blocking()).toBeNull()
+
+      says(token, 'completed')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.provider_answers).toEqual(expect.arrayContaining(['provider_not_paid', 'provider_paid']))
+      expect(await blocking()).not.toBeNull()
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('the same after a refund on money an administrator confirmed', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      expect(await exAction('confirmExceptionReceipt', reviewed(await exceptionFor(token)))).toBe('exception_confirm_received_done')
+      await refundAll(token)
+      H.emails = []
+      says(token, 'failed')
+      await sweep()
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('the same after a refund on a payment that had completed', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'completed', 60000)
+      await sweep()
+      says(token, 'completed')
+      await sweep()
+      await refundAll(token)
+      expect((await rowFor(token)).status).toBe('refunded')
+      says(token, 'failed')
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).toBeNull()
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).post_settlement_report_at).not.toBeNull()
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('"not paid" on a refunded attempt is written once, flags nothing and tells nobody', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      await refundAll(token)
+      H.emails = []
+      says(token, 'failed')
+      await sweep()
+      const once = await exceptionFor(token)
+      await sweep()
+      await sweep()
+      expect(await exceptionFor(token)).toEqual(once)
+      expect(H.emails).toHaveLength(0)
+    })
+
+    // ── a completed payment the provider stops questioning ──
+    it('the page says so when the provider takes back what it questioned on a completed payment', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      expect(await page()).toContain('PayTech contredit l’état enregistré')
+      const before = (await exceptionFor(token)).evidence_version
+      H.emails = []
+      says(token, 'completed')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.evidence_version).toBeGreaterThan(before)
+      expect(e.provider_answer).toBeNull()
+      expect(e.provider_answers).toEqual(['provider_not_paid', 'provider_paid_at_ours'])
+      const after = await page()
+      expect(after).toContain('Dernière réponse de PayTech : paiement confirmé au montant enregistré')
+      expect(after).not.toContain('PayTech contredit l’état enregistré')
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a payment completing after the provider refused it at another amount no longer reads as refused', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 60000)
+      await sweep()
+      expect(await page()).toContain('n’a pas pu honorer')
+      says(token, 'completed')
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', provider_answer: null, provider_amount: null })
+      expect(e.provider_answers).toEqual(['settlement_amount_mismatch', 'provider_paid_at_ours'])
+      const after = await page()
+      expect(after).not.toContain('n’a pas pu honorer')
+      expect(after).toContain('Dernière réponse de PayTech : paiement confirmé au montant enregistré')
+    })
+
+    // ── a dismissal ──
+    it('paid after "pending" on a dismissal reopens and blocks, as it does after "not paid"', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      says(token, 'pending')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+      H.emails = []
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await blocking()).not.toBeNull()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('a provider going between "pending" and "paid" reopens a dismissal once, not every time', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      says(token, 'pending')
+      await sweep()
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      says(token, 'completed')
+      await sweep()
+      says(token, 'pending')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+      expect(await blocking()).toBeNull()
+    })
+
+    it.each([
+      ['paid at nothing', (t: string) => says(t, 'completed', 0)],
+      ['paid with no readable amount', (t: string) => raw(t, 'completed', 'n/a', 'XOF')],
+      ['a word the contract does not list', (t: string) => raw(t, 'chargeback', PRICE_C1, 'XOF')],
+    ])('money the provider confirmed can be dismissed when its last word is %s, and what it confirmed stays', async (_name, last) => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      last(token)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.payment_received).toBe('confirmed_by_provider')
+      expect(await exAction('dismissException', reviewed(e))).toBe('exception_dismiss_done')
+      expect((await exceptionFor(token)).payment_received).toBe('confirmed_by_provider')
+      expect(await blocking()).toBeNull()
+    })
+
+    it('money the provider confirmed cannot be dismissed while its last word names an amount', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      says(token, 'completed', 60000)
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+    })
+
+    // ── a refund below what the provider named ──
+    it('the amount charged can be recorded under a further attestation when the provider named more', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', 46350)
+      await sweep()
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      const attempt = (extra: Record<string, string>) => exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e), ...extra })
+      expect(await attempt({ amount: String(PRICE_C1) })).toBe('exception_refused_refund_charged_attestation_required')
+      expect(await attempt({ amount: '46000', attestCharged: 'yes' })).toBe('exception_refused_refund_amount_invalid')
+      expect(await attempt({ amount: '5000', attestCharged: 'yes' })).toBe('exception_refused_refund_partial_not_supported')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await attempt({ amount: String(PRICE_C1), attestCharged: 'yes' })).toBe('exception_refund_recorded')
+      expect((await exceptionFor(token)).refund_amount).toBe(PRICE_C1)
+      const row = (await exceptionAudit()).filter(a => a.event_type === 'payment.exception_refund_confirmed').pop()
+      expect(row?.metadata).toMatchObject({ chargedAttested: true, providerAmount: 46350 })
+    })
+
+    // ── who hears of it ──
+    it('a different report on a settled record is alerted on again each week until someone reviews it', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      await ipn(token, { extra: 'second payment?' })
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      await weekPasses()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect(await exAction('acknowledgeExceptionReport', reviewed(await exceptionFor(token)))).toBe('exception_acknowledge_report_done')
+      await weekPasses()
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('the same on a dismissed attempt whose notifications have used up their limit', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      for (const k of ['a', 'b', 'c']) {
+        await exAction('dismissException', reviewed(await exceptionFor(token)))
+        await ipn(token, { extra: k })
+      }
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await ipn(token, { extra: 'd' })
+      expect(await blocking()).toBeNull()
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await weekPasses()
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+    })
+
+    it('an identical notification on a reviewed record reminds nobody once its own alert has gone', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      await exAction('dismissException', reviewed(await exceptionFor(token)))
+      await ipn(token)
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await weekPasses()
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a different notification arriving while an alert goes out is still alerted on', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      await ipn(token, { extra: 'A' })
+      H.emails = []
+      let once = true
+      H.emailDuring = async () => {
+        if (!once) return
+        once = false
+        await ipn(token, { extra: 'B' })
+      }
+      await sweep()
+      H.emailDuring = null
+      H.emails = []
+      await sweep()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('the same notification arriving while an alert goes out mails nobody again', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      await ipn(token, { extra: 'A' })
+      H.emails = []
+      let once = true
+      H.emailDuring = async () => {
+        if (!once) return
+        once = false
+        await ipn(token, { extra: 'A' })
+      }
+      await sweep()
+      H.emailDuring = null
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+    })
+
+    it('a notification a completion left unreviewed, sent again, is not a plain repeat', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'pending')
+      await ipn(token, { extra: 'A' })
+      await ipn(token, { extra: 'B' })
+      expect((await exceptionFor(token)).evidence_fingerprints).toHaveLength(2)
+      await age(token, 20)
+      says(token, 'completed')
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).different_report_at).toBeNull()
+      await ipn(token, { extra: 'B' })
+      expect((await exceptionFor(token)).different_report_at).not.toBeNull()
+    })
+
+    // ── an unlisted word ──
+    it('an unlisted status on a closed attempt opens a record for a person, once', async () => {
+      const { token } = await closedAttempt('expired')
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      H.emails = []
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported', provider_answer: 'settlement_status_unrecognised' })
+      expect(e.provider_amount).toBeNull()
+      expect(H.emails.map(m => m.to)).toEqual(OWNERS)
+      H.emails = []
+      await sweep()
+      const again = await exceptionFor(token)
+      expect(again.evidence_version).toBe(e.evidence_version)
+      expect(again.provider_answers).toEqual(['settlement_status_unrecognised'])
+      expect(H.emails).toHaveLength(0)
+      expect(await exAction('dismissException', reviewed(again))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+    })
+
+    it('an unlisted status reaches the person deciding an open record, and keeps a notification what it said', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const v = (await exceptionFor(token)).evidence_version
+      raw(token, 'paid_out', PRICE_C1, 'XOF')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.evidence_version).toBeGreaterThan(v)
+      expect(e.provider_answers).toEqual(['settlement_status_unrecognised'])
+      expect(await page()).toContain('un état de paiement que le contrat ne connaît pas')
+      await ipn(token, { extra: 'again' })
+      expect((await exceptionFor(token)).evidence_fingerprints).toHaveLength(2)
+    })
+
+    it('the headline does not call an unlisted status or an unreadable amount a different amount', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      const html = await page()
+      expect(html).toContain('PayTech donne un état de paiement que le contrat ne connaît pas')
+      expect(html).not.toContain('Montant signalé différent du montant enregistré')
+    })
+
+    // ── a manual close ──
+    it('an attempt a person closed is still asked about after 30 days, so a late payment comes back', async () => {
+      const token = await startAndToken(user(L1))
+      const { id } = await rowFor(token)
+      await age(token, 40 * 24 * 60)
+      says(token, 'pending')
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_done')
+      says(token, 'completed')
+      P.statusCalls = []
+      await sweep()
+      expect(P.statusCalls).toContain(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('any other closed attempt past 30 days is left alone', async () => {
+      const { token } = await closedAttempt('expired')
+      await age(token, 40 * 24 * 60)
+      says(token, 'completed')
+      P.statusCalls = []
+      await sweep()
+      expect(P.statusCalls).toHaveLength(0)
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('a status check in progress cannot overwrite the mark of a manual close', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 8 * 24 * 60)
+      says(token, 'pending')
+      const { id } = await rowFor(token)
+      P.duringStatus = async () => {
+        expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_done')
+      }
+      await sweep()
+      expect(await rowFor(token)).toMatchObject({ status: 'expired', failure_reason: 'manual_reconciliation_unpaid' })
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+      expect(await blocking()).toBeNull()
+    })
+
+    // ── the sweep's budget ──
+    it('the alert run keeps to its share of the budget, so the provider is still asked', async () => {
+      for (let i = 0; i < 30; i++) {
+        const cid = `30000000-0000-4000-8000-${String(i).padStart(12, '0')}`
+        await asSuper(`insert into public.courses (id, slug, title, price, currency, is_published) values ($1, $2, 't', 45000, 'XOF', true)`, [cid, `budget-${i}`])
+        const { token } = await closedAttempt('expired', user(L1), cid)
+        await ipn(token)
+      }
+      await asSuper(`alter table public.payment_exceptions disable trigger payment_exceptions_guard`)
+      await asSuper(`update public.payment_exceptions set alert_sent_at = null`)
+      await asSuper(`alter table public.payment_exceptions enable trigger payment_exceptions_guard`)
+      const stale = await startAndToken(user(L2), C2)
+      await age(stale, 60)
+      P.status.set(stale, { success: 1, payment: { status: 'completed', amount: 30000, currency: 'XOF', ref_command: P.refs.get(stale) } })
+      const real = Date.now.bind(Date)
+      let offset = 0
+      const spy = vi.spyOn(Date, 'now').mockImplementation(() => real() + offset)
+      H.emailDuring = async () => { offset += 1_000 }
+      H.emails = []
+      const r = await sweep()
+      spy.mockRestore()
+      H.emailDuring = null
+      expect(H.emails.length).toBeLessThan(30)
+      expect(r.body.stoppedAtBudget).toBe(1)
+      expect(r.body.checked).toBeGreaterThan(0)
+      expect((await rowFor(stale)).status).toBe('completed')
+    })
+  })
+
+  describe('XP-PAYTECH-06B — a word that proves nothing, a close that stays a close, a sweep that did not finish', () => {
+    const reviewed = reviewedForm
+    const blocking = async () => (await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r as string | null
+    const raw = (token: string, status: unknown, amount: unknown, currency: unknown) =>
+      P.status.set(token, { success: 1, payment: { status, amount, currency, ref_command: P.refs.get(token) ?? 'X' } })
+    const page = async () => {
+      const { renderToStaticMarkup } = await import('react-dom/server')
+      const { listPaymentExceptions } = await import('@/lib/payments/payment-exceptions')
+      const { default: ExceptionQueue } = await import('@/app/(admin)/admin/payments/ExceptionQueue')
+      return renderToStaticMarkup(ExceptionQueue({ exceptions: await listPaymentExceptions() } as never))
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    }
+    const finishedAt = async () => (await (await import('@/lib/payments/payment-exceptions')).lastSweepFinishedAt()).at
+    const refundAll = async (token: string) => {
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e) })).toMatch(/exception_refund_recorded/)
+    }
+    const personCloses = async (token: string) => {
+      const { id } = await rowFor(token)
+      says(token, 'pending')
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_done')
+      expect((await rowFor(token)).failure_reason).toBe('manual_reconciliation_unpaid')
+    }
+    beforeEach(() => { H.contract = FIXTURE_CONTRACT })
+
+    // ── a person reporting another payment on a completed one ──
+    it('a completed payment the provider has re-confirmed is flagged by that report, and no refund can follow', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      says(token, 'completed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await exAction('reopenExceptionAfterReview', reviewed(await exceptionFor(token)))).toBe('exception_reopen_after_review_done')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'nothing_to_return' })
+      expect(e.administrator_flagged_at).not.toBeNull()
+      expect(await page()).not.toContain('Un remboursement est nécessaire')
+      expect(await exAction('requireExceptionRefund', reviewed(e))).not.toBe('exception_require_refund_done')
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('so is one where the provider only ever named another amount before it completed at ours', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 60000)
+      await sweep()
+      says(token, 'completed')
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await exAction('reopenExceptionAfterReview', reviewed(await exceptionFor(token)))).toBe('exception_reopen_after_review_done')
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('resolved')
+      expect(e.administrator_flagged_at).not.toBeNull()
+    })
+
+    it('while the provider\'s last word still questions it, that report opens the record again', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await exAction('reopenExceptionAfterReview', reviewed(await exceptionFor(token)))).toBe('exception_reopen_after_review_done')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+
+    // ── "can still be paid" on an attempt in flight ──
+    it('"pending" after "paid at another amount" in flight reaches the record, once, and a person can act on it', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 60000)
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(before).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch', payment_received: 'confirmed_by_provider' })
+      await sweep()
+      H.emails = []
+      says(token, 'pending')
+      await sweep()
+      const told = await exceptionFor(token)
+      expect(told.provider_answer).toBe('provider_pending')
+      expect(told.provider_answers).toContain('provider_pending')
+      expect(told.last_signal).toBe(before.last_signal)
+      expect(told.evidence_version).toBeGreaterThan(before.evidence_version)
+      expect((await rowFor(token)).status).toBe('processing')
+      expect(await page()).toContain('que ce paiement peut encore être réglé')
+
+      await sweep()
+      expect(H.emails.map(m => m.to).sort()).toEqual([...OWNERS].sort())
+      const again = await exceptionFor(token)
+      expect(again.evidence_version).toBe(told.evidence_version)
+      expect(again.report_count).toBe(told.report_count)
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect((await rowFor(token)).status).toBe('processing')
+    })
+
+    it('"pending" in flight with nothing more on record writes nothing, and a completion still settles normally', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'pending')
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+
+      const next = await startAndToken(user(L2))
+      await age(next, 20)
+      says(next, 'pending')
+      await ipn(next)
+      const watched = await exceptionFor(next)
+      expect(watched).toMatchObject({ state: 'watching', provider_answer: null })
+      await sweep()
+      expect(await exceptionFor(next)).toMatchObject({ state: 'watching', provider_answer: null, report_count: watched.report_count })
+      expect((await exceptionFor(next)).provider_answers).toEqual([])
+      says(next, 'completed')
+      await sweep()
+      expect(await exceptionFor(next)).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+    })
+
+    // ── a person's close ──
+    it('a notification that fails a check does not rewrite a person\'s close, and the sweep goes on asking', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60 * 24 * 40)
+      await personCloses(token)
+      await ipn(token, { item_price: '1' })
+      const after = await rowFor(token)
+      expect(after.failure_reason).toBe('manual_reconciliation_unpaid')
+      expect(after.last_ipn_at).not.toBeNull()
+      await ipn(token, { hmac_compute: 'deadbeef' })
+      expect((await rowFor(token)).failure_reason).toBe('manual_reconciliation_unpaid')
+
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      P.statusCalls = []
+      says(token, 'completed')
+      await sweep()
+      expect(P.statusCalls.filter(t => t === token).length).toBeGreaterThan(0)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+    })
+
+    it('in flight, a notification that fails a check is still noted on the attempt', async () => {
+      const token = await startAndToken(user(L1))
+      await ipn(token, { item_price: '1' })
+      expect((await rowFor(token)).failure_reason).toBe('ipn_amount_mismatch')
+    })
+
+    // ── dismissing what the provider confirmed ──
+    it.each([
+      ['it was not paid', (t: string) => says(t, 'failed'), 'exception_dismiss_done'],
+      ['it can still be paid', (t: string) => says(t, 'pending'), 'exception_dismiss_done'],
+      ['paid, at no amount it can read', (t: string) => raw(t, 'completed', 'n/a', 'XOF'), 'exception_refused_payment_confirmed_cannot_dismiss'],
+      ['a word the contract does not list', (t: string) => raw(t, 'chargeback', 60000, 'XOF'), 'exception_refused_payment_confirmed_cannot_dismiss'],
+    ] as [string, (_t: string) => void, string][])('with a named amount standing and its last word that %s, the dismissal is decided on that', async (_name, say, notice) => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', 60000)
+      await sweep()
+      say(token)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.provider_amount).toBe(60000)
+      expect(await exAction('dismissException', reviewed(e))).toBe(notice)
+    })
+
+    it.each([
+      ['no amount it can read', (t: string) => raw(t, 'completed', 'n/a', 'XOF')],
+      ['a word the contract does not list', (t: string) => raw(t, 'chargeback', PRICE_C1, 'XOF')],
+    ] as [string, (_t: string) => void][])('with no amount standing and its last word %s, money it confirmed can be dismissed', async (_name, say) => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      say(token)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ payment_received: 'confirmed_by_provider', provider_amount: null })
+      expect(await exAction('dismissException', reviewed(e))).toBe('exception_dismiss_done')
+    })
+
+    // ── a word nobody has defined ──
+    it('in flight it opens a record for a person, which blocks a new attempt until they have read it, and alerts once', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      H.emails = []
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported', provider_answer: 'settlement_status_unrecognised' })
+      expect((await rowFor(token)).status).toBe('processing')
+      expect(await blocking()).not.toBeNull()
+      await sweep()
+      expect(H.emails.map(m => m.to).sort()).toEqual([...OWNERS].sort())
+      H.emails = []
+      await sweep()
+      expect(H.emails).toHaveLength(0)
+      expect(await page()).toContain('PayTech donne un état de paiement que le contrat ne connaît pas')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+    })
+
+    it('in flight, on a record that already exists, it becomes the last word and blocks as that record did', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 60000)
+      await sweep()
+      raw(token, 'chargeback', 60000, 'XOF')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised', payment_received: 'confirmed_by_provider' })
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('that the record could not be written is what the run reports', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'storage down', details: null } }
+      const res = await sweep()
+      H.rpcFaultFor = null
+      expect(res.body.exception_unrecorded).toBe(1)
+    })
+
+    it('after a recorded refund it flags the record, blocks a new attempt, and the page says what it is', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      await refundAll(token)
+      raw(token, 'refunded', PRICE_C1, 'XOF')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', resolution: 'refund_confirmed', provider_answer: 'settlement_status_unrecognised' })
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(await blocking()).not.toBeNull()
+      const { renderToStaticMarkup } = await import('react-dom/server')
+      const { listPaymentExceptions } = await import('@/lib/payments/payment-exceptions')
+      const { default: ExceptionQueue } = await import('@/app/(admin)/admin/payments/ExceptionQueue')
+      const text = renderToStaticMarkup(ExceptionQueue({ exceptions: await listPaymentExceptions({ states: ['resolved'], flaggedOnly: true }) } as never))
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+      expect(text).toContain('PayTech a donné après ce règlement un état de paiement que le contrat ne connaît pas')
+      expect(text).not.toContain('Un paiement a été signalé après ce règlement')
+    })
+
+    it('after a completed payment was refunded it does the same', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      await refundAll(token)
+      expect((await rowFor(token)).status).toBe('refunded')
+      raw(token, 'refunded', PRICE_C1, 'XOF')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.provider_answer).toBe('settlement_status_unrecognised')
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('on an attempt a person closed it opens a record, and a person can clear it', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60 * 24 * 8)
+      await personCloses(token)
+      raw(token, 'expired', PRICE_C1, 'XOF')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'reported', provider_answer: 'settlement_status_unrecognised' })
+      expect(await blocking()).not.toBeNull()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeDefined()
+    })
+
+    it('on a closed attempt a person dismissed it reopens the record once, and said again it does not', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised' })
+      expect(await blocking()).not.toBeNull()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('resolved')
+      expect(await blocking()).toBeNull()
+    })
+
+    it('it does not lift a block that something else holds', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'reported', provider_answer: 'settlement_status_unrecognised' })
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('it does not lift the block "can still be paid" set', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'pending')
+      await sweep()
+      expect(await blocking()).not.toBeNull()
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('settlement_status_unrecognised')
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('on a completed payment a person dismissed, it opens the record again: the provider no longer says what it said', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised' })
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('a signed paid notification on a closed attempt keeps its claim when the provider answers that word', async () => {
+      const { token } = await closedAttempt('expired')
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', payment_received: 'reported', last_signal: 'paid_hint' })
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      expect(await blocking()).not.toBeNull()
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+      // The next status check keeps the word as what the provider last said.
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('settlement_status_unrecognised')
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('after a dismissal, a different signed paid notification with that word reopens the record', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      await ipn(token, { extra: 'A' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint' })
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('after a recorded refund, a different signed paid notification with that word flags the record', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      await refundAll(token)
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      await ipn(token, { extra: 'A' })
+      const e = await exceptionFor(token)
+      expect(e.post_settlement_report_at).not.toBeNull()
+      expect(e.last_signal).toBe('paid_hint')
+      expect(await blocking()).not.toBeNull()
+      expect((await checkout(user(L1), C1)).redirectUrl).toBeUndefined()
+    })
+
+    it('a reviewed notification replayed while the provider answers that word: the replay counts, the word reopens, once', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', last_signal: 'paid_hint', provider_answer: 'settlement_status_unrecognised' })
+      expect(e.evidence_fingerprints).toHaveLength(1)
+      expect(await blocking()).not.toBeNull()
+      await ipn(token)
+      const again = await exceptionFor(token)
+      expect(again.evidence_version).toBe(e.evidence_version)
+      expect(again.state).toBe('open')
+    })
+
+    it('a notification on an attempt in flight stays watched, and the sweep then keeps the word and opens it', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      await ipn(token)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'watching', last_signal: 'paid_hint', payment_received: 'reported', provider_answer: null })
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised' })
+    })
+
+    it.each([['0', 0], ['a negative amount', -5]] as [string, number][])('the provider saying a completed payment was paid at %s still leaves a record, naming no amount', async (_name, amount) => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'completed', amount)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch', provider_amount: null })
+    })
+
+    // ── paid, and completion keeps failing ──
+    it('a refusal a retry can clear opens no record, however old the attempt, and the retry completes it', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60 * 25)
+      says(token, 'completed')
+      H.rpcFaultFor = { fn: 'complete_payment', error: { message: 'relation does not exist', details: null, code: '42P01' } }
+      H.emails = []
+      await sweep()
+      await sweep()
+      expect(await exceptionFor(token)).toBeNull()
+      expect(H.emails).toHaveLength(0)
+      expect(await blocking()).toBeNull()
+      H.rpcFaultFor = null
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    // ── what the provider last said ──
+    const refuseCompletion = () => asSuper(`insert into public.entitlements (user_id, course_id, source, status, revoked_at, revoked_reason) values ($1, $2, 'MANUAL_ADMIN', 'REVOKED', now(), 'test')`, [L1, C1])
+
+    it('"paid", refused, after "pending" is its last word, so the money it confirmed cannot be dismissed', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 60000)
+      await sweep()
+      says(token, 'pending')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_pending')
+      await refuseCompletion()
+      says(token, 'completed')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ payment_received: 'confirmed_by_provider', provider_answer: null, provider_amount: null })
+      expect(await exAction('dismissException', reviewed(e))).toBe('exception_refused_payment_confirmed_cannot_dismiss')
+      expect(await page()).not.toContain('Classer : rien à rembourser')
+    })
+
+    it('"pending" after "paid", refused, is kept as its last word, and going back and forth reaches a person', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      await refuseCompletion()
+      says(token, 'completed')
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ payment_received: 'confirmed_by_provider', provider_answer: null })
+      says(token, 'pending')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answer).toBe('provider_pending')
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).provider_answers).toContain('provider_paid')
+      says(token, 'pending')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      const dismissed = await exceptionFor(token)
+      says(token, 'completed')
+      await sweep()
+      const third = await exceptionFor(token)
+      expect(third.provider_answer).toBeNull()
+      expect(third.evidence_version).toBeGreaterThan(dismissed.evidence_version)
+      expect(third.repeat_alert_due_at).not.toBeNull()
+    })
+
+    it.each([
+      ['a word the contract does not list', (t: string) => raw(t, 'chargeback', PRICE_C1, 'XOF')],
+      ['paid at no amount it can read', (t: string) => raw(t, 'completed', 'n/a', 'XOF')],
+      ['paid at nothing', (t: string) => says(t, 'completed', 0)],
+    ] as [string, (_t: string) => void][])('"paid" after %s and a dismissal is news: it reopens the record and blocks a new attempt', async (_name, say) => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      say(token)
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      expect(await blocking()).toBeNull()
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('a cancellation that cannot be kept on a closed attempt is retried, with no contract', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'simulated', code: 'XX000' } }
+      const res = await ipn(token, { type_event: 'sale_canceled' })
+      H.rpcFaultFor = null
+      expect(res.status).toBe(503)
+    })
+
+    // ── who gets the alert ──
+    it('with one address failing the others are told once, not on every run, and the failure is logged', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      H.emailMode = 'fail_second'
+      H.emails = []
+      H.logs = []
+      await ipn(token)
+      const counts = [H.emails.length]
+      expect((await exceptionFor(token)).alert_sent_at).not.toBeNull()
+      expect(H.logs.some(l => l.level === 'error' && JSON.stringify(l.args).includes('alert'))).toBe(true)
+      for (let i = 0; i < 3; i++) {
+        H.emails = []
+        await sweep()
+        counts.push(H.emails.length)
+      }
+      expect(counts).toEqual([OWNERS.length, 0, 0, 0])
+    })
+
+    it('a stamp the database refused is not counted as sent', async () => {
+      const { token } = await closedAttempt('expired')
+      H.contract = null
+      H.emailMode = 'fail'
+      await ipn(token)
+      H.emailMode = 'ok'
+      H.emailDuring = async () => {
+        H.emailDuring = null
+        await asRole('service_role', null, `select public.payment_exception_report($1, 'paid_hint', 'ipn', null, $2)`, [(await rowFor(token)).id, 'd'.repeat(64)])
+      }
+      const res = await sweep()
+      expect(H.emails.length).toBeGreaterThan(0)
+      expect(res.body.alertsSent ?? 0).toBe(0)
+      expect((await exceptionFor(token)).alert_sent_at).toBeNull()
+    })
+
+    // ── a run that left work undone ──
+    it('a run whose escalation failed is not a finished sweep', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await ageException(token, 48)
+      H.rpcFaultFor = { fn: 'payment_exception_escalate_watching', error: { message: 'boom', details: null } }
+      const res = await sweep()
+      H.rpcFaultFor = null
+      expect(res.status).toBe(200)
+      expect(res.body.escalationFailed).toBe(1)
+      expect(await finishedAt()).toBeNull()
+      await sweep()
+      expect(await finishedAt()).not.toBeNull()
+    })
+
+    it('a run that could not write a report is not a finished sweep', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      H.rpcFaultFor = { fn: 'payment_exception_report', error: { message: 'storage down', details: null } }
+      const res = await sweep()
+      H.rpcFaultFor = null
+      expect(res.body.exception_unrecorded).toBe(1)
+      expect(await finishedAt()).toBeNull()
+    })
+
+    // ── a refund below the provider's last amount ──
+    it('a figure below the provider\'s last amount needs the attestation that it is all that was received, even one it named', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', 5000)
+      await sweep()
+      says(token, 'completed', 60000)
+      await sweep()
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      const fields = { ...refundFields(e.id), ...reviewed(e), amount: '5000' }
+      expect(await exAction('recordExceptionRefund', fields)).toBe('exception_refused_refund_charged_attestation_required')
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await exAction('recordExceptionRefund', { ...fields, attestCharged: 'yes' })).toMatch(/exception_refund_recorded/)
+    })
+
+    it('the provider\'s last amount itself needs no such attestation', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed', 5000)
+      await sweep()
+      says(token, 'completed', 60000)
+      await sweep()
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e), amount: '60000' })).toMatch(/exception_refund_recorded/)
+    })
+  })
+
+  describe('XP-PAYTECH-06B — the provider\'s last word beside a notification, and a refusal a completion settles', () => {
+    const reviewed = reviewedForm
+    const blocking = async () => (await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r as string | null
+    const raw = (token: string, status: unknown, amount: unknown, currency: unknown) =>
+      P.status.set(token, { success: 1, payment: { status, amount, currency, ref_command: P.refs.get(token) ?? 'X' } })
+    const page = async () => {
+      const { renderToStaticMarkup } = await import('react-dom/server')
+      const { listPaymentExceptions } = await import('@/lib/payments/payment-exceptions')
+      const { default: ExceptionQueue } = await import('@/app/(admin)/admin/payments/ExceptionQueue')
+      return renderToStaticMarkup(ExceptionQueue({ exceptions: await listPaymentExceptions() } as never))
+        .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    }
+    const refuseCompletion = () => asSuper(`insert into public.entitlements (user_id, course_id, source, status, revoked_at, revoked_reason) values ($1, $2, 'MANUAL_ADMIN', 'REVOKED', now(), 'test')`, [L1, C1])
+    beforeEach(() => { H.contract = FIXTURE_CONTRACT })
+
+    it('an unlisted word beside a replayed notification becomes the provider\'s last word and moves the version; the claim stays the notification\'s', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(before).toMatchObject({ state: 'open', provider_answer: 'provider_not_paid', last_signal: 'paid_hint', payment_received: 'reported' })
+      const form = reviewed(before)
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      expect((await ipn(token)).status).toBe(200)
+      const after = await exceptionFor(token)
+      expect(after).toMatchObject({ state: 'open', provider_answer: 'settlement_status_unrecognised', last_signal: 'paid_hint', payment_received: 'reported' })
+      expect(after.provider_answers).toEqual(expect.arrayContaining(['provider_not_paid', 'settlement_status_unrecognised']))
+      expect(after.evidence_version).toBeGreaterThan(before.evidence_version)
+      expect(await exAction('dismissException', form)).toBe('exception_refused_evidence_changed')
+      expect(await blocking()).not.toBeNull()
+      expect(await page()).toContain('un état de paiement que le contrat ne connaît pas')
+    })
+
+    it('after a dismissal, a different notification beside that word reopens the record with the notification\'s claim and the provider\'s word', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      says(token, 'failed')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      await ipn(token, { extra: 'A' })
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint', provider_answer: 'settlement_status_unrecognised' })
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('if the word beside a notification cannot be written, the notification is retried, and the claim it made is kept', async () => {
+      const { token } = await closedAttempt('expired')
+      raw(token, 'processing_at_bank', PRICE_C1, 'XOF')
+      H.rpcFaultFor = { fn: 'payment_exception_report', when: a => a.p_detail === 'settlement_status_unrecognised', error: { message: 'storage down', details: null } }
+      const res = await ipn(token)
+      H.rpcFaultFor = null
+      expect(res.status).toBe(503)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'paid_hint', provider_answer: null })
+    })
+
+    it('a refusal 062 later honours, with nothing else on the record, is settled by that completion', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      await refuseCompletion()
+      says(token, 'completed')
+      await sweep()
+      const refused = await exceptionFor(token)
+      expect(refused).toMatchObject({ state: 'open', first_signal: 'completion_refused', last_signal: 'completion_refused', payment_received: 'confirmed_by_provider', provider_answer: null })
+      expect((await rowFor(token)).status).toBe('processing')
+      await asSuper(`delete from public.entitlements where user_id = $1 and course_id = $2`, [L1, C1])
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      const settled = await exceptionFor(token)
+      expect(settled).toMatchObject({ state: 'resolved', resolution: 'settled_normally', refund_state: 'not_required', payment_received: 'confirmed_by_provider' })
+      expect(settled.post_settlement_report_at).toBeNull()
+      const [{ n }] = await asSuper(`select count(*)::int as n from public.audit_log where event_type = 'payment.exception_settled' and metadata ->> 'exceptionId' = $1`, [settled.id])
+      expect(n).toBe(1)
+      expect(await page()).not.toContain('n’a pas pu honorer')
+    })
+
+    it('a refusal a person has acted on stays open through a completion', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      await refuseCompletion()
+      says(token, 'completed')
+      await sweep()
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      await asSuper(`delete from public.entitlements where user_id = $1 and course_id = $2`, [L1, C1])
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+  })
+
+  describe('XP-PAYTECH-06B — what the mutation run found untested', () => {
+    const reviewed = reviewedForm
+    const blocking = async () => (await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r as string | null
+    const raw = (token: string, status: unknown, amount: unknown, currency: unknown) =>
+      P.status.set(token, { success: 1, payment: { status, amount, currency, ref_command: P.refs.get(token) ?? 'X' } })
+    const refundAll = async (token: string) => {
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e) })).toMatch(/exception_refund_recorded/)
+    }
+    beforeEach(() => { H.contract = FIXTURE_CONTRACT })
+
+    // ── the version ──
+    it('a record cannot start with a version', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      const { id } = await rowFor(token)
+      await expect(asSuper(`insert into public.payment_exceptions (payment_id, state, first_signal, last_signal, payment_received, evidence_version)
+                            values ($1, 'open', 'paid_hint', 'paid_hint', 'reported', 1)`, [id])).rejects.toThrow(/must_start_clean/)
+    })
+
+    it('a report escalating from watching to open moves the version, and nothing else about it', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      const watched = await exceptionFor(token)
+      expect(watched.state).toBe('watching')
+      const stale = reviewed(watched)
+      await ageException(token, 48)
+      await sweep()
+      const opened = await exceptionFor(token)
+      expect(opened.state).toBe('open')
+      expect(opened.evidence_version).toBe(watched.evidence_version + 1)
+      expect(await exAction('dismissException', stale)).toBe('exception_refused_evidence_changed')
+    })
+
+    it('the provider going back to a word it gave before moves the version, though the list of its words does not change', async () => {
+      const { token } = await closedAttempt('expired')
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      raw(token, 'completed', 'n/a', 'XOF')
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(before.provider_answer).toBe('settlement_amount_unreadable')
+      const stale = reviewed(before)
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      const after = await exceptionFor(token)
+      expect(after.provider_answer).toBe('settlement_status_unrecognised')
+      expect(after.provider_answers).toEqual(before.provider_answers)
+      expect(after.evidence_version).toBe(before.evidence_version + 1)
+      expect(await exAction('dismissException', stale)).toBe('exception_refused_evidence_changed')
+    })
+
+    it('a refund decision moves the version, so a form from before it cannot withdraw it', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(await exAction('requireExceptionRefund', reviewed(before))).toBe('exception_require_refund_done')
+      expect(await exAction('withdrawExceptionRefund', reviewed(before))).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).refund_state).toBe('required')
+    })
+
+    it('a confirmation of receipt moves the version, so a form from before it cannot withdraw it', async () => {
+      H.contract = null
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      const before = await exceptionFor(token)
+      expect(await exAction('confirmExceptionReceipt', reviewed(before))).toBe('exception_confirm_received_done')
+      expect(await exAction('withdrawExceptionReceipt', reviewed(before))).toBe('exception_refused_evidence_changed')
+      expect((await exceptionFor(token)).payment_received).toBe('confirmed_by_operator')
+    })
+
+    it('a stored notification said again changes the headline and not the version', async () => {
+      const { token } = await closedAttempt('expired')
+      await ipn(token)
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      const before = await exceptionFor(token)
+      expect(before.last_signal).toBe('amount_mismatch')
+      const form = reviewed(before)
+      await ipn(token)
+      const after = await exceptionFor(token)
+      expect(after.last_signal).toBe('paid_hint')
+      expect(after.evidence_version).toBe(before.evidence_version)
+      expect(await exAction('dismissException', form)).toBe('exception_dismiss_done')
+    })
+
+    // ── a completion ──
+    it('a completion at our amount takes back the amount the provider named, and its last word', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 60000)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch', provider_amount: 60000 })
+      // Completed by a person's check, not by the sweep: the sweep would ask the provider again at once and hide what the completion itself does.
+      says(token, 'completed')
+      expect(await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })).toBe('verify_completed')
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', provider_answer: null, provider_amount: null })
+      expect(e.provider_answers).toContain('provider_paid_at_ours')
+      expect(e.provider_amounts.map(Number)).toEqual(expect.arrayContaining([60000, PRICE_C1]))
+    })
+
+    it('a completion at our amount after "paid at nothing" takes that word back too', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'completed', 0)
+      await sweep()
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', provider_answer: 'settlement_amount_mismatch', provider_amount: null })
+      says(token, 'completed')
+      expect(await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })).toBe('verify_completed')
+      expect((await rowFor(token)).status).toBe('completed')
+      const e = await exceptionFor(token)
+      expect(e.provider_answer).toBeNull()
+      expect(e.provider_answers).toContain('provider_paid_at_ours')
+    })
+
+    it('an open record whose money an administrator confirmed is alerted on again when the payment completes', async () => {
+      H.contract = null
+      const token = await startAndToken(user(L1))
+      await ipn(token)
+      await age(token, 20)
+      await ageException(token, 48)
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e.state).toBe('open')
+      expect(await exAction('confirmExceptionReceipt', reviewed(e))).toBe('exception_confirm_received_done')
+      await sweep()
+      expect((await exceptionFor(token)).alert_sent_at).not.toBeNull()
+      H.contract = FIXTURE_CONTRACT
+      H.emails = []
+      says(token, 'completed')
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
+      expect(H.emails.map(m => m.to).sort()).toEqual([...OWNERS].sort())
+    })
+
+    it('"not paid" after a dismissal on a word that proved nothing is kept, so that "paid" after it is seen', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      raw(token, 'chargeback', PRICE_C1, 'XOF')
+      await sweep()
+      expect(await exAction('dismissException', reviewed(await exceptionFor(token)))).toBe('exception_dismiss_done')
+      says(token, 'failed')
+      await sweep()
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'resolved', provider_answer: 'provider_not_paid' })
+      expect(e.provider_answers).toContain('provider_not_paid')
+      says(token, 'completed')
+      await sweep()
+      expect((await exceptionFor(token)).state).toBe('open')
+      expect(await blocking()).not.toBeNull()
+    })
+
+    it('the provider\'s "failed" is kept when another path completes the payment while it answers', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 20)
+      says(token, 'failed')
+      P.duringStatus = async () => {
+        says(token, 'completed')
+        expect((await ipn(token)).status).toBe(200)
+        says(token, 'failed')
+      }
+      // Through a person's check, not the sweep: the sweep would ask the provider again and write the answer that way.
+      expect(await adminAction('verifyPaytechPayment', { paymentId: (await rowFor(token)).id })).toBe('verify_already_completed')
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'provider_not_paid', payment_received: 'confirmed_by_provider' })
+    })
+
+    // ── a refund ──
+    it('on a completed payment an amount the provider named earlier, between the charge and its last amount, is still partial', async () => {
+      const token = await startAndToken(user(L1))
+      says(token, 'completed')
+      await ipn(token)
+      says(token, 'completed', 60000)
+      await sweep()
+      says(token, 'completed', 90000)
+      await sweep()
+      const e0 = await exceptionFor(token)
+      expect(e0).toMatchObject({ state: 'open', provider_amount: 90000 })
+      expect(e0.provider_amounts.map(Number)).toEqual(expect.arrayContaining([60000, 90000]))
+      expect(await exAction('requireExceptionRefund', reviewed(e0))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e), amount: '60000', attestCharged: 'yes' })).toBe('exception_refused_refund_partial_not_supported')
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('a refund form that does not say which version it showed is refused', async () => {
+      const { token } = await closedAttempt('expired')
+      says(token, 'completed')
+      await sweep()
+      expect(await exAction('requireExceptionRefund', reviewed(await exceptionFor(token)))).toBe('exception_require_refund_done')
+      const e = await exceptionFor(token)
+      // An empty value is a form that does not say; the helper fills in a missing one.
+      expect(await exAction('recordExceptionRefund', { ...refundFields(e.id), ...reviewed(e), evidenceVersion: '' })).toBe('exception_refused_evidence_version_required')
+      expect((await exceptionFor(token)).state).toBe('open')
+    })
+  })
+
+  describe('XP-PAYTECH-06C — a transient refusal after « Vérifier »', () => {
+    const fault = () => { H.rpcFaultFor = { fn: 'complete_payment', error: { message: 'relation does not exist', details: null, code: '42P01' } } }
+    const queue = async () => (await (await import('@/lib/payments/payment-exceptions')).listPaymentExceptions()) ?? []
+    beforeEach(() => { H.contract = FIXTURE_CONTRACT })
+    afterEach(() => { H.rpcFaultFor = null })
+
+    it('says a technical error happened and nothing was decided: no record, no block, nothing to refund', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60)
+      says(token, 'completed')
+      const { id } = await rowFor(token)
+      fault()
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_retry')
+      expect((await rowFor(token)).status).toBe('processing')
+      expect(await exceptionFor(token)).toBeNull()
+      expect(await queue()).toEqual([])
+      expect((await asSuper(`select public.payment_exception_blocking_reference($1, $2) as r`, [L1, C1]))[0].r).toBeNull()
+      // The only money action on an attempt with no record is a close, and the provider's "paid" refuses it.
+      expect(await adminAction('closeUnpaidPaytechPayment', { paymentId: id, reason: NOTE, attest: 'yes' })).toBe('close_refused_provider_says_paid')
+      expect((await rowFor(token)).status).toBe('processing')
+    })
+
+    it('a retry completes it, and nothing is left behind', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60)
+      says(token, 'completed')
+      const { id } = await rowFor(token)
+      fault()
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_retry')
+      H.rpcFaultFor = null
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_completed')
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toBeNull()
+    })
+
+    it('the daily sweep completes it too, with nobody told of a refusal in between', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60)
+      says(token, 'completed')
+      fault()
+      H.emails = []
+      await sweep()
+      expect((await rowFor(token)).status).toBe('processing')
+      expect(await exceptionFor(token)).toBeNull()
+      expect(H.emails).toHaveLength(0)
+      H.rpcFaultFor = null
+      await sweep()
+      expect((await rowFor(token)).status).toBe('completed')
+    })
+
+    it('a refusal that is final is a record and a decision, and the notice says so', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60)
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status, revoked_at, revoked_reason) values ($1, $2, 'MANUAL_ADMIN', 'REVOKED', now(), 'test')`, [L1, C1])
+      says(token, 'completed')
+      const { id } = await rowFor(token)
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_refused')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', last_signal: 'completion_refused', payment_received: 'confirmed_by_provider' })
+    })
+
+    it('a paid notification during the fault is watched and retried, and the retry settles it', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60)
+      says(token, 'completed')
+      fault()
+      expect((await ipn(token)).status).toBe(503)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'watching', last_signal: 'paid_hint', payment_received: 'reported' })
+      H.rpcFaultFor = null
+      expect((await ipn(token)).status).toBe(200)
+      expect((await rowFor(token)).status).toBe('completed')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+    })
+
+    it('a notification that fails its check during the fault is watched, and the completion flags it rather than settling it away', async () => {
+      const token = await startAndToken(user(L1))
+      await age(token, 60)
+      says(token, 'completed')
+      fault()
+      await ipn(token, { item_price: '46000' }, { signAmount: 46000 })
+      const opened = await exceptionFor(token)
+      // A different amount fails the signature check against the stored amount: watched, proving nothing, blocking nobody.
+      expect(opened).toMatchObject({ state: 'watching', last_signal: 'unverified_report', payment_received: 'not_established' })
+      H.rpcFaultFor = null
+      const { id } = await rowFor(token)
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_completed')
+      const after = await exceptionFor(token)
+      expect(after).toMatchObject({ state: 'resolved', resolution: 'settled_normally' })
+      expect(after.post_settlement_report_at).not.toBeNull()
+    })
+
+    it('a late paid answer on a closed attempt opens a record whatever the fault, and the notice points at it', async () => {
+      const { token, id } = await closedAttempt('expired')
+      says(token, 'completed')
+      fault()
+      expect(await adminAction('verifyPaytechPayment', { paymentId: id })).toBe('verify_already_terminal')
+      expect(await exceptionFor(token)).toMatchObject({ state: 'open', payment_received: 'confirmed_by_provider' })
     })
   })
 

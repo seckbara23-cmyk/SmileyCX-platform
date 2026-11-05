@@ -4,6 +4,7 @@ import { resolvePaytechConfig, PaytechConfigError } from '@/lib/payments/paytech
 import { paytechProcessingAvailability } from '@/lib/payments/providers'
 import { paymentDatabaseAuthority } from '@/lib/payments/payment-database-guard'
 import {
+  notificationFingerprint,
   verifyPaytechIpn,
   verifySharedSecretOnly,
   VERIFIED_STRENGTH,
@@ -80,7 +81,7 @@ const log = createLogger('api/payments/paytech/ipn')
 /** A notification body larger than this is not a notification. */
 const MAX_BODY_BYTES = 64 * 1024
 
-/** Acknowledge. The body is deliberately uninformative to the caller. */
+/** Acknowledge. Only a caller past the shared-secret check reads a `detail`. */
 function ack(detail: string) {
   return NextResponse.json({ received: true, detail }, { status: 200 })
 }
@@ -140,7 +141,8 @@ async function parseBody(req: Request): Promise<Record<string, unknown> | null> 
 function claimedAmount(payload: Record<string, unknown>): number | null {
   for (const key of ['final_item_price', 'item_price_xof', 'item_price']) {
     const v = payload[key]
-    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN
+    // A blank field claims nothing. Number('') is 0.
+    const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v.trim()) : NaN
     if (Number.isFinite(n)) return n
   }
   return null
@@ -157,6 +159,7 @@ function respond(result: ReconcileResult) {
     case 'pending':          return ack('unsettled:pending')
     case 'unknown':          return retry(`unsettled:${result.reason}`)
     case 'refused':          return result.retryable ? retry(`refused:${result.reason}`) : ack(`refused:${result.reason}`)
+    case 'conflict':         return ack(`conflict:${result.reason}`)
     case 'ineligible':       return ack(`ineligible:${result.reason}`)
     case 'exception_unrecorded': return retry('exception_unrecorded')
   }
@@ -236,6 +239,14 @@ export async function POST(req: Request) {
     config,
     expected: { amount: Number(payment.amount), refCommand: String(payment.reference) },
   })
+  // A body nested too deep to serialise is not a notification, and must not throw here.
+  let fingerprint: string
+  try {
+    fingerprint = notificationFingerprint(payload, config, verification.strength)
+  } catch {
+    log.warn({ paymentId: payment.id }, 'PayTech IPN body could not be read')
+    return NextResponse.json({ error: 'bad_request' }, { status: 400 })
+  }
 
   // `authenticated` also requires a SALE event (sale_complete / sale_canceled).
   // Refunds and transfers are delivered to other URLs; a signed notification
@@ -251,10 +262,9 @@ export async function POST(req: Request) {
     const failureReason = `ipn_${verification.reason ?? 'reference_mismatch'}`
     await touchIpnReceipt({ providerToken: token, failureReason })
     // It carried our credentials, so it is kept. It proves nothing and grants
-    // nothing, but on a closed payment nothing else would ever find it, and the
-    // signature format is not yet confirmed against a real notification.
+    // nothing, but on a closed payment nothing else would ever find it.
     const kept = await reportPaymentException({
-      paymentId: payment.id, signal: 'unverified_report', source: 'ipn', detail: failureReason,
+      paymentId: payment.id, signal: 'unverified_report', source: 'ipn', detail: failureReason, fingerprint,
     })
     if (!kept.recorded) return retry('exception_unrecorded')
     return ack('unverified')
@@ -266,17 +276,19 @@ export async function POST(req: Request) {
     log.error({ paymentId: payment.id }, 'PayTech IPN reported an amount that is not the stored one')
     await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_amount_mismatch' })
     const kept = await reportPaymentException({
-      paymentId: payment.id, signal: 'amount_mismatch', source: 'ipn', detail: 'ipn_amount_mismatch',
+      paymentId: payment.id, signal: 'amount_mismatch', source: 'ipn', detail: 'ipn_amount_mismatch', fingerprint,
     })
     if (!kept.recorded) return retry('exception_unrecorded')
     return ack('amount_mismatch')
   }
-  const claimedCurrency = typeof payload.currency === 'string' ? payload.currency.trim().toUpperCase() : null
+  // JSON may carry it as a number, and the same notification in a form as a string.
+  const claimedCurrency = typeof payload.currency === 'string' ? payload.currency.trim().toUpperCase()
+    : typeof payload.currency === 'number' ? String(payload.currency) : null
   if (claimedCurrency !== null && claimedCurrency !== payment.currency) {
     log.error({ paymentId: payment.id }, 'PayTech IPN reported a currency that is not the stored one')
     await touchIpnReceipt({ providerToken: token, failureReason: 'ipn_currency_mismatch' })
     const kept = await reportPaymentException({
-      paymentId: payment.id, signal: 'currency_mismatch', source: 'ipn', detail: 'ipn_currency_mismatch',
+      paymentId: payment.id, signal: 'currency_mismatch', source: 'ipn', detail: 'ipn_currency_mismatch', fingerprint,
     })
     if (!kept.recorded) return retry('exception_unrecorded')
     return ack('currency_mismatch')
@@ -285,7 +297,7 @@ export async function POST(req: Request) {
   // ── 7. reconcile: the provider decides, not the notification ──
   // `type_event` (verification.event) is outside the signature. It never decides
   // an outcome. It only decides whether a report is kept for a human to check.
-  const result = await reconcilePaytechPayment(payment, { source: 'ipn', hint: verification.event })
+  const result = await reconcilePaytechPayment(payment, { source: 'ipn', hint: verification.event, fingerprint })
   log.info({ paymentId: payment.id, hint: verification.event, result: result.kind }, 'PayTech IPN reconciled')
   return respond(result)
 }

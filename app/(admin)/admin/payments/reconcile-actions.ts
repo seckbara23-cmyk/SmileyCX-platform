@@ -12,7 +12,8 @@
  *   * `closeUnpaidPaytechPayment` records an operator's attestation that an
  *     attempt was NOT paid, after checking the PayTech dashboard. It grants
  *     nothing — it frees the learner to open a new checkout. The provider is
- *     asked first, and the close is refused if PayTech says paid or pending.
+ *     asked first, and the close is refused if PayTech says paid, or pending
+ *     until the attempt is a week old. The attestation is written first.
  *
  * Both are platform-admin only, rate-limited, and audited whatever the
  * outcome. The operator's reason goes to the audit log, never to the payment.
@@ -82,7 +83,9 @@ export async function verifyPaytechPayment(formData: FormData): Promise<void> {
     metadata:      { paymentId: row.id, reference: row.reference, result: result.kind },
   })
 
-  back(`verify_${result.kind}`)
+  // A refusal a retry should clear is a technical error, not a refused payment: no record
+  // exists, nothing is decided, and the notice must not send anyone to the dashboard.
+  back(result.kind === 'refused' && result.retryable ? 'verify_retry' : `verify_${result.kind}`)
 }
 
 export async function closeUnpaidPaytechPayment(formData: FormData): Promise<void> {
@@ -103,6 +106,21 @@ export async function closeUnpaidPaytechPayment(formData: FormData): Promise<voi
 
   const row = await loadPaytechPaymentById(paymentId)
   if (!row) back('not_found')
+
+  // The close rests on this attestation, so it is written first, and nothing closes without it.
+  const attested = await logAuditEvent({
+    eventType:     'payment.manual_close_attested',
+    actorType:     'admin',
+    actorId:       admin.id,
+    actorEmail:    admin.email,
+    subjectUserId: row.user_id,
+    method:        'admin_panel',
+    outcome:       'success',
+    reason,
+    ip, userAgent,
+    metadata:      { paymentId: row.id, reference: row.reference, previousStatus: row.status },
+  })
+  if (!attested) back('close_refused_audit_unavailable')
 
   const outcome = await closeAfterManualReconciliation(row)
   const succeeded = outcome.kind === 'closed'
@@ -127,6 +145,9 @@ export async function closeUnpaidPaytechPayment(formData: FormData): Promise<voi
   })
 
   if (outcome.kind === 'closed') back(outcome.exceptionOpened ? 'close_done_exception' : 'close_done')
-  if (outcome.kind === 'resolved_by_provider') back(`verify_${outcome.result.kind}`)
+  if (outcome.kind === 'resolved_by_provider') {
+    const r = outcome.result
+    back(r.kind === 'refused' && r.retryable ? 'verify_retry' : `verify_${r.kind}`)
+  }
   back(`close_refused_${outcome.reason}`)
 }

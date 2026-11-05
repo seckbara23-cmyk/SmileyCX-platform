@@ -24,6 +24,14 @@ import type { PaytechEvent } from '@/lib/payments/paytech-ipn'
 const log = createLogger('payments/paytech-reconcile')
 
 /**
+ * How long an attempt the provider still calls "pending" keeps a manual close refused. The
+ * old link may yet be payable, so a close could let a learner pay twice, and a late payment
+ * comes back as an exception. But a provider saying "pending" for ever must not hold a
+ * learner for ever. PayTech documents no token lifetime, so this is a judgement until it does.
+ */
+const PENDING_CLOSE_AFTER_MS = 7 * 24 * 60 * 60 * 1000
+
+/**
  * PayTech reconciliation — XP-PAYTECH-04.
  *
  * ONE decision procedure for "what happened to this PayTech payment, and what
@@ -49,6 +57,10 @@ const log = createLogger('payments/paytech-reconcile')
  *     was cancelled, or a human attests to a manual check (safeguard 1);
  *   * re-open a closed payment. A paid report on one goes to the exception
  *     record (XP-PAYTECH-05), and it can neither complete it nor grant access.
+ *
+ * A paid notification is never dropped because of the payment's state. A completed
+ * payment covers one, and any other may be a second real payment, so the database
+ * counts it for a person.
  */
 
 /** The columns every path reads. Never `metadata`, never anything personal. */
@@ -84,8 +96,10 @@ export type ReconcileResult =
   | { kind: 'pending' }
   /** Nobody can say. Fulfils nothing, closes nothing, frees nothing. */
   | { kind: 'unknown'; reason: string }
-  /** `complete_payment()` refused. */
+  /** `complete_payment()` refused, or the provider said paid and its facts are not ours. */
   | { kind: 'refused'; reason: string; retryable: boolean }
+  /** The provider did NOT say paid, and its facts are not ours. Recorded. A human decides. */
+  | { kind: 'conflict'; reason: string }
   /** This row cannot be reconciled automatically — a human must look. */
   | { kind: 'ineligible'; reason: string }
   /** A report that must be kept could not be recorded. Never acknowledge this. */
@@ -109,18 +123,36 @@ export interface ReconcileOptions {
    * whether money moved.
    */
   hint?: PaytechEvent | null
-  /** Also ask the provider about a COMPLETED payment. An administrator's request. */
+  /** What that notification said, as a digest, so a repeat can be recognised. */
+  fingerprint?: string | null
+  /** Also ask the provider about a COMPLETED payment. An administrator's request, or the sweep's. */
   recheck?: boolean
 }
+
+/**
+ * What a status answer says about an amount. An unpaid answer saying 0 claims nothing: PayTech
+ * may well fill the field with it, and every abandoned checkout must not read as a conflict.
+ */
+function claimedAmount(settlement: { outcome: string; amount: number | null }): number | null {
+  return settlement.outcome === 'paid' || (settlement.amount !== null && settlement.amount > 0) ? settlement.amount : null
+}
+
+/** The contract requires an amount for a paid answer, and this one had none it could read. */
+const PAID_AMOUNT_UNREADABLE = 'amount_unreadable'
 
 /** Record a signal, and say whether the caller may acknowledge the report. */
 async function keep(
   row: PaytechPaymentRow,
   signal: ExceptionSignal,
-  source: ExceptionSource,
+  opts: { source: ExceptionSource; fingerprint?: string | null },
   detail: string | null = null,
+  providerAmount: number | null = null,
 ): Promise<boolean> {
-  const outcome = await reportPaymentException({ paymentId: row.id, signal, source, detail })
+  const outcome = await reportPaymentException({
+    paymentId: row.id, signal, source: opts.source, detail, fingerprint: opts.fingerprint,
+    // An unpaid answer can well say 0. That is no amount received, and the report must not fail on it.
+    providerAmount: providerAmount !== null && providerAmount > 0 ? providerAmount : null,
+  })
   return outcome.recorded
 }
 
@@ -135,7 +167,8 @@ export async function reconcilePaytechPayment(
   row: PaytechPaymentRow,
   opts: ReconcileOptions,
 ): Promise<ReconcileResult> {
-  const result = await decide(row, opts)
+  const done = { covered: false }
+  const result = await decide(row, opts, done)
 
   // An authentic paid notification on a payment that did not settle is kept, so
   // a later closure cannot hide it. The database decides what it means under the
@@ -143,11 +176,28 @@ export async function reconcilePaytechPayment(
   if (opts.hint === 'sale_complete' && row.provider === 'paytech' && (
         result.kind === 'unknown' || result.kind === 'pending' || result.kind === 'ineligible'
      || result.kind === 'failed' || result.kind === 'cancelled'
+     // A transient refusal: the retry settles it, and the report must survive if none comes.
+     || (result.kind === 'refused' && result.retryable && result.reason !== 'environment_refused')
      // Something else closed it while the provider was being asked.
      || (result.kind === 'already_terminal' && (IN_FLIGHT_STATUSES as readonly string[]).includes(row.status)))
      && !(result.kind === 'unknown' && result.reason === 'environment_refused')) {
-    const kept = await keep(row, 'paid_hint', opts.source)
+    const kept = await keep(row, 'paid_hint', opts)
     if (!kept) return { kind: 'exception_unrecorded' }
+  }
+
+  // On a completed payment too, unless this notification was remembered before it
+  // completed the payment.
+  if (opts.hint === 'sale_complete' && row.provider === 'paytech' && opts.fingerprint && !done.covered
+      && result.kind === 'already_completed') {
+    if (!(await keep(row, 'paid_hint', opts))) return { kind: 'exception_unrecorded' }
+  }
+
+  // A cancellation claimed while a person is deciding, or where access rests on this
+  // attempt. The database keeps it only then, and it changes nothing about the payment.
+  if (opts.hint === 'sale_canceled' && row.provider === 'paytech' && opts.fingerprint
+      && result.kind !== 'completed' && result.kind !== 'already_completed' && result.kind !== 'exception_unrecorded'
+      && !(result.kind === 'unknown' && result.reason === 'environment_refused')) {
+    if (!(await keep(row, 'cancel_hint', opts))) return { kind: 'exception_unrecorded' }
   }
   return result
 }
@@ -176,36 +226,68 @@ async function decideClosed(row: PaytechPaymentRow, opts: ReconcileOptions, env:
   if (!(await paymentDatabaseAuthority(env)).allowed) return { kind: 'unknown', reason: 'environment_refused' }
 
   const settlement = await askAboutSettledRow(row, env)
+  if (settlement?.shape) log.warn({ paymentId: row.id, reason: settlement.reason, shape: settlement.shape }, 'PayTech status response not recognised')
   let signal: ExceptionSignal | null = hinted ? 'paid_hint' : null
   let detail: string | null = null
+  let providerAmount: number | null = null
+  let wordAfter = false
 
   if (settlement) {
     const stored = Number(row.amount)
     if (settlement.outcome === 'paid') {
       const amountOff = settlement.amount !== null && settlement.amount !== stored
       const currencyOff = settlement.currency !== null && settlement.currency !== row.currency
-      signal = amountOff || currencyOff ? 'completion_refused' : 'provider_paid'
-      if (amountOff) detail = 'settlement_amount_mismatch'
-      else if (currencyOff) detail = 'settlement_currency_mismatch'
+      // Paid at nothing moved no money. It is a claim for a person, not a receipt.
+      const paidSomething = settlement.amount === null || settlement.amount > 0
+      signal = 'provider_paid'
+      if (currencyOff) {
+        signal = paidSomething ? 'completion_refused' : 'currency_mismatch'
+        detail = 'settlement_currency_mismatch'
+        // Both are kept. The amount goes last, because that is what a refund is decided on.
+        if (amountOff && !(await keep(row, signal, opts, detail))) return { kind: 'exception_unrecorded' }
+      }
+      if (amountOff) {
+        signal = paidSomething ? 'completion_refused' : 'amount_mismatch'
+        detail = 'settlement_amount_mismatch'
+        if (paidSomething) providerAmount = settlement.amount
+      }
+    } else if (settlement.outcome === 'unknown' && settlement.reason === PAID_AMOUNT_UNREADABLE) {
+      signal = 'amount_mismatch'
+      detail = 'settlement_amount_unreadable'
+    } else if (settlement.outcome === 'unknown' && settlement.reason === 'status_unrecognised') {
+      // A word nobody has defined may mean that money moved, so a person should read it. Beside a
+      // notification, what the notification claimed stays what the record says, and the word is
+      // kept after it as the provider's last word, so that no decision rests on an earlier one.
+      if (hinted) {
+        detail = 'provider_says_unrecognised'
+        wordAfter = true
+      } else {
+        signal = 'amount_mismatch'
+        detail = 'settlement_status_unrecognised'
+      }
     } else if (settlement.outcome === 'pending') {
       // Closed here, still payable there: the learner could yet pay this attempt.
       if (hinted) detail = 'provider_says_pending'
       else signal = 'provider_pending'
     } else if (settlement.outcome === 'failed' || settlement.outcome === 'cancelled') {
       if (hinted) detail = `provider_says_${settlement.outcome}`
-      // Only updates a record that already exists, so an operator sees the answer.
-      else if (opts.source === 'admin') signal = 'provider_not_paid'
+      // Only updates a record that already exists. An operator sees the answer, and from
+      // a sweep the database keeps it only where an access decision rests on this attempt.
+      else if (opts.source === 'admin' || opts.source === 'sweep') signal = 'provider_not_paid'
     }
   }
 
-  if (signal && !(await keep(row, signal, opts.source, detail))) return { kind: 'exception_unrecorded' }
+  if (signal && !(await keep(row, signal, opts, detail, providerAmount))) return { kind: 'exception_unrecorded' }
+  if (wordAfter && !(await keep(row, 'amount_mismatch', { source: opts.source }, 'settlement_status_unrecognised'))) {
+    return { kind: 'exception_unrecorded' }
+  }
   return terminal
 }
 
 /**
- * A report that questions a COMPLETED payment. A repeated paid notification is a
- * replay and asks nothing. A cancellation, or an administrator's re-check, may
- * reveal a conflict. It reverses nothing and only records it for a human.
+ * A report that questions a COMPLETED payment. A paid notification asks the provider
+ * nothing, and the caller keeps it. A cancellation, or a re-check by an administrator or the
+ * sweep, may reveal a conflict. It reverses nothing and only records it for a human.
  */
 async function decideCompleted(row: PaytechPaymentRow, opts: ReconcileOptions, env: EnvLike): Promise<ReconcileResult> {
   const done: ReconcileResult = { kind: 'already_completed' }
@@ -214,15 +296,50 @@ async function decideCompleted(row: PaytechPaymentRow, opts: ReconcileOptions, e
   if (!(await paymentDatabaseAuthority(env)).allowed) return { kind: 'unknown', reason: 'environment_refused' }
 
   const settlement = await askAboutSettledRow(row, env)
+  if (settlement?.shape) log.warn({ paymentId: row.id, reason: settlement.reason, shape: settlement.shape }, 'PayTech status response not recognised')
   let signal: ExceptionSignal | null = hinted ? 'cancel_hint' : null
-  if (settlement?.outcome === 'paid') signal = null
-  else if (settlement && settlement.outcome !== 'unknown') signal = 'provider_not_paid'
+  let detail: string | null = null
+  let providerAmount: number | null = null
+  if (settlement?.outcome === 'paid') {
+    // Paid is no conflict, unless what it says was paid is not what this payment was.
+    signal = null
+    const amountOff = settlement.amount !== null && settlement.amount !== Number(row.amount)
+    const currencyOff = settlement.currency !== null && settlement.currency !== row.currency
+    if (currencyOff) {
+      signal = 'currency_mismatch'
+      detail = 'settlement_currency_mismatch'
+      // Both are kept. The amount goes last, because that is what a refund is decided on.
+      if (amountOff && !(await keep(row, signal, opts, detail))) return { kind: 'exception_unrecorded' }
+    }
+    if (amountOff) {
+      signal = 'amount_mismatch'
+      detail = 'settlement_amount_mismatch'
+      providerAmount = settlement.amount
+    }
+    // Paid at ours takes back any other amount it named. No notification made it say so.
+    if (!amountOff && !currencyOff && !(await keep(row, 'provider_paid', { source: opts.source }))) {
+      return { kind: 'exception_unrecorded' }
+    }
+  } else if (settlement?.outcome === 'unknown' && settlement.reason === PAID_AMOUNT_UNREADABLE) {
+    signal = 'amount_mismatch'
+    detail = 'settlement_amount_unreadable'
+  } else if (settlement?.outcome === 'unknown' && settlement.reason === 'status_unrecognised') {
+    // It no longer says what it said when this completed, in a word nobody has defined. That
+    // blocks nobody here, and a person should read it.
+    signal = 'amount_mismatch'
+    detail = 'settlement_status_unrecognised'
+  } else if (settlement && settlement.outcome !== 'unknown') {
+    // Not paid, or still payable: either contradicts a completed payment. The word is kept
+    // so that the queue can say which.
+    signal = 'provider_not_paid'
+    detail = `provider_says_${settlement.outcome}`
+  }
 
-  if (signal && !(await keep(row, signal, opts.source))) return { kind: 'exception_unrecorded' }
+  if (signal && !(await keep(row, signal, opts, detail, providerAmount))) return { kind: 'exception_unrecorded' }
   return done
 }
 
-async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<ReconcileResult> {
+async function decide(row: PaytechPaymentRow, opts: ReconcileOptions, done: { covered: boolean }): Promise<ReconcileResult> {
   const env = opts.env ?? process.env
 
   // ── 1. is this a PayTech payment that could still settle? ──
@@ -269,27 +386,51 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<R
       // Key paths only — never values — so the contract can be corrected.
       log.warn({ paymentId: row.id, reason, shape: settlement.shape }, 'PayTech status response not recognised')
     }
+    // It said paid and gave no amount it could read. Nothing completes on that, and it must
+    // not read as no answer at all: a person checks it, and can dismiss it.
+    if (reason === PAID_AMOUNT_UNREADABLE) {
+      if (!(await keep(row, 'amount_mismatch', opts, 'settlement_amount_unreadable'))) return { kind: 'exception_unrecorded' }
+      return { kind: 'conflict', reason: 'settlement_amount_unreadable' }
+    }
+    // A word nobody has defined may mean that money moved, so a person should read it. A
+    // notification is watched as it would be, and the next status check keeps the word.
+    if (reason === 'status_unrecognised' && !opts.hint
+        && !(await keep(row, 'amount_mismatch', opts, 'settlement_status_unrecognised'))) {
+      return { kind: 'exception_unrecorded' }
+    }
     return { kind: 'unknown', reason }
   }
 
   // ── 4. the provider's facts must be ours ──
   const stored = Number(row.amount)
-  if (settlement.amount !== null && settlement.amount !== stored) {
+  const amount = claimedAmount(settlement)
+  const currencyOff = settlement.currency !== null && settlement.currency !== row.currency
+  if (amount !== null && amount !== stored) {
     await recordSettlementNote({ paymentId: row.id, failureReason: 'settlement_amount_mismatch' })
     log.error({ paymentId: row.id }, 'PayTech reported an amount that is not the stored one')
-    const kept = settlement.outcome === 'paid'
-      ? await keep(row, 'completion_refused', opts.source, 'settlement_amount_mismatch')
-      : await keep(row, 'amount_mismatch', opts.source, 'settlement_amount_mismatch')
+    // Paid at nothing moved no money. It is a conflict for a person, and not a receipt.
+    const paidSomething = settlement.outcome === 'paid' && amount > 0
+    // Both are kept. The amount goes last, because that is what a refund is decided on.
+    if (currencyOff && !(await keep(row, paidSomething ? 'completion_refused' : 'currency_mismatch', opts, 'settlement_currency_mismatch'))) {
+      return { kind: 'exception_unrecorded' }
+    }
+    const kept = paidSomething
+      ? await keep(row, 'completion_refused', opts, 'settlement_amount_mismatch', amount)
+      : await keep(row, 'amount_mismatch', opts, 'settlement_amount_mismatch')
     if (!kept) return { kind: 'exception_unrecorded' }
-    return { kind: 'refused', reason: 'settlement_amount_mismatch', retryable: false }
+    return paidSomething
+      ? { kind: 'refused', reason: 'settlement_amount_mismatch', retryable: false }
+      : { kind: 'conflict', reason: 'settlement_amount_mismatch' }
   }
-  if (settlement.currency !== null && settlement.currency !== row.currency) {
+  if (currencyOff) {
     await recordSettlementNote({ paymentId: row.id, failureReason: 'settlement_currency_mismatch' })
     const kept = settlement.outcome === 'paid'
-      ? await keep(row, 'completion_refused', opts.source, 'settlement_currency_mismatch')
-      : await keep(row, 'currency_mismatch', opts.source, 'settlement_currency_mismatch')
+      ? await keep(row, 'completion_refused', opts, 'settlement_currency_mismatch')
+      : await keep(row, 'currency_mismatch', opts, 'settlement_currency_mismatch')
     if (!kept) return { kind: 'exception_unrecorded' }
-    return { kind: 'refused', reason: 'settlement_currency_mismatch', retryable: false }
+    return settlement.outcome === 'paid'
+      ? { kind: 'refused', reason: 'settlement_currency_mismatch', retryable: false }
+      : { kind: 'conflict', reason: 'settlement_currency_mismatch' }
   }
 
   // ── 5. act ──
@@ -297,10 +438,16 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<R
     case 'paid': {
       if (row.currency !== PAYTECH_CURRENCY) {
         await recordSettlementNote({ paymentId: row.id, failureReason: 'currency_unsupported' })
-        if (!(await keep(row, 'completion_refused', opts.source, 'currency_unsupported'))) {
+        if (!(await keep(row, 'completion_refused', opts, 'currency_unsupported'))) {
           return { kind: 'exception_unrecorded' }
         }
         return { kind: 'refused', reason: 'currency_unsupported', retryable: false }
+      }
+      // Remembered first, so that the completion and what it covers cannot come apart.
+      // If this cannot be written, nothing completes and the provider is asked to retry.
+      if (opts.hint === 'sale_complete' && opts.fingerprint) {
+        if (!(await keep(row, 'paid_hint', opts, 'ipn_completing_payment'))) return { kind: 'exception_unrecorded' }
+        done.covered = true
       }
       const outcome = await completeVerifiedPayment({
         provider:          'paytech',
@@ -318,13 +465,16 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<R
         // nothing granted. Includes a row closed while the provider was being
         // asked. A retryable refusal is transient, and a retry settles it.
         if (!outcome.retryable && outcome.reason !== 'environment_refused'
-            && !(await keep(row, 'completion_refused', opts.source, outcome.reason))) {
+            && !(await keep(row, 'completion_refused', opts, outcome.reason))) {
           return { kind: 'exception_unrecorded' }
         }
         return outcome
       }
       log.info({ paymentId: row.id, source: opts.source, requiresReview: outcome.requiresReview },
         'PayTech payment completed and entitlement granted')
+      // The completion may have flagged what it does not cover. A person hears of that now,
+      // not at the next daily sweep. A normal payment has nothing due, and sends nothing.
+      await sendPendingExceptionAlerts({ paymentId: row.id })
       return { kind: 'completed', requiresReview: outcome.requiresReview }
     }
     case 'failed':
@@ -335,12 +485,21 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<R
         failureReason: `settlement_${settlement.outcome}`,
       })
       if (changed) {
-        // Migration 064's trigger opened any earlier paid notification on this row.
+        // Migration 064's trigger opened any earlier paid notification on this row. What
+        // the provider said is kept on it, or on an access decision that rests on it. The
+        // alert goes out either way, because that record is there either way.
+        const kept = await keep(row, 'provider_not_paid', opts)
         await sendPendingExceptionAlerts({ paymentId: row.id })
+        if (!kept) return { kind: 'exception_unrecorded' }
         return { kind: settlement.outcome }
       }
       const now = await loadPaytechPaymentById(row.id)
-      if (now?.status === 'completed') return { kind: 'already_completed' }
+      if (now?.status === 'completed') {
+        // Another path completed it while the provider was answering that it was not paid.
+        // The payment stands, and that answer goes to a person.
+        if (!(await keep(row, 'provider_not_paid', opts))) return { kind: 'exception_unrecorded' }
+        return { kind: 'already_completed' }
+      }
       // Still in flight means the write failed, not that someone else closed it.
       if (!now || (IN_FLIGHT_STATUSES as readonly string[]).includes(now.status)) {
         return { kind: 'unknown', reason: 'terminal_write_failed' }
@@ -349,6 +508,8 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<R
     }
     case 'pending':
       await recordSettlementNote({ paymentId: row.id, failureReason: 'settlement_pending' })
+      // Only where it has said more on a record, which this then replaces as its last word.
+      if (!(await keep(row, 'provider_pending', { source: opts.source }))) return { kind: 'exception_unrecorded' }
       return { kind: 'pending' }
   }
 }
@@ -358,9 +519,11 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions): Promise<R
  *
  * The provider is asked FIRST. If it says paid, the payment is completed
  * instead; if it says pending, the checkout can still be paid and closing it
- * would let the learner pay twice, so the close is refused. Only when the
- * provider cannot answer (`unknown`) — today, always, until the contract is
- * confirmed — does the human's attestation decide.
+ * would let the learner pay twice, so the close is refused for the first
+ * `PENDING_CLOSE_AFTER_MS`. Only when the provider cannot answer (`unknown`) —
+ * today, always, until the contract is confirmed — contradicts our record
+ * without saying paid, or has said pending past that time does the human's
+ * attestation decide.
  *
  * If PayTech had already sent an authentic paid notification for this attempt,
  * the close still happens, because the operator is entitled to decide, but
@@ -372,7 +535,7 @@ export async function closeAfterManualReconciliation(
   env: EnvLike = process.env,
 ): Promise<
   | { kind: 'closed'; exceptionOpened: boolean }
-  | { kind: 'refused'; reason: 'provider_says_paid' | 'provider_says_pending' | 'not_open' | 'ineligible' | 'race' | 'environment_refused' }
+  | { kind: 'refused'; reason: 'provider_says_paid' | 'provider_says_pending' | 'report_unrecorded' | 'not_open' | 'ineligible' | 'race' | 'environment_refused' }
   | { kind: 'resolved_by_provider'; result: ReconcileResult }
 > {
   if (row.provider !== 'paytech' || !(IN_FLIGHT_STATUSES as readonly string[]).includes(row.status)) {
@@ -386,16 +549,20 @@ export async function closeAfterManualReconciliation(
     switch (result.kind) {
       case 'completed':
       case 'already_completed':
-      // A refusal means the provider DID say paid — with a mismatch, or for a
+      // A refusal means the provider DID say paid: with a mismatch, or for a
       // learner 062 will not fulfil. Money moved; closing it as unpaid would
       // hide that. It needs a refund decision, not a close.
       case 'refused':
-      // The report behind that same refusal could not be kept. Closing now would
-      // hide it, so nothing closes until it can be recorded.
-      case 'exception_unrecorded':
         return { kind: 'refused', reason: 'provider_says_paid' }
+      // A report could not be kept. Closing now would hide it, so this close stops here,
+      // though the provider's own answer may already have closed the attempt.
+      case 'exception_unrecorded':
+        return { kind: 'refused', reason: 'report_unrecorded' }
       case 'pending':
-        return { kind: 'refused', reason: 'provider_says_pending' }
+        if (Date.now() - new Date(row.created_at).getTime() < PENDING_CLOSE_AFTER_MS) {
+          return { kind: 'refused', reason: 'provider_says_pending' }
+        }
+        break
       case 'failed':
       case 'cancelled':
       case 'already_terminal':
@@ -405,6 +572,9 @@ export async function closeAfterManualReconciliation(
           return { kind: 'refused', reason: 'ineligible' }
         }
         break
+      // The provider did not say paid, and what it did say is recorded. The human who
+      // checked the dashboard decides, or this attempt could never be closed at all.
+      case 'conflict':
       case 'unknown':
         break
     }

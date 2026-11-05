@@ -191,15 +191,21 @@ export async function touchIpnReceipt(opts: {
     if (!(await paymentDatabaseAuthority()).allowed) return
 
     const admin = createAdminClient()
-    const patch: Record<string, unknown> = { last_ipn_at: new Date().toISOString() }
-    if (opts.failureReason) patch.failure_reason = opts.failureReason
-
     const { error } = await admin
       .from('payments')
-      .update(patch)
+      .update({ last_ipn_at: new Date().toISOString() })
       .eq('provider_token', opts.providerToken)
+    // Only in flight. On a closed attempt this column says who closed it, and a notification
+    // anybody could replay must not rewrite that.
+    const noted = opts.failureReason
+      ? await admin
+        .from('payments')
+        .update({ failure_reason: opts.failureReason })
+        .eq('provider_token', opts.providerToken)
+        .in('status', ['pending', 'processing'])
+      : { error: null }
 
-    if (error) {
+    if (error || noted.error) {
       log.error({ reason: opts.failureReason ?? null }, 'could not record IPN receipt')
     }
   } catch {
@@ -219,10 +225,13 @@ export async function recordSettlementNote(opts: {
   try {
     if (!(await paymentDatabaseAuthority()).allowed) return
 
+    // Only while it is in flight. A close that got there first keeps its own reason, and
+    // what it decided rests on that.
     const { error } = await createAdminClient()
       .from('payments')
       .update({ failure_reason: opts.failureReason })
       .eq('id', opts.paymentId)
+      .in('status', ['pending', 'processing'])
     if (error) log.error({ reason: opts.failureReason }, 'could not record settlement note')
   } catch {
     log.error('recording the settlement note threw')
@@ -233,6 +242,22 @@ export async function recordSettlementNote(opts: {
 
 /** The two states a payment may be in while money might still move. */
 export const IN_FLIGHT_STATUSES = ['pending', 'processing'] as const
+
+/**
+ * The newest attempts a person closed as unpaid, whatever their age. Their close may be all
+ * that stands between an old link and a payment nobody hears of, so the sweep keeps asking.
+ */
+export async function attemptsClosedByAPerson(columns: string, limit: number) {
+  return createAdminClient()
+    .from('payments')
+    .select(columns)
+    .eq('provider', 'paytech')
+    .eq('status', 'expired')
+    .eq('failure_reason', 'manual_reconciliation_unpaid')
+    .not('provider_token', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+}
 
 /**
  * Move an OPENED payment to a terminal non-paid state, because the provider
@@ -302,7 +327,8 @@ export async function closeUnopenedAttempt(opts: {
  * Close an OPENED attempt after a human verified, in the PayTech dashboard,
  * that it was not paid — the "manual reconciliation" safeguard 1 allows when
  * the provider cannot answer. Only `paytech-reconcile.ts`'s admin path calls
- * this, after the provider was asked and did NOT say paid or pending.
+ * this, after the provider was asked and did NOT say paid, nor pending on an
+ * attempt less than a week old.
  *
  * Compare-and-set on `status IN (pending, processing)`.
  */
