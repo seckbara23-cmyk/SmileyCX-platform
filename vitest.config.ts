@@ -10,6 +10,28 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    /**
+     * Vitest defaults to 5000ms per test. That is too tight for THIS suite,
+     * and the symptom was a flake that moved between files: four different
+     * files timed out across one working session — cat-02-price-rendering,
+     * enr-01c-c-entitlement-authority, course-detail and others — and every
+     * one of them passed in isolation.
+     *
+     * Measured rather than guessed. A full run reports ~130s of aggregate
+     * test time inside ~38s of wall clock, so tests are heavily parallel and
+     * a worker can be descheduled for seconds at a time. Several tests also
+     * legitimately spawn child processes — the mailer gate and the UAT
+     * isolation gate are process-level tests by design — and those files run
+     * 12-22s each. Under contention an individual test's WALL time crosses 5s
+     * while its own work is short, which is precisely a false failure.
+     *
+     * 20s is chosen to absorb scheduling latency without hiding a hang: a
+     * genuinely stuck test still fails, 15s later than before, and timeouts
+     * are rare enough that this costs nothing in practice. It is not a licence
+     * for slow tests — if a file's own work approaches this, fix the file.
+     */
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     setupFiles: ['./vitest.setup.ts'],
     include: ['**/__tests__/**/*.{test,spec}.{ts,tsx}', '**/*.{test,spec}.{ts,tsx}'],
     exclude: ['node_modules', '.next', 'e2e'],
