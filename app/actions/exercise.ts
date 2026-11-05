@@ -5,10 +5,14 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { scoreExercise, type ExerciseScore } from '@/lib/exercises/scoring'
 import { createLogger } from '@/lib/logger'
+import { withinInputBounds } from '@/lib/validation/input-bounds'
 
 const log = createLogger('actions/exercise')
 
 const UuidSchema = z.string().uuid()
+
+/** Far more placements than any exercise holds. Checked before Zod. See input-bounds. */
+const SUBMIT_BOUNDS = { maxNodes: 1_000, maxDepth: 3, maxChars: 80_000 }
 
 const SubmitSchema = z.object({
   exerciseId: UuidSchema,
@@ -20,6 +24,7 @@ export type ExerciseSubmitResult = ExerciseScore
 export async function submitExercise(
   input: { exerciseId: string; placements: Record<string, string> }
 ): Promise<{ result?: ExerciseSubmitResult; error?: string }> {
+  if (!withinInputBounds(input, SUBMIT_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SubmitSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
 

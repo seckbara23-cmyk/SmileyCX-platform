@@ -3,6 +3,7 @@
 import { z } from 'zod'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { UuidSchema } from '@/lib/validation/schemas'
+import { withinInputBounds } from '@/lib/validation/input-bounds'
 import { createLogger } from '@/lib/logger'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 import {
@@ -12,6 +13,12 @@ import {
 } from '@/lib/learn/assessment'
 
 const log = createLogger('actions/quiz')
+
+/**
+ * Far more than any exam holds: well over 100 questions, each with a drag-and-match of
+ * about 20 items whose ids may reach 64 characters. Checked before Zod. See input-bounds.
+ */
+const SUBMIT_BOUNDS = { maxNodes: 5_000, maxDepth: 4, maxChars: 512_000 }
 
 const MCAnswerSchema = z.number().int().min(0).max(10)
 const MAAnswerSchema = z.array(z.number().int().min(0).max(10))
@@ -115,6 +122,7 @@ export async function submitQuizAnswers(input: {
   moduleId: string | null
   answers:  Record<string, number | number[] | Record<string, string>>
 }): Promise<QuizSubmitResult> {
+  if (!withinInputBounds(input, SUBMIT_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SubmitSchema.safeParse(input)
   if (!parsed.success) {
     return { error: 'Données invalides.' }
