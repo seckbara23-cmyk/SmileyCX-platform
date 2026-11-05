@@ -1,282 +1,342 @@
 'use server'
 /**
- * PayTech checkout initiation — XP-PAYTECH-01 Phase C.
+ * PayTech checkout initiation — XP-PAYTECH-01, rebuilt by XP-PAYTECH-04.
  *
- * Validates eligibility server-side, creates or reuses a PENDING payment row,
- * opens a PayTech hosted checkout, persists the provider token, and returns the
- * redirect URL. It grants no access right of any kind and cannot complete a
- * payment: `complete_payment()` is unreachable from here, and the only module
- * that may call it is `lib/payments/payment-completion.ts`.
+ * Validates eligibility on the server, opens AT MOST ONE chargeable PayTech
+ * checkout per learner per course at a time, persists the provider token, and
+ * returns the redirect URL. It grants no access right and cannot complete a
+ * payment by itself: completion is `paytech-reconcile.ts` → the single
+ * chokepoint → migration 062.
  *
  * ── NOTHING THE BROWSER SENDS IS TRUSTED EXCEPT THE COURSE ID ─────────────
  *
- * The caller supplies a course id and nothing else. Price, currency, course
- * title, eligibility and the order reference are all derived on the server:
+ * Price, currency (XOF only), title, eligibility, the payer and the order
+ * reference are all derived here. Extra fields in the call are ignored.
  *
- *   * the PRICE is read from `courses.price`, never from the request, so a
- *     tampered form cannot buy a course for less;
- *   * ELIGIBILITY goes through `resolveCourseAccessById()`, the single
- *     entitlement seam (XPA-6B / migration 037), so a learner who already has
- *     access is refused rather than charged twice;
- *   * the REFERENCE is minted here and is what the IPN signature covers.
+ * ── ONE CHARGEABLE ATTEMPT AT A TIME (safeguard 1) ────────────────────────
  *
- * ── THE TOKEN IS PERSISTED BEFORE THE LEARNER IS REDIRECTED ───────────────
+ * An attempt that was OPENED (a token was stored and a URL handed
+ * out) may have been paid, so it is never superseded on a guess. Checkout asks
+ * the provider, through the confirmed contract, what happened to it:
  *
- * PayTech has no idempotency key, so a second `requestPayment()` opens a second
- * checkout. The order below is therefore deliberate: create the pending row,
- * call the provider, write the token onto the row, and only then hand the
- * learner a URL. If the token write fails we do NOT redirect — a checkout the
- * learner can pay but we cannot correlate is the one outcome worth refusing a
- * sale over, because `provider_token` is the replay key the IPN correlates on
- * and an unrecorded payment cannot be fulfilled.
+ *   paid               → the payment is completed now; the learner goes in
+ *   failed / cancelled → it is closed, and a NEW attempt (new row, new
+ *                        reference) may be opened
+ *   pending            → the SAME checkout URL is offered again — not a new one
+ *   unknown            → nothing is opened. The learner is told a payment is
+ *                        being verified, with its reference. Only a confirmed
+ *                        provider answer or a human's manual reconciliation
+ *                        frees them.
+ *
+ * An attempt that was NEVER opened (no token, so no URL was ever handed out)
+ * cannot have been paid, and may be closed and replaced.
+ *
+ * Every write is a compare-and-set, and migration 063 enforces the same
+ * transitions in the database: `provider_token` is write-once and a completed
+ * payment is final.
  */
 
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
-import { requestPayment, PaytechApiError, PAYTECH_CURRENCY } from '@/lib/payments/paytech-client'
+import {
+  requestPayment,
+  PaytechApiError,
+  PAYTECH_CURRENCY,
+  PAYTECH_TIMEOUT_MS,
+  isValidPaytechRedirectUrl,
+} from '@/lib/payments/paytech-client'
 import { resolvePaytechConfig } from '@/lib/payments/paytech-config'
-import { paytechAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paymentDatabaseAuthority } from '@/lib/payments/payment-database-guard'
+import { mintReference, paytechCallbackUrls } from '@/lib/payments/paytech-callbacks'
+import { purchaseBlocker } from '@/lib/payments/purchase-eligibility'
+import { closeUnopenedAttempt } from '@/lib/payments/payment-completion'
+import { paymentExceptionBlock } from '@/lib/payments/payment-exceptions'
+import {
+  PAYTECH_PAYMENT_COLUMNS,
+  reconcilePaytechPayment,
+  type PaytechPaymentRow,
+} from '@/lib/payments/paytech-reconcile'
 import { UuidSchema } from '@/lib/validation/schemas'
 import { createLogger } from '@/lib/logger'
-import { PUBLIC_SITE_URL } from '@/lib/brand'
 
 const log = createLogger('actions/paytech-checkout')
 
 export interface PaytechCheckoutResult {
-  /** Where to send the learner. Always HTTPS on paytech.sn when present. */
+  /** Where to pay. Always HTTPS on paytech.sn when present. */
   redirectUrl?: string
+  /** A same-site path the learner should go to instead (they now have access). */
+  accessUrl?: string
   /** A French, non-leaking message. Never a provider string. */
   error?: string
+  /** The order reference an error concerns, so support can find it. */
+  reference?: string
 }
 
 /**
- * Which origin the provider should call back to — XP-PAYTECH-03.
- *
- * ── THE DEFECT THIS FIXES ─────────────────────────────────────────────────
- *
- * `PUBLIC_SITE_URL` is deliberately "never the Vercel deployment host": it is
- * the canonical marketing origin, used for metadata, sitemaps and certificate
- * links, and it is correct for those. Deriving the PAYMENT callbacks from it
- * meant a PREVIEW checkout told PayTech to notify
- * `https://www.xpclient-academy.com/...` — production. So a sandbox payment
- * started on a preview deployment could never notify the deployment that
- * created it, and its notification would be addressed to production instead.
- *
- * ── RESOLUTION ORDER ──────────────────────────────────────────────────────
- *
- *   1. `PAYTECH_CALLBACK_BASE_URL` — the operator's explicit pin, and the one
- *      that actually matters for sandbox UAT. A per-deployment preview URL
- *      changes on every push, while PayTech's merchant dashboard holds FIXED
- *      URLs, so UAT needs a stable origin an operator chooses deliberately
- *      (a branch alias, or a dedicated staging domain).
- *   2. On any non-production deployment, the deployment's own host
- *      (`VERCEL_URL`), so a preview addresses itself rather than production.
- *   3. `PUBLIC_SITE_URL` — production, and local development.
- *
- * Nothing here is trusted blindly: every URL this produces is checked by
- * `isValidCallbackUrl()` in the transport, which requires absolute HTTPS. A
- * misconfigured pin therefore REFUSES THE CHECKOUT rather than silently
- * falling back to production, which is the failure we want — a sale refused
- * loudly beats a notification delivered to the wrong environment.
- *
- * Production is keyed on `VERCEL_ENV`, not `NODE_ENV`, because a preview build
- * also runs with `NODE_ENV=production`.
+ * How long a never-opened intent is presumed to be mid-initialisation.
+ * Longer than one provider round trip, so a concurrent click never closes an
+ * attempt whose checkout is being opened right now.
  */
-export function paytechCallbackBaseUrl(
-  env: Record<string, string | undefined> = process.env,
-): string {
-  const pinned = (env.PAYTECH_CALLBACK_BASE_URL ?? '').trim()
-  if (pinned.length > 0) return pinned
+const INITIALISATION_GRACE_MS = 2 * PAYTECH_TIMEOUT_MS + 30_000
 
-  if ((env.VERCEL_ENV ?? '').trim() !== 'production') {
-    const host = (env.VERCEL_URL ?? '').trim()
-    // VERCEL_URL carries a bare host with no scheme.
-    if (host.length > 0) return `https://${host}`
-  }
-
-  return PUBLIC_SITE_URL
-}
-
-/** The three callback URLs. Absolute HTTPS, enforced by the transport. */
-export function paytechCallbackUrls(siteUrl: string = paytechCallbackBaseUrl()): {
-  ipnUrl: string
-  successUrl: string
-  cancelUrl: string
-} {
-  const base = siteUrl.replace(/\/+$/, '')
-  return {
-    ipnUrl:     `${base}/api/payments/paytech/ipn`,
-    successUrl: `${base}/payment/success`,
-    cancelUrl:  `${base}/payment/cancel`,
-  }
-}
-
-/**
- * Mint an order reference.
- *
- * Must be unique per order on PayTech's side, and it is one of the two values
- * the IPN signature covers, so it is generated server-side and never accepted
- * from a caller. The shape matches the existing `SCX-` references so the admin
- * payment views keep reading naturally.
- */
-export function mintReference(now: number = Date.now()): string {
-  const stamp = now.toString(36).toUpperCase()
-  const rand = Math.random().toString(36).slice(2, 7).toUpperCase()
-  return `SCX-${stamp}-${rand}`
-}
+const MSG = {
+  unavailable:  "Ce moyen de paiement n'est pas disponible actuellement.",
+  signIn:       'Vous devez être connecté pour effectuer un achat.',
+  notFound:     'Formation introuvable.',
+  entitled:     'Vous avez déjà accès à cette formation.',
+  unverified:   'Confirmez votre adresse email avant de régler une formation.',
+  inactive:     "Votre compte n'est pas actif. Contactez-nous.",
+  notPayable:   "Cette formation n'est pas réglable en ligne.",
+  conflict:     "Votre accès à cette formation fait l'objet d'une régularisation. Contactez-nous avant tout paiement.",
+  initialising: "Un paiement est en cours d'initialisation pour cette formation. Réessayez dans une minute.",
+  verifying:    "Un paiement est déjà en cours de vérification pour cette formation. S'il a abouti, votre accès s'activera automatiquement dès sa confirmation ; sinon, contactez-nous en indiquant la référence ci-dessous. Aucun nouveau paiement n'a été créé.",
+  failed:       "L'initialisation du paiement a échoué. Veuillez réessayer.",
+  provider:     'Le service de paiement est momentanément indisponible. Veuillez réessayer.',
+  inProgress:   'Un paiement est déjà en cours pour cette formation. Réessayez dans un instant.',
+  exception:    "Un paiement précédent pour cette formation est en cours de vérification. Aucun nouveau paiement n'a été créé. Contactez-nous en indiquant la référence ci-dessous.",
+} as const
 
 export async function startPaytechCheckout(input: {
   courseId: string
 }): Promise<PaytechCheckoutResult> {
-  // ── 1. is PayTech even offerable here? ──
-  const availability = paytechAvailability()
+  // ── 1. may this deployment take NEW payments? ──
+  const availability = paytechCheckoutAvailability()
   if (!availability.available) {
-    log.warn({ blockedBy: availability.blockedBy }, 'PayTech checkout refused: provider unavailable')
-    return { error: "Ce moyen de paiement n'est pas disponible actuellement." }
+    log.warn({ blockedBy: availability.blockedBy }, 'PayTech checkout refused: checkout unavailable')
+    return { error: MSG.unavailable }
   }
 
-  // ── 2. authentication ──
+  // ── 2. who is paying — the session, never the request ──
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { error: 'Vous devez être connecté pour effectuer un achat.' }
+  if (!user) return { error: MSG.signIn }
 
-  const parsed = UuidSchema.safeParse(input.courseId)
-  if (!parsed.success) return { error: 'Formation introuvable.' }
+  // Nothing below may write unless this deployment may act on this database.
+  if (!(await paymentDatabaseAuthority()).allowed) return { error: MSG.unavailable }
+
+  const parsed = UuidSchema.safeParse(input?.courseId)
+  if (!parsed.success) return { error: MSG.notFound }
   const courseId = parsed.data
 
   // ── 3. eligibility — the single entitlement seam ──
-  // A learner who can already reach the material must not be charged for it.
   const access = await resolveCourseAccessById(courseId)
-  if (access.allowed) {
-    return { error: 'Vous avez déjà accès à cette formation.' }
-  }
-  if (access.reason === 'email_unverified') {
-    return { error: 'Confirmez votre adresse email avant de régler une formation.' }
-  }
-  if (access.reason === 'account_inactive') {
-    return { error: "Votre compte n'est pas actif. Contactez-nous." }
-  }
+  if (access.allowed) return { error: MSG.entitled }
+  if (access.reason === 'email_unverified') return { error: MSG.unverified }
+  if (access.reason === 'account_inactive') return { error: MSG.inactive }
 
   // ── 4. the authoritative course record ──
   const admin = createAdminClient()
   const { data: course } = await admin
     .from('courses')
-    .select('id, title, price, currency, is_published')
+    .select('id, slug, title, price, currency, is_published')
     .eq('id', courseId)
     .maybeSingle()
 
-  if (!course || !course.is_published) {
-    return { error: 'Formation introuvable.' }
-  }
-  // The provider bills whole XOF francs and `complete_payment()` refuses any
-  // other currency, so a course priced otherwise is refused rather than rounded.
+  if (!course || !course.is_published) return { error: MSG.notFound }
   if (course.currency !== PAYTECH_CURRENCY) {
     log.error({ courseId }, 'course is not priced in XOF; refusing PayTech checkout')
-    return { error: "Cette formation n'est pas réglable en ligne." }
+    return { error: MSG.notPayable }
   }
-  if (!Number.isInteger(course.price) || course.price <= 0) {
+  const price = Number(course.price)
+  if (!Number.isInteger(price) || price <= 0) {
     log.error({ courseId }, 'course price is not a positive whole number')
-    return { error: "Cette formation n'est pas réglable en ligne." }
+    return { error: MSG.notPayable }
+  }
+  const accessUrl = `/courses/${encodeURIComponent(String(course.slug))}`
+
+  // ── 5. would 062 fulfil it? Refuse BEFORE the money moves (READY-F3) ──
+  const blocker = await purchaseBlocker(user.id, courseId)
+  if (blocker) {
+    log.warn({ courseId, blocker }, 'PayTech checkout refused: completion would be refused')
+    return { error: MSG.conflict }
   }
 
-  // ── 5. the pending intent ──
-  // 058's partial unique index allows ONE live intent per learner per course, so
-  // an existing pending row is reused rather than duplicated. Reuse keeps the
-  // learner's original reference, which is what any already-issued signature
-  // covers.
-  const { data: existing } = await admin
+  // ── 5b. might an earlier, closed attempt have been paid? ──
+  // Safeguard 1: another chargeable attempt could take the money twice. Checked
+  // before the in-flight read, so it also stops the SAME checkout being re-offered.
+  const held = await paymentExceptionBlock(user.id, courseId)
+  if (held.unreadable) return { error: MSG.failed }
+  if (held.reference) {
+    log.warn({ courseId }, 'PayTech checkout refused: an open payment exception concerns this course')
+    return { error: MSG.exception, reference: held.reference }
+  }
+
+  // ── 6. an attempt already in flight? ──
+  const { data: inflight, error: inflightError } = await admin
     .from('payments')
-    .select('id, reference, amount, status')
+    .select(PAYTECH_PAYMENT_COLUMNS)
     .eq('user_id', user.id)
     .eq('course_id', courseId)
     .in('status', ['pending', 'processing'])
     .maybeSingle()
 
-  let paymentId: string
-  let reference: string
-
-  if (existing) {
-    paymentId = existing.id as string
-    reference = existing.reference as string
-    // The stored amount is authoritative for the signature, so a price change
-    // since the intent was created must not silently re-price the order.
-    if (existing.amount !== course.price) {
-      log.warn({ paymentId }, 'pending intent amount differs from current course price')
-      return { error: 'Le tarif de cette formation a changé. Contactez-nous pour finaliser.' }
-    }
-  } else {
-    reference = mintReference()
-    const { data: created, error: insertError } = await admin
-      .from('payments')
-      .insert({
-        user_id:    user.id,
-        course_id:  courseId,
-        amount:     course.price,       // server-side price only
-        currency:   course.currency,
-        method:     'card',             // PayTech offers the instrument choice itself
-        status:     'pending',
-        reference,
-        metadata:   { provider: 'paytech' },
-      })
-      .select('id')
-      .single()
-
-    if (insertError || !created) {
-      log.error({ userId: user.id, courseId }, 'could not create the pending payment intent')
-      return { error: "L'initialisation du paiement a échoué. Veuillez réessayer." }
-    }
-    paymentId = created.id as string
+  if (inflightError) {
+    log.error({ courseId }, 'could not read the in-flight payment')
+    return { error: MSG.failed }
   }
 
-  // ── 6. open the hosted checkout ──
-  const config = resolvePaytechConfig()
-  const urls = paytechCallbackUrls()
+  if (inflight) {
+    const row = inflight as PaytechPaymentRow
 
+    if (!row.provider_token) {
+      // Never opened: no URL was handed out, so it cannot have been paid.
+      const age = Date.now() - new Date(row.created_at).getTime()
+      if (row.provider === 'paytech' && age < INITIALISATION_GRACE_MS) {
+        return { error: MSG.initialising }
+      }
+      const { changed } = await closeUnopenedAttempt({
+        paymentId:     row.id,
+        failureReason: row.provider === 'paytech' ? 'superseded_unopened' : 'superseded_legacy_intent',
+      })
+      if (!changed) return { error: MSG.inProgress }
+      // fall through to a fresh attempt
+    } else if (row.provider !== 'paytech') {
+      // Opened with another provider. Not ours to judge.
+      return { error: MSG.verifying, reference: row.reference }
+    } else {
+      // Opened: it may have been paid. Ask; never supersede on a guess.
+      const result = await reconcilePaytechPayment(row, { source: 'checkout' })
+      switch (result.kind) {
+        case 'completed':
+        case 'already_completed':
+          return { accessUrl }
+        case 'failed':
+        case 'cancelled':
+        case 'already_terminal':
+          break   // reliably closed — a fresh attempt may be opened
+        case 'pending': {
+          const url = await storedCheckoutUrl(row.id)
+          if (url) return { redirectUrl: url }   // the SAME checkout, not a new one
+          return { error: MSG.verifying, reference: row.reference }
+        }
+        default:
+          log.warn({ paymentId: row.id, result: result.kind }, 'PayTech checkout refused: earlier attempt unresolved')
+          return { error: MSG.verifying, reference: row.reference }
+      }
+    }
+  }
+
+  // ── 7. re-check access AFTER the in-flight read (safeguard 5) ──
+  // The check in step 3 ran before step 6. If an earlier attempt completed in
+  // between — its notification, the sweep or an admin verify — step 6 found
+  // nothing in flight and we would open a SECOND chargeable checkout for a
+  // learner who now owns the course. Once step 6 has seen no attempt in
+  // flight, any completion has already committed its entitlement (062 writes
+  // both in one transaction), so this read is guaranteed to see it.
+  const recheck = await resolveCourseAccessById(courseId)
+  if (recheck.allowed) return { accessUrl }
+  if (await purchaseBlocker(user.id, courseId)) return { error: MSG.conflict }
+  const heldNow = await paymentExceptionBlock(user.id, courseId)
+  if (heldNow.unreadable) return { error: MSG.failed }
+  if (heldNow.reference) return { error: MSG.exception, reference: heldNow.reference }
+
+  return openAttempt({ userId: user.id, course: { id: courseId, title: String(course.title), price } })
+}
+
+/** The checkout URL stored with an opened attempt, if it is still a valid PayTech URL. */
+async function storedCheckoutUrl(paymentId: string): Promise<string | null> {
+  const { data } = await createAdminClient()
+    .from('payments')
+    .select('metadata')
+    .eq('id', paymentId)
+    .maybeSingle()
+  const url = (data?.metadata as { checkoutUrl?: unknown } | null)?.checkoutUrl
+  return isValidPaytechRedirectUrl(url) ? url : null
+}
+
+/**
+ * Open ONE new attempt: a fresh row with a fresh reference, then the provider,
+ * then the token — and only then a URL for the learner.
+ */
+async function openAttempt(args: {
+  userId: string
+  course: { id: string; title: string; price: number }
+}): Promise<PaytechCheckoutResult> {
+  const admin = createAdminClient()
+  const config = resolvePaytechConfig()
+  const reference = mintReference()
+
+  // Provider identity is recorded at creation and never changes (063).
+  const { data: created, error: insertError } = await admin
+    .from('payments')
+    .insert({
+      user_id:       args.userId,
+      course_id:     args.course.id,
+      amount:        args.course.price,      // server-side price only
+      currency:      PAYTECH_CURRENCY,
+      method:        'card',                 // the payer chooses the instrument at PayTech
+      status:        'pending',
+      reference,
+      provider:      'paytech',
+      provider_mode: config.providerMode,
+      metadata:      { provider: 'paytech' },
+    })
+    .select('id')
+    .single()
+
+  if (insertError || !created) {
+    // 23505 on 058's in-flight index: a concurrent click created the attempt.
+    // Nothing was sent to the provider.
+    if ((insertError as { code?: string } | null)?.code === '23505') return { error: MSG.inProgress }
+    log.error({ courseId: args.course.id }, 'could not create the pending payment intent')
+    return { error: MSG.failed }
+  }
+  const paymentId = created.id as string
+
+  const urls = paytechCallbackUrls()
   let checkout
   try {
     checkout = await requestPayment({
-      itemPrice:   course.price,
-      itemName:    String(course.title).slice(0, 120),
-      commandName: `XP Client Academy — ${String(course.title)}`.slice(0, 160),
+      itemPrice:   args.course.price,
+      itemName:    args.course.title.slice(0, 120),
+      commandName: `XP Client Academy — ${args.course.title}`.slice(0, 160),
       refCommand:  reference,
       ipnUrl:      urls.ipnUrl,
       successUrl:  urls.successUrl,
       cancelUrl:   urls.cancelUrl,
-      // Echoed back on the IPN. Correlation data only — never anything secret,
-      // and never anything we would trust on the way back.
-      customField: { payment_id: paymentId, course_id: courseId },
+      // Correlation only — never trusted on the way back, and never read by the IPN.
+      customField: { payment_id: paymentId },
     })
   } catch (err) {
     const reason = err instanceof PaytechApiError ? err.reason : 'unexpected'
     log.error({ paymentId, reason }, 'PayTech refused to open a checkout')
-    return { error: "Le service de paiement est momentanément indisponible. Veuillez réessayer." }
+    // Even on a timeout the learner never received a URL, so nothing can be
+    // paid against this attempt. Close it so it cannot block the next click.
+    await closeUnopenedAttempt({ paymentId, failureReason: `provider_request_${reason}` })
+    return { error: MSG.provider }
   }
 
-  // ── 7. persist the correlation key BEFORE redirecting ──
-  const { error: tokenError } = await admin
+  // The provider call can take many seconds, and a report on an earlier attempt may
+  // have landed meanwhile. No URL has been handed out yet, so nothing can be paid
+  // against this attempt, and it can still be closed safely.
+  const heldAfter = await paymentExceptionBlock(args.userId, args.course.id)
+  if (heldAfter.unreadable || heldAfter.reference) {
+    await closeUnopenedAttempt({ paymentId, failureReason: 'superseded_by_exception' })
+    return heldAfter.reference ? { error: MSG.exception, reference: heldAfter.reference } : { error: MSG.failed }
+  }
+
+  // Persist the correlation key BEFORE handing out the URL — compare-and-set,
+  // so a concurrent closure wins and this URL is never handed out.
+  const { data: persisted, error: tokenError } = await admin
     .from('payments')
     .update({
-      provider:           'paytech',
-      provider_mode:      checkout.providerMode,
       provider_token:     checkout.token,
       provider_reference: reference,
       status:             'processing',
+      metadata:           { provider: 'paytech', checkoutUrl: checkout.redirectUrl },
     })
     .eq('id', paymentId)
+    .eq('status', 'pending')
+    .is('provider_token', null)
+    .select('id')
 
-  if (tokenError) {
-    // Refusing the sale is the correct outcome: the learner could pay a checkout
-    // whose token we never stored, and the IPN would then arrive for a payment
-    // we cannot find.
+  if (tokenError || !Array.isArray(persisted) || persisted.length !== 1) {
     log.error({ paymentId }, 'could not persist the PayTech token; refusing to redirect')
-    return { error: "L'initialisation du paiement a échoué. Veuillez réessayer." }
+    return { error: MSG.failed }
   }
 
-  log.info(
-    { paymentId, providerMode: checkout.providerMode, isLive: config.isLive },
-    'PayTech checkout opened',
-  )
-
+  log.info({ paymentId, providerMode: checkout.providerMode }, 'PayTech checkout opened')
   return { redirectUrl: checkout.redirectUrl }
 }

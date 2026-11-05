@@ -83,7 +83,7 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
     // precisely 059's fail-closed claim, and 060 is its first real test.
     expect(f.filter(x => parseInt(x, 10) > 59))
       .toEqual(['060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                '062_atomic_payment_completion.sql'])
+                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const m060 = read('supabase/migrations/060_payment_completion_contract.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     expect(m060.match(/^\s*(grant|revoke)\s/gim) ?? [],
@@ -116,7 +116,7 @@ describe('PAY-1B(b) — 059 exists, alone, as one transaction that writes nothin
     expect(f.filter(x => x.startsWith('046'))).toEqual([])
     expect(f.filter(x => x.startsWith('051'))).toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(64)
     expect(new Set(nums).size).toBe(nums.length)
   })
 
@@ -383,48 +383,30 @@ describe('PAY-1B(b) — it fails closed on unexpected production state', () => {
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('PAY-1B(b) — compatibility with the already-deployed reader', () => {
+  // XP-PAYTECH-04 retired the only browser-role payment reader: the
+  // confirmation page now redirects to /payment/success, which reads through
+  // the service role. 059's allowlist was sized to that page's needs; it is
+  // unchanged, so a learner session can still read only these six columns of
+  // its own rows — and no shipped code needs even that any more.
   const PAGE_SRC = read(PAGE)
-  const projection = /\.select\('([^']*)'\)/.exec(PAGE_SRC)?.[1] ?? ''
-  const parts = (() => {
-    const out: string[] = []
-    let depth = 0, cur = ''
-    for (const ch of projection) {
-      if (ch === '(') depth++
-      if (ch === ')') depth--
-      if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; continue }
-      cur += ch
-    }
-    if (cur.trim()) out.push(cur.trim())
-    return out
-  })()
-  const pageColumns = parts.filter(p => !p.includes('('))
-  const pageEmbeds = parts.filter(p => p.includes('('))
 
-  it('PAY-1B(a) is deployed: the reader is an explicit projection', () => {
-    expect(projection).toBe('id, reference, amount, currency, status, courses(title)')
-    expect(PAGE_SRC).not.toMatch(/\.select\('\*/)
+  it('the retired reader reads nothing, so it can never 42501 against the allowlist', () => {
+    expect(PAGE_SRC).not.toMatch(/from\(\s*'payments'\s*\)/)
+    expect(PAGE_SRC).not.toMatch(/\.select\(/)
+    expect(PAGE_SRC).toMatch(/redirect\('\/payment\/success'\)/)
   })
 
-  it('every column the deployed page selects is in the allowlist', () => {
-    for (const c of pageColumns) {
-      expect(GRANTED, `the deployed page selects ${c}, which 059 would withhold → 42501`).toContain(c)
-    }
-    expect(pageColumns.sort()).toEqual(['amount', 'currency', 'id', 'reference', 'status'])
+  it('the allowlist is still exactly the six measured columns', () => {
+    expect([...GRANTED].sort()).toEqual(['amount', 'course_id', 'currency', 'id', 'reference', 'status'])
   })
 
-  it('the embed\'s join column is in the allowlist even though the page never names it', () => {
-    // THE DEFECT THIS CATCHES: `courses(title)` needs payments.course_id, so an
-    // allowlist built only from the select string would break the page.
-    expect(pageEmbeds).toEqual(['courses(title)'])
-    expect(GRANTED, 'courses(title) joins through course_id, which must be granted').toContain('course_id')
+  it('the embed join column stays granted, the two withheld columns stay withheld', () => {
+    expect(GRANTED, 'courses(title) joins through course_id').toContain('course_id')
+    expect(GRANTED).not.toContain('provider_token')
+    expect(GRANTED).not.toContain('metadata')
   })
 
-  it('the allowlist is the page\'s needs and nothing more', () => {
-    const needed = new Set([...pageColumns, 'course_id'])
-    expect([...GRANTED].sort()).toEqual([...needed].sort())
-  })
-
-  it('the confirmation page is still the ONLY browser-role payment reader', () => {
+  it('NO browser-role payment reader remains in shipped code', () => {
     const walk = (dir: string, acc: string[] = []): string[] => {
       if (!existsSync(dir)) return acc
       for (const e of readdirSync(dir)) {
@@ -436,6 +418,7 @@ describe('PAY-1B(b) — compatibility with the already-deployed reader', () => {
       return acc
     }
     const browser: string[] = []
+    let classified = 0
     for (const f of ['app', 'components', 'lib'].flatMap(d => walk(join(ROOT, d)))) {
       const src = readFileSync(f, 'utf8')
       for (const m of src.matchAll(/(\w+)\s*\.\s*from\(\s*'payments'\s*\)/g)) {
@@ -443,10 +426,12 @@ describe('PAY-1B(b) — compatibility with the already-deployed reader', () => {
         const isService = new RegExp(`const\\s+${recv}\\s*=\\s*createAdminClient\\(`).test(src)
         const isBrowser = new RegExp(`const\\s+${recv}\\s*=\\s*(await\\s+)?createClient\\(`).test(src)
         expect(isService || isBrowser, `unclassifiable payment reader in ${f}`).toBe(true)
+        classified += 1
         if (isBrowser) browser.push(f.slice(ROOT.length + 1).replace(/\\/g, '/'))
       }
     }
-    expect(browser).toEqual([PAGE])
+    expect(classified).toBeGreaterThan(0)
+    expect(browser).toEqual([])
   })
 
   it('059 records the rollout precondition and what remains after it', () => {

@@ -226,7 +226,8 @@ describe('CAT-02 · 5. the CTA cannot promise what the gate refuses', () => {
   it('a logged-in learner is NOT sent to checkout while payments are off', () => {
     // /checkout under PILOT_MODE redirects into /learn, which the gate then
     // refuses — the dead end CAT-01 found.
-    expect(code).toMatch(/paidPurchaseAvailable\s*=\s*PAYMENTS_ENABLED && !isFree/)
+    // XP-PAYTECH-04: the server-side PayTech checkout availability, not a NEXT_PUBLIC flag.
+    expect(code).toMatch(/paidPurchaseAvailable\s*=\s*paytechCheckoutAvailability\(\)\.available && !isFree/)
     expect(code).toMatch(/paidPurchaseAvailable[\s\S]{0,160}\/checkout\?course=/)
     expect(code).toMatch(/Inscription bient[oô]t disponible/)
   })
@@ -308,7 +309,11 @@ describe('CAT-02 · 6. SECURITY: presentation stayed presentation', () => {
 
   it('no migration was added and 062 is byte-identical', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
-    expect(migs).toHaveLength(60)
+    // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
+    expect(migs).toHaveLength(62)
+    expect(migs).toContain('063_payment_state_machine.sql')
+    // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
+    expect(migs).toContain('064_payment_exceptions.sql')
     const { createHash } = require('crypto') as typeof import('crypto')
     const raw = readFileSync(join(ROOT, 'supabase/migrations/062_atomic_payment_completion.sql'))
     expect(createHash('sha256').update(raw).digest('hex'))

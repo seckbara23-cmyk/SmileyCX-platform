@@ -73,6 +73,21 @@ export type AuditEventType =
   // that are. See lib/admin/publication-audit.ts.
   | 'course.published'
   | 'course.unpublished'
+  // XP-PAYTECH-04 — operator reconciliation of PayTech payments. Neither grants
+  // access by itself: "verification requested" asks the provider, and only a
+  // provider-confirmed payment completes (through 062); "manually closed"
+  // records an operator's attestation that an attempt was NOT paid, which
+  // grants nothing and only frees the learner to try again.
+  | 'payment.verification_requested'
+  | 'payment.manual_close_attested'
+  | 'payment.manually_closed'
+  // XP-PAYTECH-05 — a decision on a payment exception that the database REFUSED.
+  // Accepted decisions are audited by migration 064 in the same transaction, as
+  // `payment.exception_*`. None of them grants access or moves money.
+  | 'payment.exception_decision_refused'
+  // A sweep that stops cannot report itself, so each finished run leaves this row, and
+  // the admin page warns when the last one is too old. Counts only.
+  | 'payment.reconciliation_sweep_finished'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'
@@ -98,9 +113,10 @@ export interface AuditEvent {
 /**
  * Record an identity event. Never throws: a failure to audit must not break the
  * user-facing action, but it is always logged at error level so the gap is
- * visible in runtime logs.
+ * visible in runtime logs. Says whether the row was written, for the one action
+ * that rests on it.
  */
-export async function logAuditEvent(event: AuditEvent): Promise<void> {
+export async function logAuditEvent(event: AuditEvent): Promise<boolean> {
   try {
     const admin = createAdminClient()
     const { error } = await admin.from('audit_log').insert({
@@ -125,11 +141,39 @@ export async function logAuditEvent(event: AuditEvent): Promise<void> {
         { eventType: event.eventType, outcome: event.outcome, error: error.message },
         'Failed to write audit_log record'
       )
+      return false
     }
+    return true
   } catch (e) {
     log.error(
       { eventType: event.eventType, error: (e as Error).message },
       'Unexpected failure writing audit_log record'
     )
+    return false
+  }
+}
+
+/**
+ * When an event last succeeded, for an operator's page. Through the service role only:
+ * no browser role reads this table. `readable: false` means it could not be told, which
+ * is not the same as "never". Never throws.
+ */
+export async function lastSuccessfulAuditEventAt(
+  eventType: AuditEventType,
+): Promise<{ readonly readable: boolean; readonly at: string | null }> {
+  try {
+    const { data, error } = await createAdminClient()
+      .from('audit_log')
+      .select('created_at')
+      .eq('event_type', eventType)
+      .eq('outcome', 'success')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle()
+    if (error) return { readable: false, at: null }
+    const at = (data as { created_at?: unknown } | null)?.created_at
+    return { readable: true, at: at === null || at === undefined ? null : String(at) }
+  } catch {
+    return { readable: false, at: null }
   }
 }

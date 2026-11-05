@@ -65,7 +65,7 @@ describe('AUDIT-SEC-01 — 061 exists, alone, as one transaction', () => {
     // PAY-2C later authored 062. The rule is not "nothing above 061" but
     // "nothing above 061 reopens the audit_log grant layer".
     const above = f.filter(x => parseInt(x, 10) > 61)
-    expect(above).toEqual(['062_atomic_payment_completion.sql'])
+    expect(above).toEqual(['062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
     const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
@@ -79,7 +79,7 @@ describe('AUDIT-SEC-01 — 061 exists, alone, as one transaction', () => {
     expect(m062).toMatch(/insert into public\.audit_log/)
     expect(m062).toMatch(/security invoker/)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(64)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -367,9 +367,10 @@ describe('AUDIT-SEC-01 — cross-artifact: who actually uses audit_log', () => {
     return out
   }
 
-  it('the ONLY audit_log accessor in the codebase is the service-role INSERT', () => {
+  it('the ONLY audit_log accessors in the codebase are the service-role helper\'s INSERT and one SELECT', () => {
     // This is what makes removing anon's SELECT and narrowing authenticated's
-    // to SELECT-only safe: nothing reads the table at all.
+    // to SELECT-only safe: no browser role reads the table. XP-PAYTECH-06's one read,
+    // when an event last succeeded, is the service role's, which 061 preserves.
     const hits: string[] = []
     for (const f of sourceFiles()) {
       const src = read(f).replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
@@ -378,7 +379,7 @@ describe('AUDIT-SEC-01 — cross-artifact: who actually uses audit_log', () => {
         hits.push(`${f}:${/\.insert\(/.test(window) ? 'INSERT' : /\.select\(/.test(window) ? 'SELECT' : 'OTHER'}`)
       }
     }
-    expect(hits).toEqual(['lib/audit/log.ts:INSERT'])
+    expect(hits).toEqual(['lib/audit/log.ts:INSERT', 'lib/audit/log.ts:SELECT'])
     // ...and it goes through the service-role client, which 061 preserves.
     const helper = read('lib/audit/log.ts')
     expect(helper).toContain('createAdminClient()')

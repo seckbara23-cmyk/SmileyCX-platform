@@ -81,8 +81,7 @@ export const PLATFORM_MODE_DIAGNOSTIC: string | null =
         + `so PLATFORM_MODE resolved to '${FALLBACK_MODE}'. `
         + `It must be exactly one of: ${VALID_MODES.join(', ')}.`
 
-// Emitted once, server-side only. This module is imported by client components
-// (PAYMENTS_ENABLED), and a browser console is neither the right audience nor a
+// Emitted once, server-side only. This module may be imported by client components, and a browser console is neither the right audience nor a
 // place to describe deployment configuration. The message names the variable
 // and reports the VALUE'S LENGTH, never the value — a misconfigured variable
 // could contain anything, including something pasted there by mistake.
@@ -104,9 +103,13 @@ export const PILOT_MODE = PLATFORM_MODE === 'pilot'
  */
 export const FREE_ACCESS_MODE = PLATFORM_MODE === 'pilot'
 
-/**
- * PAYMENTS_ENABLED: true only when explicitly set via env override.
- * Set NEXT_PUBLIC_PAYMENTS_ENABLED=true after payment gateways are live.
+/*
+ * PAYMENTS_ENABLED — RETIRED by XP-PAYTECH-04.
+ *
+ * It was `NEXT_PUBLIC_PAYMENTS_ENABLED === 'true'`: a BROWSER-VISIBLE, build-time
+ * variable deciding whether money could be taken, and when true it rendered a
+ * card-number/CVV form. Whether a deployment may take a payment is now decided
+ * on the server by `paytechCheckoutAvailability()` (lib/payments/providers.ts),
+ * from server-only variables. The export is gone so nothing can consult it
+ * again; the deploy gate warns if the variable is still set.
  */
-export const PAYMENTS_ENABLED =
-  process.env.NEXT_PUBLIC_PAYMENTS_ENABLED === 'true'

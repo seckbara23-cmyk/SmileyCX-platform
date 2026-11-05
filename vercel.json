@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "feat/xp-paytech-04-checkout-reconciliation": false
+    }
+  },
+  "ignoreCommand": "[ \"$VERCEL_GIT_COMMIT_REF\" = \"feat/xp-paytech-04-checkout-reconciliation\" ]",
+  "crons": [
+    { "path": "/api/payments/paytech/reconcile", "schedule": "0 5 * * *" }
+  ]
+}

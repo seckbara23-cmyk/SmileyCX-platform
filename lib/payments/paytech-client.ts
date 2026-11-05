@@ -5,6 +5,11 @@ import {
   type PaytechConfig,
   type EnvLike,
 } from '@/lib/payments/paytech-config'
+import {
+  PAYTECH_SETTLEMENT_CONTRACT,
+  contractProblems,
+  type PaytechSettlementContract,
+} from '@/lib/payments/paytech-settlement-contract'
 
 /**
  * PayTech HTTP transport — XP-PAYTECH-01.
@@ -42,20 +47,14 @@ import {
  *      read; neither is trusted until it validates as HTTPS on the provider
  *      host, because its only use is to send a learner's browser somewhere.
  *
- * ── NO SERVER-TO-SERVER VERIFICATION EXISTS ───────────────────────────────
+ * ── SETTLEMENT IS ASKED, NEVER GUESSED ────────────────────────────────────
  *
- * This file deliberately has no `confirmPayment()`, and that absence is the
- * single most important fact about the PayTech integration.
- *
- * PayDunya publishes `GET /checkout-invoice/confirm/{token}`, which is what
- * lets `paydunya-client.ts` establish that money actually moved over a channel
- * the learner cannot influence. PayTech publishes no equivalent: neither
- * paytech.sn/doc, nor the official integration PDF, nor the community PHP SDK
- * documents any endpoint that returns the status of an existing transaction.
- *
- * Inventing one was not an option, so verification happens where the provider
- * does offer something cryptographic — the IPN signature — and that lives in
- * `paytech-ipn.ts`, with the residual risk written down there.
+ * `confirmPaymentStatus()` asks PayTech, server to server, what happened to a
+ * transaction. PayTech documents the endpoint but not its response, so the
+ * reading of that response is DATA — `paytech-settlement-contract.ts` — and is
+ * `null` until PayTech confirms it in writing. While it is `null` this module
+ * makes no status request and answers `unknown`, which fulfils nothing and
+ * frees no learner to pay twice (XP-PAYTECH-04 safeguards 1 and 3).
  *
  * ── SECRETS DO NOT LEAVE ──────────────────────────────────────────────────
  *
@@ -76,14 +75,9 @@ export const PAYTECH_BASE_URL = `https://${PAYTECH_HOST}/api`
 export const PAYTECH_REQUEST_PAYMENT_PATH = '/payment/request-payment'
 
 /**
- * The server-to-server settlement check — XP-PAYTECH-02.
- *
- * XP-PAYTECH-01 reported that PayTech publishes no way to ask the status of an
- * existing transaction, and built the integration around that belief. THAT WAS
- * WRONG: `GET /payment/get-status?token_payment={token}` is documented, next to
- * `/payment/refund-payment` and the transfer endpoints. The mistake mattered,
- * because it is the reason fulfilment leaned on a signature that does not
- * authenticate the outcome (see `paytech-ipn.ts`).
+ * The documented server-to-server status endpoint. Which call is actually made
+ * — this one, or the `POST /payment/status` PayTech's own documentation tester
+ * uses — is decided by the confirmed settlement contract, not here.
  */
 export const PAYTECH_GET_STATUS_PATH = '/payment/get-status'
 
@@ -393,159 +387,191 @@ export async function requestPayment(
 // ── C. Confirm settlement, server to server ─────────────────────────────────
 
 /**
- * What PayTech says actually happened to a transaction.
+ * What PayTech says happened to a transaction.
  *
  * `unknown` is a first-class outcome, not an error: it is what the caller gets
- * whenever the response cannot be positively interpreted, and it must never
- * lead to fulfilment.
+ * whenever the answer cannot be positively interpreted under the CONFIRMED
+ * contract, and it must never lead to fulfilment, cancellation, or a second
+ * checkout for the same order.
  */
-export const PAYTECH_SETTLEMENTS = ['paid', 'cancelled', 'pending', 'unknown'] as const
+export const PAYTECH_SETTLEMENTS = ['paid', 'failed', 'cancelled', 'pending', 'unknown'] as const
 export type PaytechSettlementOutcome = (typeof PAYTECH_SETTLEMENTS)[number]
+
+/** Why the answer was `unknown`. Machine-readable; safe to record and log. */
+export const SETTLEMENT_UNKNOWN_REASONS = [
+  'contract_unconfirmed',   // PayTech has not documented the response — nothing is inferred
+  'contract_invalid',       // the configured contract fails contractProblems()
+  'invalid_target',         // our own token or reference is unusable
+  'config_invalid',         // credentials do not resolve
+  'network_error',
+  'timeout',
+  'http_error',
+  'non_json_response',
+  'malformed_json',
+  'provider_refused',       // the contract's success flag is present and not 1
+  'status_missing',         // nothing at the contract's status path
+  'status_unrecognised',    // a status word the contract does not list
+  'reference_mismatch',     // the provider echoed another order's reference
+  'amount_unreadable',      // a paid answer without the amount the contract promises
+] as const
+export type SettlementUnknownReason = (typeof SETTLEMENT_UNKNOWN_REASONS)[number]
 
 export interface PaytechSettlement {
   readonly outcome: PaytechSettlementOutcome
-  /** The amount PayTech reports, when it reports one. Cross-checked by the caller. */
+  /** Set only when outcome is `unknown`. */
+  readonly reason: SettlementUnknownReason | null
+  /** The amount PayTech reports, when the contract names one. Cross-checked by the caller. */
   readonly amount: number | null
-  /** The raw token we recognised, for operator diagnostics. Never a credential. */
-  readonly matched: string | null
+  /** The currency PayTech reports, upper-cased, when the contract names one. */
+  readonly currency: string | null
+  /**
+   * For `status_missing` / `status_unrecognised`: the KEY PATHS of the response
+   * (never values), so an operator can see what PayTech actually sent without
+   * anything sensitive reaching a log.
+   */
+  readonly shape: readonly string[] | null
 }
 
-/**
- * Status values we are willing to ACT on, drawn only from PayTech's own
- * documented vocabulary — the `type_event` names `sale_complete` /
- * `sale_canceled`, and the `success` flag semantics the request-payment
- * endpoint documents.
- *
- * ⚠ THE RESPONSE SHAPE OF /payment/get-status IS NOT DOCUMENTED. No source
- * reachable from here publishes its JSON. These sets are therefore a
- * RECOGNITION ALLOW-LIST, not an asserted contract: anything outside them
- * resolves to `unknown`, and `unknown` never fulfils. The first real sandbox
- * response will show which field and value PayTech actually returns; until
- * then this function is expected to answer `unknown` and the IPN is expected
- * to fulfil nothing. That is the designed behaviour, not a bug to loosen.
- */
-const PAID_TOKENS = new Set(['sale_complete', 'complete', 'completed', 'success', 'paid'])
-const CANCELLED_TOKENS = new Set([
-  'sale_canceled', 'sale_cancelled', 'canceled', 'cancelled', 'failed', 'fail',
-])
-const PENDING_TOKENS = new Set(['pending', 'processing', 'in_progress'])
-
-/** Field names we will read a status from. Narrow on purpose. */
-const STATUS_FIELDS = ['type_event', 'status', 'payment_status', 'state'] as const
-
-const GetStatusResponseSchema = z.object({
-  success: SuccessSchema.optional(),
-  message: z.unknown().optional(),
-}).passthrough()
-
-function readStatusToken(body: Record<string, unknown>): string | null {
-  for (const f of STATUS_FIELDS) {
-    const v = body[f]
-    if (typeof v === 'string' && v.trim().length > 0) return v.trim().toLowerCase()
-  }
-  // Some responses nest the transaction. One level only, and only these keys.
-  for (const nest of ['data', 'transaction', 'payment']) {
-    const inner = body[nest]
-    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
-      const found = readStatusToken(inner as Record<string, unknown>)
-      if (found) return found
-    }
-  }
-  return null
+export interface ConfirmTarget {
+  /** Our stored provider token. */
+  readonly token: string
+  /** Our stored order reference (`payments.reference`). */
+  readonly refCommand: string
 }
 
-function readAmount(body: Record<string, unknown>): number | null {
-  for (const f of ['item_price', 'amount', 'final_item_price', 'item_price_xof']) {
-    const v = body[f]
-    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v.trim()) : NaN
-    if (Number.isFinite(n) && n > 0) return n
+export interface ConfirmOptions extends PaytechRequestOptions {
+  /**
+   * Injected for tests only. Absent means "the contract in force"; `null`
+   * means "unconfirmed" explicitly.
+   */
+  readonly contract?: PaytechSettlementContract | null
+}
+
+/** Read a dotted path through plain objects only. Arrays and prototypes are never walked. */
+function readPath(body: unknown, path: string): unknown {
+  let cur: unknown = body
+  for (const key of path.split('.')) {
+    if (cur === null || typeof cur !== 'object' || Array.isArray(cur)) return undefined
+    if (!Object.prototype.hasOwnProperty.call(cur, key)) return undefined
+    cur = (cur as Record<string, unknown>)[key]
   }
-  for (const nest of ['data', 'transaction', 'payment']) {
-    const inner = body[nest]
-    if (inner && typeof inner === 'object' && !Array.isArray(inner)) {
-      const found = readAmount(inner as Record<string, unknown>)
-      if (found !== null) return found
-    }
+  return cur
+}
+
+/** Key paths of a response, three levels deep. Names only — no value is ever copied. */
+function shapeOf(body: unknown, prefix = '', depth = 0): string[] {
+  if (body === null || typeof body !== 'object' || Array.isArray(body) || depth > 2) return []
+  const out: string[] = []
+  for (const k of Object.keys(body as Record<string, unknown>).sort().slice(0, 40)) {
+    const p = prefix ? `${prefix}.${k}` : k
+    out.push(p)
+    out.push(...shapeOf((body as Record<string, unknown>)[k], p, depth + 1))
   }
-  return null
+  return out
+}
+
+function numberAt(body: unknown, path: string | null): number | null {
+  if (path === null) return null
+  const v = readPath(body, path)
+  const n = typeof v === 'number' ? v : typeof v === 'string' && v.trim() !== '' ? Number(v.trim()) : NaN
+  return Number.isFinite(n) ? n : null
 }
 
 /**
  * Ask PayTech, over a channel the payer cannot influence, what happened.
  *
- * This is the ONLY thing in the PayTech integration that may establish that
- * money moved, and it exists because the IPN signature does not cover the
- * outcome. It returns FACTS; it decides nothing. Comparing the amount against
- * the stored payment row and completing the payment belong to the trusted
- * caller, not here.
+ * Returns FACTS under the confirmed contract; decides nothing. Comparing the
+ * amount and currency with the stored row, and acting on the outcome, belong
+ * to `paytech-reconcile.ts`.
  *
- * It never throws for a "no" answer: a transport failure, a refusal, an
- * unparseable body and an unrecognised status all resolve to `unknown`, so the
- * caller has exactly one safe branch to write and cannot forget a catch.
+ * Never throws. Every failure — no contract, transport, refusal, an
+ * unparseable body, a status word the contract does not list — is `unknown`
+ * with a reason, so the caller has exactly one safe branch to write.
  */
 export async function confirmPaymentStatus(
-  token: string,
-  opts: PaytechRequestOptions = {},
+  target: ConfirmTarget,
+  opts: ConfirmOptions = {},
 ): Promise<PaytechSettlement> {
-  const nothing: PaytechSettlement = { outcome: 'unknown', amount: null, matched: null }
+  const unknown = (reason: SettlementUnknownReason, shape: readonly string[] | null = null): PaytechSettlement =>
+    ({ outcome: 'unknown', reason, amount: null, currency: null, shape })
 
-  if (!isValidPaytechToken(token)) return nothing
+  const contract = 'contract' in opts ? opts.contract ?? null : PAYTECH_SETTLEMENT_CONTRACT
+  if (contract === null) return unknown('contract_unconfirmed')
+  if (contractProblems(contract).length > 0) return unknown('contract_invalid')
+
+  if (!isValidPaytechToken(target.token)) return unknown('invalid_target')
+  if (typeof target.refCommand !== 'string' || target.refCommand.trim().length === 0) {
+    return unknown('invalid_target')
+  }
 
   let config: PaytechConfig
   try {
     config = opts.env ? resolvePaytechConfig(opts.env) : resolvePaytechConfig()
   } catch {
-    return nothing
+    return unknown('config_invalid')
   }
 
   const doFetch = opts.fetchImpl ?? fetch
   const timeoutMs = opts.timeoutMs ?? PAYTECH_TIMEOUT_MS
-  const url = `${PAYTECH_BASE_URL}${PAYTECH_GET_STATUS_PATH}`
-             + `?token_payment=${encodeURIComponent(token)}`
+  const request = contract.request
+  const url = request.method === 'GET'
+    ? `${PAYTECH_BASE_URL}${request.path}?${request.tokenParam}=${encodeURIComponent(target.token)}`
+    : `${PAYTECH_BASE_URL}${request.path}`
 
   let res: Response
   try {
     res = await doFetch(url, {
-      method:  'GET',
+      method:  request.method,
       headers: headersFor(config),
+      ...(request.method === 'POST'
+        ? { body: JSON.stringify({ [request.refCommandField]: target.refCommand }) }
+        : {}),
       signal:  AbortSignal.timeout(timeoutMs),
       cache:   'no-store',
     })
-  } catch {
-    return nothing
+  } catch (err) {
+    const name = (err as { name?: string } | null)?.name ?? ''
+    return unknown(name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'network_error')
   }
 
-  if (!res.ok) return nothing
-
+  if (!res.ok) return unknown('http_error')
   const contentType = res.headers.get('content-type') ?? ''
-  if (!/\bapplication\/json\b|\b\+json\b/i.test(contentType)) return nothing
+  if (!/\bapplication\/json\b|\b\+json\b/i.test(contentType)) return unknown('non_json_response')
 
-  let raw: unknown
-  try { raw = await res.json() } catch { return nothing }
+  let body: unknown
+  try { body = await res.json() } catch { return unknown('malformed_json') }
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return unknown('malformed_json')
 
-  const parsed = GetStatusResponseSchema.safeParse(raw)
-  if (!parsed.success) return nothing
-
-  const body = parsed.data as Record<string, unknown>
-
-  // A negative `success` is a refusal, whatever else the body says.
-  if (typeof body.success === 'number' && body.success !== 1) return nothing
-
-  const statusToken = readStatusToken(body)
-  if (statusToken === null) return nothing
-
-  const amount = readAmount(body)
-
-  if (PAID_TOKENS.has(statusToken)) {
-    return { outcome: 'paid', amount, matched: statusToken }
-  }
-  if (CANCELLED_TOKENS.has(statusToken)) {
-    return { outcome: 'cancelled', amount, matched: statusToken }
-  }
-  if (PENDING_TOKENS.has(statusToken)) {
-    return { outcome: 'pending', amount, matched: statusToken }
+  if (contract.successPath !== null && numberAt(body, contract.successPath) !== 1) {
+    return unknown('provider_refused')
   }
 
-  // Recognised nothing. Fail closed rather than guess which way it leans.
-  return { outcome: 'unknown', amount, matched: statusToken }
+  if (contract.referencePath !== null) {
+    const echoed = readPath(body, contract.referencePath)
+    if (typeof echoed !== 'string' || echoed.trim() !== target.refCommand.trim()) {
+      return unknown('reference_mismatch')
+    }
+  }
+
+  const raw = readPath(body, contract.statusPath)
+  if (typeof raw !== 'string' || raw.trim().length === 0) return unknown('status_missing', shapeOf(body))
+  const word = raw.trim().toLowerCase()
+
+  const amount = numberAt(body, contract.amountPath)
+  const currencyRaw = contract.currencyPath === null ? null : readPath(body, contract.currencyPath)
+  const currency = typeof currencyRaw === 'string' && currencyRaw.trim() ? currencyRaw.trim().toUpperCase() : null
+  const facts = { reason: null, amount, currency, shape: null }
+
+  if (contract.paid.includes(word)) {
+    // A contract that promises an amount must deliver it for a PAID answer:
+    // the amount cross-check is part of what makes "paid" trustworthy.
+    if (contract.amountPath !== null && amount === null) return unknown('amount_unreadable')
+    return { outcome: 'paid', ...facts }
+  }
+  if (contract.failed.includes(word)) return { outcome: 'failed', ...facts }
+  if (contract.cancelled.includes(word)) return { outcome: 'cancelled', ...facts }
+  if (contract.pending.includes(word)) return { outcome: 'pending', ...facts }
+
+  // A word the contract does not list. Fail closed rather than guess which way it leans.
+  return unknown('status_unrecognised', shapeOf(body))
 }

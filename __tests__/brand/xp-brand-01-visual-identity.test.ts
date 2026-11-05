@@ -359,8 +359,9 @@ describe('XP-BRAND-01 · nothing functional was traded for appearance', () => {
   it('no migration, RLS or payment logic is part of this change', () => {
     const cfg = code('tailwind.config.ts')
     expect(cfg).not.toMatch(/policy|grant|rpc/i)
-    // payment selector keeps its provider colours
-    expect(read('components/payment/PaymentMethodSelector.tsx')).toBeTruthy()
+    // XP-PAYTECH-04 deleted the payment selector (it collected card numbers on
+    // this site). The single payment control is the PayTech redirect button.
+    expect(read('components/payment/PaytechCheckoutButton.tsx')).toBeTruthy()
   })
 
   it('issued certificates are never regenerated for branding', () => {
