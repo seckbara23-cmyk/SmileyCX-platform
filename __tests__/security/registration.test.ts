@@ -188,12 +188,16 @@ describe('login and password reset are preserved', () => {
   /**
    * XPA-6A moved recovery from the browser into a server action, so that it can
    * be rate limited and audited and so the recovery link is composed from the
-   * canonical domain rather than from `location.origin`. The call still exists —
-   * it simply runs somewhere it can be controlled.
+   * canonical domain rather than from `location.origin`. XP-LAUNCH-01 then
+   * replaced Supabase's PKCE mail with a hashed-token link the platform
+   * generates and sends itself, so the link works in any browser or device
+   * (see __tests__/auth/xp-launch-01-password-recovery.test.ts).
    */
-  it('password reset still calls resetPasswordForEmail, now server-side', () => {
+  it('password reset is server-side: the platform generates and mails the link itself', () => {
     const action = raw('app/actions/auth.ts')
-    expect(action).toMatch(/resetPasswordForEmail\s*\(/)
+    expect(action).not.toMatch(/resetPasswordForEmail\s*\(/)
+    expect(action).toMatch(/generateLink\(\{ type: 'recovery'/)
+    expect(action).toMatch(/sendPasswordResetEmail\(/)
     expect(action).toMatch(/rateLimitDb\(`password-reset:/)
     expect(action).toMatch(/logAuditEvent\(/)
 

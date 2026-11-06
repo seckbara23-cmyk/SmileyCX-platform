@@ -222,7 +222,8 @@ describe('XPA-6A domain separation', () => {
   it('the recovery link is composed from the canonical origin', () => {
     const action = stripComments(read('app/actions/auth.ts'))
     const recover = action.slice(action.indexOf('export async function requestPasswordReset'))
-    expect(recover).toMatch(/redirectTo:\s*publicUrl\(/)
+    // XP-LAUNCH-01: the platform composes the /auth/recover link itself.
+    expect(recover).toMatch(/publicUrl\(\s*`\/auth\/recover\?token_hash=/)
     expect(recover).not.toMatch(/location\.origin/)
   })
 
