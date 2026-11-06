@@ -28,6 +28,7 @@ export type AuditEventType =
   | 'user.email_verified'
   | 'user.verification_resent'
   | 'user.password_reset_requested'
+  | 'user.password_recovery_opened'
   | 'user.legal_accepted'
   // XPA-6B — entitlement lifecycle. These are the ONLY events that change who
   // can read a course, so they are the first place to look when access is

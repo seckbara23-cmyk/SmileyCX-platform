@@ -29,13 +29,12 @@
 
 import { headers } from 'next/headers'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { createClient } from '@/lib/supabase/server'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { logAuditEvent } from '@/lib/audit/log'
 import { verifyCaptcha, isCaptchaEnabled } from '@/lib/security/captcha'
 import { isCommercialHost } from '@/lib/hosts'
 import { publicUrl } from '@/lib/brand'
-import { sendVerificationEmail } from '@/lib/email'
+import { sendVerificationEmail, sendPasswordResetEmail } from '@/lib/email'
 import { createLogger } from '@/lib/logger'
 import { TERMS_VERSION, PRIVACY_VERSION } from '@/lib/legal/versions'
 import {
@@ -433,8 +432,22 @@ export async function resendVerification(input: {
  * be rate limited or audited, because the application server was never in the
  * request path.
  *
- * The redirect target is now composed from PUBLIC_SITE_URL and cannot reflect
- * the request origin.
+ * The link is composed from PUBLIC_SITE_URL and cannot reflect the request
+ * origin.
+ *
+ * ── XP-LAUNCH-01: the platform sends the link itself ──────────────────────
+ * Until now this called `resetPasswordForEmail`, so Supabase mailed a PKCE
+ * link back to /auth/callback. A PKCE code is only exchangeable by the browser
+ * holding the verifier cookie that this very request created, on this very
+ * host. A recovery link is routinely opened elsewhere (the phone's mail app,
+ * another browser, after a mail scanner followed it first, or on the public
+ * host after a request made on the internal one), and in every one of those
+ * cases the learner ended on /login with "link expired" and no way forward.
+ * The platform now generates a hashed recovery token with the Admin API and
+ * mails it through its own mailer to /auth/recover, exactly as registration
+ * has done for verification since XPA-6A. Nothing in the browser is needed
+ * for the link to work. Enumeration resistance is unchanged: every outcome,
+ * including "no such account", answers the same neutral message.
  */
 export async function requestPasswordReset(input: {
   email: string
@@ -470,18 +483,32 @@ export async function requestPasswordReset(input: {
     return { ok: true, message: NEUTRAL_RECOVERY_MESSAGE }
   }
 
-  const supabase = await createClient()
-  const { error } = await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: publicUrl('/auth/callback?next=/reset-password&type=recovery'),
-  })
+  const admin = createAdminClient()
+  const { data, error } = await admin.auth.admin.generateLink({ type: 'recovery', email })
+  const hashedToken = data?.properties?.hashed_token
+
+  let outcome: 'success' | 'failure' = 'failure'
+  let reason:  string | null = null
+  if (error || !hashedToken) {
+    // Unknown address, or Supabase refused: the learner still sees the neutral
+    // message; the audit log keeps the reason.
+    reason = error?.message ?? 'generateLink returned no token'
+  } else {
+    const resetUrl = publicUrl(
+      `/auth/recover?token_hash=${encodeURIComponent(hashedToken)}&type=recovery`,
+    )
+    const sent = await sendPasswordResetEmail(email, { resetUrl })
+    outcome = sent.success ? 'success' : 'failure'
+    reason  = sent.success ? null : (sent.error ?? 'send failed')
+  }
 
   await logAuditEvent({
     eventType:    'user.password_reset_requested',
     actorType:    'anonymous',
     subjectEmail: email,
     method:       'self_service',
-    outcome:      error ? 'failure' : 'success',
-    reason:       error?.message ?? null,
+    outcome,
+    reason,
     ip,
     userAgent,
   })
