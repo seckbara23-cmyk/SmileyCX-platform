@@ -255,9 +255,10 @@ describe('READY-P1 FIXED — settlement is read through a confirmed contract onl
     return { r, calls: spy.mock.calls.length }
   }
 
-  it('the contract in force is null: PayTech has not documented its status response', async () => {
-    const { PAYTECH_SETTLEMENT_CONTRACT } = await import('@/lib/payments/paytech-settlement-contract')
-    expect(PAYTECH_SETTLEMENT_CONTRACT).toBeNull()
+  it('the contract in force is filled from PayTech\'s observed answers and is valid (XP-LAUNCH-04)', async () => {
+    const { PAYTECH_SETTLEMENT_CONTRACT, contractProblems } = await import('@/lib/payments/paytech-settlement-contract')
+    expect(PAYTECH_SETTLEMENT_CONTRACT).not.toBeNull()
+    expect(contractProblems(PAYTECH_SETTLEMENT_CONTRACT as NonNullable<typeof PAYTECH_SETTLEMENT_CONTRACT>)).toEqual([])
   })
 
   it('with no contract, nothing is inferred and no request is made', async () => {

@@ -101,7 +101,7 @@ export const PAYTECH_ERROR_REASONS = [
   'network_error',         // DNS, TLS, connection reset
   'timeout',               // our own deadline elapsed
   'http_error',            // a non-2xx status
-  'non_json_response',     // HTML, text, or a missing content type
+  'non_json_response',     // a DECLARED non-JSON content type (HTML, text); a missing header is parsed
   'malformed_json',        // 2xx, JSON content type, unparseable body
   'provider_error',        // `success` present and not 1
   'schema_invalid',        // shape we cannot safely interpret
@@ -219,6 +219,23 @@ export interface PaytechRequestOptions {
 
 // ── Transport ───────────────────────────────────────────────────────────────
 
+/**
+ * Does the response DECLARE a non-JSON body?
+ *
+ * PayTech answers with a JSON body and NO Content-Type header at all: observed
+ * on 2026-11-07 against its test environment on both `request-payment` and
+ * `get-status` (`transfer-encoding: chunked`, `x-content-type-options: nosniff`,
+ * no content type). Requiring the header made the very first real checkout
+ * fail with `non_json_response`. So a MISSING header is tolerated and the body
+ * is judged by parsing it (an HTML page then fails as `malformed_json`, and the
+ * schema check still guards the shape), while a header that names a non-JSON
+ * type is refused before the body is read, as before.
+ */
+function declaresNonJson(contentType: string | null): boolean {
+  if (contentType === null || contentType.trim().length === 0) return false
+  return !/\bapplication\/json\b|\b\+json\b/i.test(contentType)
+}
+
 function headersFor(config: PaytechConfig): Record<string, string> {
   // Exactly what the provider documents: the key and secret as plain headers.
   return {
@@ -322,8 +339,7 @@ export async function requestPayment(
     })
   }
 
-  const contentType = res.headers.get('content-type') ?? ''
-  if (!/\bapplication\/json\b|\b\+json\b/i.test(contentType)) {
+  if (declaresNonJson(res.headers.get('content-type'))) {
     throw new PaytechApiError('non_json_response', 'PayTech returned a non-JSON response.', {
       httpStatus: res.status,
     })
@@ -535,8 +551,7 @@ export async function confirmPaymentStatus(
   }
 
   if (!res.ok) return unknown('http_error')
-  const contentType = res.headers.get('content-type') ?? ''
-  if (!/\bapplication\/json\b|\b\+json\b/i.test(contentType)) return unknown('non_json_response')
+  if (declaresNonJson(res.headers.get('content-type'))) return unknown('non_json_response')
 
   let body: unknown
   try { body = await res.json() } catch { return unknown('malformed_json') }

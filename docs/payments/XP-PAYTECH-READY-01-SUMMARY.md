@@ -11,7 +11,7 @@ This is the summary of the audit behind [XP-PAYTECH-04](XP-PAYTECH-04-PULL-REQUE
 |---|---|---|
 | C1 | Checkout was not connected to PayTech | Closed |
 | C2 | The legacy checkout form could collect card details | Closed: the form is deleted |
-| P1 | Settlement depended on a provider response PayTech does not document | Closed in code: fails closed until PayTech confirms the response |
+| P1 | Settlement depended on a provider response PayTech does not document | Closed in code: reads only the words PayTech was observed to answer (2026-11-07); anything else fails closed |
 | F8 | Notification checks depend on provider details PayTech does not fully document | Closed in code: fails closed until PayTech confirms them |
 | F1 | A checkout retry could lose track of an earlier attempt | Closed |
 | F2 | A retry racing a completion could corrupt a payment record | Closed |
@@ -51,6 +51,6 @@ All fifteen run against the real checkout action, notification route and complet
 ## What this evidence does not prove
 
 * How PayTech actually behaves. The provider is simulated.
-* That a late payment would be found without a notification. That needs the settlement contract.
+* That a late payment would be found without a notification. That needs the settlement contract, which was filled on 2026-11-07 from observed answers and exercised by a local reconciliation sweep, not by these tests.
 * How a deployed system behaves. These tests run locally.
 * How two separate database sessions contend for a lock. PGlite has one connection.

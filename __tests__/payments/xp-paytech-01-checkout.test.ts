@@ -552,9 +552,14 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
     expect(r.reference).toBe('SCX-OLD-REF')
     expect(state.inserted, 'a second attempt was created').toEqual([])
     expect(state.updates.find(u => 'provider_token' in u), 'the stored token was overwritten').toBeUndefined()
-    // No contract is confirmed, so not even a status request was made — and
-    // certainly no new checkout.
-    expect(fetchSpy).not.toHaveBeenCalled()
+    // With the contract in force (XP-LAUNCH-04) the open attempt is asked about ONCE, over
+    // the documented status call with the STORED token — never a new checkout. The answer
+    // here (a request-payment shape, no echoed reference) is unknown, so nothing changes.
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchSpy.mock.calls[0] as unknown as [string, RequestInit]
+    expect(url).toBe('https://paytech.sn/api/payment/get-status?token_payment=paytech_tok_EXISTING1')
+    expect(init.method).toBe('GET')
+    expect(fetchSpy.mock.calls.some(c => String(c[0]).includes('request-payment')), 'a new checkout was requested').toBe(false)
   })
 
   it('an UNOPENED live intent is closed and replaced at the current price', async () => {
