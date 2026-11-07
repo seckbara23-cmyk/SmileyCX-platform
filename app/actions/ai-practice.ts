@@ -20,6 +20,7 @@ import { z } from 'zod'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
+import { withinInputBounds } from '@/lib/validation/input-bounds'
 import { createLogger } from '@/lib/logger'
 import { AI_COACH_ENABLED } from '@/lib/ai/flags'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
@@ -130,6 +131,14 @@ const SaveTurnsSchema = z.object({
   anonId:    Uuid.optional(),
   turns:     z.array(TurnSchema).min(1).max(100),
 })
+
+/**
+ * What each of these can legitimately receive, checked before Zod. See input-bounds.
+ * A batch is at most 100 turns of 4 fields, each with a transcript of at most 8 000
+ * characters. A self-assessment is a short form, with free text in a few of its answers.
+ */
+const SAVE_TURNS_BOUNDS = { maxNodes: 600, maxDepth: 3, maxChars: 810_000 }
+const SELF_ASSESSMENT_BOUNDS = { maxNodes: 300, maxDepth: 2, maxChars: 100_000 }
 
 const SelfAssessmentSchema = z.object({
   sessionId: Uuid,
@@ -467,6 +476,7 @@ export async function startVoiceSession(
 export async function saveAiTurns(
   input: { sessionId: string; anonId?: string; turns: z.infer<typeof TurnSchema>[] }
 ): Promise<{ ok?: true; error?: string }> {
+  if (!withinInputBounds(input, SAVE_TURNS_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SaveTurnsSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { sessionId, anonId, turns } = parsed.data
@@ -746,6 +756,7 @@ async function runEngineForSession(sessionId: string, scenarioId: string): Promi
 export async function saveSelfAssessment(
   input: { sessionId: string; anonId?: string; answers: Record<string, number | string> }
 ): Promise<{ ok?: true; error?: string }> {
+  if (!withinInputBounds(input, SELF_ASSESSMENT_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SelfAssessmentSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { sessionId, anonId, answers } = parsed.data

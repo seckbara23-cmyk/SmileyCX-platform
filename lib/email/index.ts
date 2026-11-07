@@ -35,6 +35,11 @@ import {
   paymentExceptionEmailText,
   type PaymentExceptionEmailData,
 } from './templates/payment-exception'
+import {
+  passwordResetEmailHtml,
+  passwordResetEmailText,
+  type PasswordResetEmailData,
+} from './templates/password-reset'
 
 const log = createLogger('email')
 
@@ -161,5 +166,26 @@ export async function sendVerificationEmail(
     subject: 'Confirmez votre adresse email — XP Client Academy',
     html:    verificationEmailHtml(data),
     text:    verificationEmailText(data),
+  })
+}
+
+/**
+ * XP-LAUNCH-01 — password recovery.
+ *
+ * Sent by `requestPasswordReset` with a link the platform generated itself
+ * (a hashed recovery token for /auth/recover), so that the link works in
+ * whichever browser or device it is opened. The same operational dependency
+ * as verification applies: in dry-run nothing is delivered, and the neutral
+ * answer the learner sees does not change.
+ */
+export async function sendPasswordResetEmail(
+  to: string,
+  data: PasswordResetEmailData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: 'Réinitialisation de votre mot de passe — XP Client Academy',
+    html:    passwordResetEmailHtml(data),
+    text:    passwordResetEmailText(data),
   })
 }

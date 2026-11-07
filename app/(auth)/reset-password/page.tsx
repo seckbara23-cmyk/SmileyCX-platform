@@ -1,6 +1,6 @@
 'use client'
 import { Suspense, useState, useEffect } from 'react'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Eye, EyeOff, KeyRound, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
@@ -9,8 +9,10 @@ import Button from '@/components/ui/Button'
 // ─────────────────────────────────────────────────────────────────────────────
 // Supabase password reset flow:
 //  1. User clicks "Forgot password" → resetPasswordForEmail() sends email
-//  2. Email link → /auth/callback?code=...&type=recovery → exchanges code for
-//     a recovery session → redirects here (/reset-password)
+//  2. Email link → /auth/recover?token_hash=...&type=recovery → verifies the
+//     token for a recovery session → redirects here (/reset-password); a
+//     refused link redirects here with ?error=expired|invalid instead
+//     (links sent before XP-LAUNCH-01 still come through /auth/callback)
 //  3. This page detects the active recovery session and lets user set a new pw
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -22,7 +24,10 @@ type PageState =
 
 function ResetPasswordForm() {
   const router   = useRouter()
+  const params   = useSearchParams()
   const supabase = createClient()
+  // Set by /auth/recover when the link was refused: nothing to look up.
+  const linkError = params.get('error')
 
   const [pageState, setPageState] = useState<PageState>('loading')
   const [password,  setPassword]  = useState('')
@@ -37,6 +42,10 @@ function ResetPasswordForm() {
     let mounted = true
 
     async function checkSession() {
+      if (linkError) {
+        if (mounted) setPageState('invalid')
+        return
+      }
       try {
         const { data: { session } } = await supabase.auth.getSession()
         if (mounted) {
@@ -49,7 +58,7 @@ function ResetPasswordForm() {
 
     checkSession()
     return () => { mounted = false }
-  }, [supabase])
+  }, [supabase, linkError])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()

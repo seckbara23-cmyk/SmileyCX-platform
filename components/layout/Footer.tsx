@@ -147,7 +147,7 @@ export default function Footer() {
         </div>
         <div className="mt-5 flex justify-center">
           <a
-            href="https://terangatechnologies.com"
+            href="https://teranga-tech.com"
             target="_blank"
             rel="noopener noreferrer"
             className="text-[11px] text-white/25 hover:text-white/50 transition-colors duration-200 tracking-wide"
