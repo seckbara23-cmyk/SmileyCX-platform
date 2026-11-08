@@ -1,6 +1,8 @@
 import type { MetadataRoute } from 'next'
 import { publicUrl } from '@/lib/brand'
 import { getPublicPaths, pathHref } from '@/lib/queries/catalogue'
+import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
+import { getPublishedPacks, packHref } from '@/lib/commerce/packs'
 
 /**
  * sitemap.xml (XPA-1, extended in XPA-3).
@@ -23,8 +25,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const staticRoutes: Entry[] = [
     { path: '/',              priority: 1.0, changeFrequency: 'weekly'  },
     { path: '/courses',       priority: 0.9, changeFrequency: 'weekly'  },
-    { path: '/parcours',      priority: 0.8, changeFrequency: 'weekly'  },
-    { path: '/secteurs',      priority: 0.8, changeFrequency: 'weekly'  },
+    ...(PUBLIC_PATHWAYS_VISIBLE ? [{ path: '/parcours',      priority: 0.8, changeFrequency: 'weekly'  } as Entry] : []),
+    ...(PUBLIC_PATHWAYS_VISIBLE ? [{ path: '/secteurs',      priority: 0.8, changeFrequency: 'weekly'  } as Entry] : []),
     { path: '/about',         priority: 0.7, changeFrequency: 'monthly' },
     { path: '/about/founder', priority: 0.5, changeFrequency: 'yearly'  },
     { path: '/contact',       priority: 0.6, changeFrequency: 'monthly' },
@@ -33,7 +35,8 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   ]
 
   const pathRoutes: Entry[] = []
-  try {
+  // XP-LAUNCH-FINAL-08 (requirements V4 §13): no pathway page is public at launch.
+  if (PUBLIC_PATHWAYS_VISIBLE) try {
     // `public_learning_paths` already excludes paths with no published course,
     // so membership in that view IS the "will actually render" guarantee. No
     // per-path course query is needed — that would be an N+1 for no extra
@@ -50,7 +53,12 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     // static routes rather than failing the whole sitemap.
   }
 
-  return [...staticRoutes, ...pathRoutes].map(r => ({
+  // XP-LAUNCH-FINAL-08: the published packs (V4 §17). None is listed if they cannot be read.
+  const packRoutes: Entry[] = (await getPublishedPacks()).map(p => ({
+    path: packHref(p.code), priority: 0.8, changeFrequency: 'weekly' as const,
+  }))
+
+  return [...staticRoutes, ...pathRoutes, ...packRoutes].map(r => ({
     url:             publicUrl(r.path),
     lastModified:    now,
     changeFrequency: r.changeFrequency,

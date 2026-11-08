@@ -121,9 +121,10 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
     expect(files.filter(f => parseInt(f, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
                 '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql',
-                '063_payment_state_machine.sql', '064_payment_exceptions.sql'])
+                '063_payment_state_machine.sql', '064_payment_exceptions.sql',
+                '065_commercial_offers.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(64)
+    expect(Math.max(...nums)).toBe(65)
 
     const strip = (p: string) => read(p).replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     const m059 = strip('supabase/migrations/059_payment_column_select_security.sql')
@@ -160,6 +161,16 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
     for (const stmt of stmts064) {
       expect(stmt, '064 changes a privilege on public.payments')
         .toMatch(/on public\.payment_exceptions\b|on public\.payment_completion_notices\b|on function public\.payment_exception|on function public\.payment_completion_notices_guard\(\)/i)
+    }
+    // XP-LAUNCH-FINAL-08's 065: on its own three tables and on functions — never on
+    // public.payments, so 059's browser allowlist is untouched and the new pack_id
+    // column is granted to no browser role.
+    const stmts065 = strip('supabase/migrations/065_commercial_offers.sql').match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []
+    expect(stmts065.length).toBeGreaterThan(0)
+    for (const stmt of stmts065) {
+      expect(stmt, '065 changes a privilege on public.payments')
+        .toMatch(/on public\.course_packs\b|on public\.course_pack_courses\b|on public\.payment_entitlements\b|on function public\./i)
+      expect(stmt, '065 grants on public.payments').not.toMatch(/on public\.payments\b/i)
     }
   })
 })

@@ -703,10 +703,12 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
   it('no migration was added and 062 is untouched', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(62)
+    expect(migs).toHaveLength(63)
     expect(migs).toContain('063_payment_state_machine.sql')
     // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
     expect(migs).toContain('064_payment_exceptions.sql')
+    // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access); it is admitted by name.
+    expect(migs).toContain('065_commercial_offers.sql')
     const { createHash } = require('crypto') as typeof import('crypto')
     const raw = readFileSync(join(ROOT, 'supabase/migrations/062_atomic_payment_completion.sql'))
     expect(createHash('sha256').update(raw).digest('hex'))

@@ -1,7 +1,7 @@
 'use client'
 import { useState } from 'react'
 import { Loader2, Lock, RotateCcw } from 'lucide-react'
-import { startPaytechCheckout } from '@/app/actions/paytech-checkout'
+import { startPaytechCheckout, startPaytechPackCheckout } from '@/app/actions/paytech-checkout'
 
 /**
  * The only payment control a learner sees — XP-PAYTECH-04.
@@ -44,11 +44,29 @@ function isSafeDestination(url: string): boolean {
 
 const FALLBACK = 'Le paiement n’a pas pu être lancé. Veuillez réessayer.'
 
+/** A single course: the ONE thing sent is its id. */
+function startCourse(courseId: string) {
+  return startPaytechCheckout({ courseId })
+}
+
 export default function PaytechCheckoutButton({
   courseId,
+  packCode,
+  acknowledgedCourseIds,
+  blocked = false,
   resume = null,
 }: {
-  courseId: string
+  /** The course to buy. */
+  courseId?: string
+  /**
+   * XP-LAUNCH-FINAL-08: the pack to buy instead, with the owned courses whose
+   * warning the learner acknowledged (`PackCheckoutPanel`). The server re-derives
+   * both and refuses if they differ.
+   */
+  packCode?: string
+  acknowledgedCourseIds?: string[]
+  /** True until the learner has acknowledged what the page asks (the pack warning). */
+  blocked?: boolean
   resume?: PaytechResumeNotice | null
 }) {
   const [loading, setLoading] = useState(false)
@@ -57,12 +75,15 @@ export default function PaytechCheckoutButton({
   const [reference, setReference] = useState<string | null>(null)
 
   async function pay() {
+    if (blocked) return
     setLoading(true)
     setResuming(false)
     setError('')
     setReference(null)
     try {
-      const result = await startPaytechCheckout({ courseId })
+      const result = packCode
+        ? await startPaytechPackCheckout({ packCode, acknowledgedCourseIds: acknowledgedCourseIds ?? [] })
+        : await startCourse(courseId ?? '')
       const destination = result.redirectUrl ?? result.accessUrl
       if (destination && isSafeDestination(destination)) {
         if (result.resumed === true) setResuming(true)
@@ -122,9 +143,9 @@ export default function PaytechCheckoutButton({
       <button
         type="button"
         onClick={pay}
-        disabled={loading}
+        disabled={loading || blocked}
         className={`w-full flex items-center justify-center gap-2 py-4 rounded-cx font-bold text-white text-base transition-all ${
-          loading
+          loading || blocked
             ? 'bg-cx-gray/40 cursor-not-allowed'
             : 'bg-secondary hover:bg-secondary-dark hover:-translate-y-0.5 shadow-btn'
         }`}

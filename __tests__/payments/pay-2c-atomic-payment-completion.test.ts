@@ -80,9 +80,9 @@ describe('PAY-2C — 062 exists, alone, as one transaction', () => {
     // with 062 is proven by executing both on PostgreSQL in
     // xp-paytech-ready-01-integration.test.ts.
     const above = f.filter(x => parseInt(x, 10) > 62)
-    expect(above, `migrations above 062 exist: ${above.join(', ')}`).toEqual(['063_payment_state_machine.sql', '064_payment_exceptions.sql'])
+    expect(above, `migrations above 062 exist: ${above.join(', ')}`).toEqual(['063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql'])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(64)
+    expect(Math.max(...nums)).toBe(65)  // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access)
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
@@ -586,9 +586,12 @@ describe('PAY-2C — no caller exists yet', () => {
     // 003 was NEVER APPLIED and stays withdrawn — verified against production:
     // no such RPC, and none of its webhook_id/payment_intent_id/updated_at
     // columns. 062 is the authority that replaces it.
+    // XP-LAUNCH-FINAL-08's 065 REPLACES 062's function in place (same signature,
+    // same single caller): six months and packs. No third definition exists.
     expect(defines.sort()).toEqual([
       '003_payment_readiness.sql',
       '062_atomic_payment_completion.sql',
+      '065_commercial_offers.sql',
     ])
     // 003's columns must still not be reintroduced by 062.
     for (const c of ['webhook_id', 'payment_intent_id', 'updated_at']) {

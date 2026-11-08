@@ -6,6 +6,7 @@ import { formatPrice } from '@/lib/utils/cn'
 import { paytechCheckoutAvailability } from '@/lib/payments/providers'
 import { inflightPaytechAttempt } from '@/lib/payments/paytech-resume'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
+import PackCheckout from './PackCheckout'
 
 // ENR-01C-b dropped PILOT_MODE from this page: the pilot redirect was its
 // last consumer here, and a deployment mode is not an access fact.
@@ -39,10 +40,12 @@ export const metadata: Metadata = {
   title: 'Inscription',
 }
 
-interface Props { searchParams: Promise<{ course?: string }> }
+interface Props { searchParams: Promise<{ course?: string; pack?: string }> }
 
 export default async function CheckoutPage({ searchParams }: Props) {
-  const { course: courseId } = await searchParams
+  const { course: courseId, pack: packParam } = await searchParams
+  // XP-LAUNCH-FINAL-08: a fixed pack is bought on the same page, by its code.
+  if (typeof packParam === 'string' && packParam.length > 0) return PackCheckout({ packParam })
   if (!courseId) redirect('/courses')
 
   const supabase = await createClient()
@@ -201,7 +204,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
           <p className="text-cx-gray mb-2 max-w-md mx-auto font-semibold text-dark">
             {isFree
               ? 'Formation gratuite · Certificat inclus · Compte requis'
-              : `${formatPrice(price, currency)} · Accès complet à vie · Certificat inclus`}
+              : `${formatPrice(price, currency)} · Accès 6 mois · Certificat inclus`}
           </p>
           <p className="text-cx-gray mb-8 max-w-md mx-auto text-sm">
             Le paiement en ligne n&apos;est pas encore activé pour cette formation.
@@ -314,7 +317,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
 
             <div className="mt-4 pt-4 border-t border-black/[0.06] text-xs text-cx-gray space-y-1">
               <p>✅ Accès activé dès la confirmation du paiement</p>
-              <p>✅ Contenu à vie</p>
+              <p>✅ Accès 6 mois à compter de la validation du paiement</p>
               <p>✅ Certificat de réussite</p>
             </div>
           </div>
