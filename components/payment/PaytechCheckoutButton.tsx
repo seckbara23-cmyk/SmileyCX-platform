@@ -1,6 +1,6 @@
 'use client'
 import { useState } from 'react'
-import { Loader2, Lock } from 'lucide-react'
+import { Loader2, Lock, RotateCcw } from 'lucide-react'
 import { startPaytechCheckout } from '@/app/actions/paytech-checkout'
 
 /**
@@ -12,7 +12,24 @@ import { startPaytechCheckout } from '@/app/actions/paytech-checkout'
  * instrument on PayTech's own hosted page, so no payment data ever transits or
  * is stored by XP Client Academy (XP-PAYTECH-04 safeguard 7). This replaces
  * `PaymentMethodSelector`, whose card form put the site in PCI DSS scope.
+ *
+ * ── A RESUME IS SAID TO BE ONE (XP-LAUNCH-04) ─────────────────────────────
+ *
+ * PayTech's « Annuler » button only sends the browser back; the hosted page it
+ * leaves stays payable and the provider keeps calling the attempt pending. The
+ * server therefore re-offers the SAME page rather than opening a second
+ * chargeable one, and this button says so: when the checkout page found an
+ * attempt in flight it reads « Reprendre le paiement », and when the server
+ * answers `resumed` the redirect is announced as a resume. The decision is the
+ * server's, on the click, after asking the provider; this component only names
+ * it, and never holds a URL or a token of its own.
  */
+
+/** What the checkout page knows of an attempt in flight for this course. Never a URL or a token. */
+export interface PaytechResumeNotice {
+  /** A hosted page is stored for it, so the same page can be offered again. */
+  resumable: boolean
+}
 
 /** Only ever navigate to PayTech's host, or to a path on this site. */
 function isSafeDestination(url: string): boolean {
@@ -25,36 +42,66 @@ function isSafeDestination(url: string): boolean {
   }
 }
 
-export default function PaytechCheckoutButton({ courseId }: { courseId: string }) {
+const FALLBACK = 'Le paiement n’a pas pu être lancé. Veuillez réessayer.'
+
+export default function PaytechCheckoutButton({
+  courseId,
+  resume = null,
+}: {
+  courseId: string
+  resume?: PaytechResumeNotice | null
+}) {
   const [loading, setLoading] = useState(false)
+  const [resuming, setResuming] = useState(false)
   const [error, setError] = useState('')
   const [reference, setReference] = useState<string | null>(null)
 
   async function pay() {
     setLoading(true)
+    setResuming(false)
     setError('')
     setReference(null)
     try {
       const result = await startPaytechCheckout({ courseId })
       const destination = result.redirectUrl ?? result.accessUrl
       if (destination && isSafeDestination(destination)) {
+        if (result.resumed === true) setResuming(true)
         window.location.assign(destination)
         return
       }
-      setError(result.error ?? 'Le paiement n’a pas pu être lancé. Veuillez réessayer.')
+      setError(result.error ?? FALLBACK)
       setReference(result.reference ?? null)
     } catch {
-      setError('Le paiement n’a pas pu être lancé. Veuillez réessayer.')
+      setError(FALLBACK)
     }
     setLoading(false)
   }
 
+  const label = resume?.resumable
+    ? 'Reprendre le paiement'
+    : resume
+      ? 'Vérifier l’état de mon paiement'
+      : 'Payer avec PayTech'
+  const busyLabel = resuming ? 'Reprise de votre paiement en cours…' : 'Redirection vers PayTech…'
+
   return (
     <div className="flex flex-col gap-4">
-      <p className="text-sm text-cx-gray">
-        Vous allez être redirigé vers <strong className="text-dark">PayTech</strong>, notre prestataire
-        de paiement sécurisé, pour régler par Orange Money, Wave, Free Money ou carte bancaire.
-      </p>
+      {resume?.resumable ? (
+        <p className="text-sm text-cx-gray">
+          Vous allez retrouver <strong className="text-dark">votre session de paiement PayTech en cours</strong> pour
+          cette formation, là où vous l&apos;aviez laissée. Aucune nouvelle commande n&apos;est créée.
+        </p>
+      ) : resume ? (
+        <p className="text-sm text-cx-gray">
+          Un paiement est déjà en cours de vérification pour cette formation. Nous demandons son état
+          à <strong className="text-dark">PayTech</strong> avant toute nouvelle commande.
+        </p>
+      ) : (
+        <p className="text-sm text-cx-gray">
+          Vous allez être redirigé vers <strong className="text-dark">PayTech</strong>, notre prestataire
+          de paiement sécurisé, pour régler par Orange Money, Wave, Free Money ou carte bancaire.
+        </p>
+      )}
       <p className="text-xs text-cx-gray flex items-start gap-1.5">
         <Lock className="w-3.5 h-3.5 mt-0.5 text-success shrink-0" aria-hidden="true" />
         XP Client Academy ne demande ni ne conserve jamais vos coordonnées bancaires ou
@@ -85,10 +132,13 @@ export default function PaytechCheckoutButton({ courseId }: { courseId: string }
         {loading ? (
           <>
             <Loader2 className="w-5 h-5 animate-spin" aria-hidden="true" />
-            Redirection vers PayTech…
+            {busyLabel}
           </>
         ) : (
-          'Payer avec PayTech'
+          <>
+            {resume?.resumable && <RotateCcw className="w-5 h-5" aria-hidden="true" />}
+            {label}
+          </>
         )}
       </button>
     </div>

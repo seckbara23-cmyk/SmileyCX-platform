@@ -695,9 +695,10 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     // The directory stays pinned EXACTLY, so an unreviewed module still fails
     // here. XP-PAYTECH-01 added the second provider's credential boundary,
     // transport and IPN verification, plus the completion chokepoint and
-    // provider selection.
+    // provider selection. XP-LAUNCH-04 added the read-only lookup of a learner's
+    // attempts in flight (paytech-resume.ts), for the cancel page's resume path.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
-      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-resume.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
     ])
   })
 

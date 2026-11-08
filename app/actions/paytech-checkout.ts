@@ -22,7 +22,11 @@
  *   paid               → the payment is completed now; the learner goes in
  *   failed / cancelled → it is closed, and a NEW attempt (new row, new
  *                        reference) may be opened
- *   pending            → the SAME checkout URL is offered again — not a new one
+ *   pending            → the SAME checkout URL is offered again — not a new one —
+ *                        and the result says so (`resumed`). PayTech's own
+ *                        « Annuler » button only redirects the browser and
+ *                        leaves the hosted page payable, so a cancelled
+ *                        checkout is RESUMED here, never replaced (XP-LAUNCH-04)
  *   unknown            → nothing is opened. The learner is told a payment is
  *                        being verified, with its reference. Only a confirmed
  *                        provider answer or a human's manual reconciliation
@@ -66,11 +70,16 @@ const log = createLogger('actions/paytech-checkout')
 export interface PaytechCheckoutResult {
   /** Where to pay. Always HTTPS on paytech.sn when present. */
   redirectUrl?: string
+  /**
+   * The redirect re-offers an attempt this learner had already opened: the SAME
+   * hosted page, no new order, no new token. Absent for a new checkout.
+   */
+  resumed?: boolean
   /** A same-site path the learner should go to instead (they now have access). */
   accessUrl?: string
   /** A French, non-leaking message. Never a provider string. */
   error?: string
-  /** The order reference an error concerns, so support can find it. */
+  /** The order reference the result concerns (an error, or a resumed attempt), so support can find it. */
   reference?: string
 }
 
@@ -208,7 +217,12 @@ export async function startPaytechCheckout(input: {
           break   // reliably closed — a fresh attempt may be opened
         case 'pending': {
           const url = await storedCheckoutUrl(row.id)
-          if (url) return { redirectUrl: url }   // the SAME checkout, not a new one
+          if (url) {
+            // The SAME checkout, not a new one — and said to be, because the learner
+            // may have left it by « Annuler » and would otherwise be sent back without a word.
+            log.info({ paymentId: row.id }, 'PayTech checkout resumed: the same hosted page offered again')
+            return { redirectUrl: url, resumed: true, reference: row.reference }
+          }
           return { error: MSG.verifying, reference: row.reference }
         }
         default:

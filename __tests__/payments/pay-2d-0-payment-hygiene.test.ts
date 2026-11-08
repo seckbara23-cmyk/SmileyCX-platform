@@ -80,6 +80,7 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
       'paytech-config.ts',
       'paytech-ipn.ts',
       'paytech-reconcile.ts',
+      'paytech-resume.ts',   // XP-LAUNCH-04: the read-only lookup of a learner's attempts in flight, for the resume path
       'paytech-settlement-contract.ts',
       'providers.ts',
       'purchase-eligibility.ts',

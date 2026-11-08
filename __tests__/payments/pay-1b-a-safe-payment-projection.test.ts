@@ -215,6 +215,9 @@ describe('PAY-1B(a) · every payment reader, and which client it uses', () => {
         'lib/payments/payment-completion.ts',
         'lib/payments/payment-exceptions.ts',
         'lib/payments/paytech-reconcile.ts',
+        // XP-LAUNCH-04: the learner's attempts in flight, for the resume path. Reads only;
+        // hands pages a boolean for the stored URL, never the URL or the token.
+        'lib/payments/paytech-resume.ts',
       ], `${r.file} is an unreviewed payment reader`).toContain(r.file)
     }
   })

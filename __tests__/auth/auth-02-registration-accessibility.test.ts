@@ -387,6 +387,7 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
       'paytech-config.ts',
       'paytech-ipn.ts',
       'paytech-reconcile.ts',
+      'paytech-resume.ts',   // XP-LAUNCH-04: the read-only lookup of a learner's attempts in flight, for the resume path
       'paytech-settlement-contract.ts',
       'providers.ts',
       'purchase-eligibility.ts',

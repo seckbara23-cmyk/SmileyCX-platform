@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import PaytechCheckoutButton from '@/components/payment/PaytechCheckoutButton'
 import { formatPrice } from '@/lib/utils/cn'
 import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { inflightPaytechAttempt } from '@/lib/payments/paytech-resume'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 
 // ENR-01C-b dropped PILOT_MODE from this page: the pilot redirect was its
@@ -225,12 +226,26 @@ export default async function CheckoutPage({ searchParams }: Props) {
     )
   }
 
+  // ── XP-LAUNCH-04 — a RESUME is said to be one ─────────────────────────────
+  //
+  // PayTech's « Annuler » button only sends the browser back to /payment/cancel;
+  // the hosted page it leaves stays payable and the provider keeps calling the
+  // attempt pending. The checkout action therefore re-offers the SAME page rather
+  // than opening a second chargeable one (safeguard 1). Before XP-LAUNCH-04 that
+  // was a silent redirect; this page now tells the learner before they click.
+  // Read only, scoped to the signed-in learner and this course; the action still
+  // asks the provider on the click and decides. No URL or token reaches the page.
+  const resume = await inflightPaytechAttempt(user.id, String(course.id))
+  const openedOn = resume && !Number.isNaN(Date.parse(resume.createdAt))
+    ? new Date(resume.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+    : null
+
   // Below is the payment UI — reached only when PayTech checkout is available here.
   return (
     <div className="cx-section">
       <div className="cx-container max-w-4xl">
         <h1 className="text-2xl font-extrabold text-dark mb-8">
-          Finaliser votre inscription
+          {resume ? 'Reprendre votre paiement' : 'Finaliser votre inscription'}
         </h1>
 
         <div className="grid md:grid-cols-[1fr_320px] lg:grid-cols-[1fr_360px] gap-6 md:gap-8 items-start">
@@ -239,7 +254,30 @@ export default async function CheckoutPage({ searchParams }: Props) {
             <h2 className="text-lg font-bold text-dark mb-6">
               Paiement sécurisé
             </h2>
-            <PaytechCheckoutButton courseId={String(course.id)} />
+            {resume && (
+              <div role="status" className="mb-6 rounded-cx border border-primary/20 bg-primary/5 p-4 text-sm text-dark">
+                <p className="font-bold">Reprise de votre paiement en cours</p>
+                <p className="mt-1 text-cx-gray">
+                  {resume.resumable ? (
+                    <>
+                      Votre session de paiement PayTech pour cette formation
+                      {openedOn ? `, ouverte le ${openedOn},` : ''} est toujours active. Vous pouvez y
+                      retourner pour la terminer&nbsp;: aucune nouvelle commande n&apos;est créée, et nous
+                      vérifions d&apos;abord auprès de PayTech si elle a déjà été réglée.
+                    </>
+                  ) : (
+                    <>
+                      Un paiement{openedOn ? ` commencé le ${openedOn}` : ''} est en cours de vérification
+                      pour cette formation. Nous demandons son état à PayTech avant toute nouvelle commande.
+                    </>
+                  )}
+                </p>
+                <p className="mt-2 text-xs text-cx-gray">
+                  Référence : <span className="font-mono">{resume.reference}</span>
+                </p>
+              </div>
+            )}
+            <PaytechCheckoutButton courseId={String(course.id)} resume={resume ? { resumable: resume.resumable } : null} />
           </div>
 
           {/* Order summary */}
