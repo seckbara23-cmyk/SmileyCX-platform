@@ -1,4 +1,6 @@
+import type { ReactElement } from 'react'
 import { Document, Page, Text, View, StyleSheet, Svg, Path, Circle, Line, Rect } from '@react-pdf/renderer'
+import { qrModules } from '@/lib/pdf/qr-matrix'
 
 interface Props {
   learnerName: string
@@ -102,6 +104,29 @@ const s = StyleSheet.create({
   certNum: { fontSize: 7, fontFamily: 'Courier', color: PRIMARY },
 })
 
+/**
+ * The verification URL as a QR code (XP-LAUNCH-FINAL-02), drawn module by
+ * module from the same encoder as the on-screen certificate, so a printed or
+ * downloaded certificate can be scanned straight to the public verification
+ * page. A two-module quiet zone on a white field keeps it readable on any
+ * background.
+ */
+function QrSvg({ value, size = 64 }: { value: string; size?: number }) {
+  const modules = qrModules(value, 'M')
+  const quiet = 2
+  const box = modules.length + quiet * 2
+  const rects: ReactElement[] = []
+  modules.forEach((row, r) => row.forEach((dark, c) => {
+    if (dark) rects.push(<Rect key={`${r}-${c}`} x={c + quiet} y={r + quiet} width={1} height={1} fill={PRIMARY} />)
+  }))
+  return (
+    <Svg width={size} height={size} viewBox={`0 0 ${box} ${box}`} style={{ marginBottom: 4 }}>
+      <Rect x={0} y={0} width={box} height={box} fill="#FFFFFF" />
+      {rects}
+    </Svg>
+  )
+}
+
 function MedalSvg() {
   return (
     <Svg width="60" height="60" viewBox="0 0 60 60" style={{ marginBottom: 12 }}>
@@ -179,6 +204,7 @@ export function CertificatePDFDocument({ learnerName, courseTitle, certNumber, i
           </View>
           {verifyUrl ? (
             <View style={s.verify}>
+              <QrSvg value={verifyUrl} />
               <Text style={s.footerText}>Vérifier l&apos;authenticité : {verifyUrl}</Text>
             </View>
           ) : null}
