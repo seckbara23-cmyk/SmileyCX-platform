@@ -154,7 +154,7 @@ beforeEach(() => {
   fixture = {}
   touched = []
   mutations = []
-  delete process.env.NEXT_PUBLIC_PAYMENTS_ENABLED
+  for (const k of ['PAYTECH_CHECKOUT_ENABLED', 'PAYTECH_MODE', 'PAYTECH_TEST_API_KEY', 'PAYTECH_TEST_API_SECRET', 'VERCEL_ENV']) delete process.env[k]
 })
 afterEach(() => { process.env = { ...ORIGINAL_ENV } })
 
@@ -316,7 +316,7 @@ describe('ENR-01C-b · 4. prices stay database-derived', () => {
 
   it('payments ON still reaches the real payment UI', async () => {
     setMode('public')
-    process.env.NEXT_PUBLIC_PAYMENTS_ENABLED = 'true'
+    Object.assign(process.env, { PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: 'k_test', PAYTECH_TEST_API_SECRET: 's_test', VERCEL_ENV: 'preview' })  // XP-PAYTECH-04: the server-side PayTech checkout switch replaces NEXT_PUBLIC_PAYMENTS_ENABLED
     fixture = { course: PAID, modules: SYLLABUS, ...LEARNERS.unentitled }
     const r = await visit(PAID.id)
     if (r.kind !== 'render') throw new Error('expected a render')
@@ -325,7 +325,7 @@ describe('ENR-01C-b · 4. prices stay database-derived', () => {
 
   it('payments ON does not let an entitled learner pay twice', async () => {
     setMode('public')
-    process.env.NEXT_PUBLIC_PAYMENTS_ENABLED = 'true'
+    Object.assign(process.env, { PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test', PAYTECH_TEST_API_KEY: 'k_test', PAYTECH_TEST_API_SECRET: 's_test', VERCEL_ENV: 'preview' })  // XP-PAYTECH-04: the server-side PayTech checkout switch replaces NEXT_PUBLIC_PAYMENTS_ENABLED
     fixture = { course: PAID, modules: SYLLABUS, ...LEARNERS.entitled }
     expect(await visit(PAID.id)).toEqual({ kind: 'redirect', url: `/courses/${PAID.slug}` })
   })

@@ -31,6 +31,8 @@ const COURSE_ID = '22222222-2222-4222-8222-222222222222'
 // ── the faked database ──────────────────────────────────────────────────────
 
 interface PaymentRow {
+  provider_token?: string | null
+  created_at?: string
   id: string
   user_id: string | null
   course_id: string | null
@@ -55,6 +57,11 @@ const state: {
    */
   settlement: Record<string, unknown> | null
   statusCalls: string[]
+  /**
+   * XP-PAYTECH-04: the settlement contract in force. A TEST FIXTURE — PayTech
+   * has not documented its status response, so the real constant is `null`.
+   */
+  contract: Record<string, unknown> | null
 } = {
   payment: null,
   lookupError: null,
@@ -64,7 +71,27 @@ const state: {
   terminalRowsAffected: 1,
   settlement: null,
   statusCalls: [],
+  contract: null,
 }
+
+const FIXTURE_CONTRACT = {
+  confirmedBy: 'TEST FIXTURE — not a PayTech statement',
+  request: { method: 'GET', path: '/payment/get-status', tokenParam: 'token_payment' },
+  successPath: 'success',
+  statusPath: 'payment.status',
+  paid: ['completed'], failed: ['failed'], cancelled: ['canceled'], pending: ['pending'],
+  amountPath: 'payment.amount', currencyPath: 'payment.currency', referencePath: 'payment.ref_command',
+}
+
+/** A get-status answer in the FIXTURE contract's shape. */
+function settledBody(status: string, amount: number = AMOUNT): Record<string, unknown> {
+  return { success: 1, payment: { status, amount, currency: 'XOF', ref_command: REFERENCE } }
+}
+
+vi.mock('@/lib/payments/paytech-settlement-contract', async (importOriginal) => {
+  const orig = await importOriginal<Record<string, unknown>>()
+  return { ...orig, get PAYTECH_SETTLEMENT_CONTRACT() { return state.contract } }
+})
 
 function freshPayment(over: Partial<PaymentRow> = {}): PaymentRow {
   return {
@@ -77,9 +104,23 @@ function freshPayment(over: Partial<PaymentRow> = {}): PaymentRow {
     status: 'processing',
     provider: 'paytech',
     provider_mode: 'test',
+    // XP-PAYTECH-04: an opened attempt carries its token; the IPN found it by it.
+    provider_token: TOKEN,
+    created_at: '2026-10-30T00:00:00.000Z',
     ...over,
   }
 }
+
+vi.mock('@/lib/payments/payment-database-guard', () => ({
+  paymentDatabaseAuthority: async () => ({ allowed: true, reason: null }),
+}))
+
+// The exception record is proved on real SQL in the integration suite.
+vi.mock('@/lib/payments/payment-exceptions', () => ({
+  reportPaymentException: async () => ({ recorded: true }),
+  sendPendingExceptionAlerts: async () => 0,
+  hasOpenPaymentException: async () => false,
+}))
 
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
@@ -174,8 +215,9 @@ beforeEach(() => {
   state.rpcCalls = []
   state.terminalRowsAffected = 1
   state.statusCalls = []
-  // Default: PayTech confirms the payment settled for our amount.
-  state.settlement = { success: 1, type_event: 'sale_complete', item_price: AMOUNT }
+  // Default: under the fixture contract, PayTech confirms the payment settled for our amount.
+  state.contract = FIXTURE_CONTRACT
+  state.settlement = settledBody('completed')
 
   // The settlement check runs for real against this fake transport, so the
   // response parsing and the fail-closed branches are genuinely exercised.
@@ -192,7 +234,7 @@ beforeEach(() => {
     throw new Error(`unexpected fetch to ${u}`)
   }))
 
-  vi.stubEnv('PAYTECH_ENABLED', 'true')
+  vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', 'true')
   vi.stubEnv('PAYTECH_MODE', 'test')
   vi.stubEnv('PAYTECH_TEST_API_KEY', API_KEY)
   vi.stubEnv('PAYTECH_TEST_API_SECRET', API_SECRET)
@@ -252,7 +294,7 @@ describe('XP-PAYTECH-01 · scenario 2 — pending payment', () => {
 
 describe('XP-PAYTECH-01 · scenarios 3 and 4 — cancelled and failed', () => {
   it('a signed cancellation marks the payment cancelled and grants nothing', async () => {
-    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
+    state.settlement = settledBody('canceled')
     const res = await post(signedPayload({ type_event: 'sale_canceled' }))
     expect(res.status).toBe(200)
     expect(state.rpcCalls, 'a cancellation must never reach complete_payment').toEqual([])
@@ -266,10 +308,12 @@ describe('XP-PAYTECH-01 · scenarios 3 and 4 — cancelled and failed', () => {
     expect(state.updates.some(u => u.failure_reason === 'status_not_completable')).toBe(true)
   })
 
-  it('asks for a retry ONLY on entitlement_race', async () => {
+  it('asks for a retry ONLY on a transient refusal', async () => {
     state.rpc = { error: { message: 'x', details: '{"reason":"entitlement_race"}' } }
-    const res = await post(signedPayload())
-    expect(res.status).toBe(503)
+    expect((await post(signedPayload())).status).toBe(503)
+    // XP-PAYTECH-04: no structured reason is a fault, not a disagreement.
+    state.rpc = { error: { message: 'TypeError: fetch failed' } }
+    expect((await post(signedPayload())).status).toBe(503)
   })
 })
 
@@ -388,33 +432,32 @@ describe('XP-PAYTECH-01 · scenarios 9 and 10 — duplicate and replay', () => {
 
     expect(second.status).toBe(200)
     expect((await second.json()).detail).toBe('already_completed')
-    // Two calls were made, but the authority wrote only once — which is the
-    // property that matters. Asserting "one rpc call" would be wrong: the
-    // handler is SUPPOSED to ask again; the authority is what refuses.
-    expect(state.rpcCalls).toHaveLength(2)
+    // XP-PAYTECH-04: a completed row is final (063), so the replay is answered
+    // from the row without reaching the authority — or the provider — again.
+    expect(state.rpcCalls).toHaveLength(1)
   })
 })
 
 describe('XP-PAYTECH-01 · scenario 11 — out-of-order notification', () => {
   it('a cancellation arriving AFTER a completed payment revokes nothing', async () => {
     state.payment = freshPayment({ status: 'completed' })
-    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
+    state.settlement = settledBody('canceled')
     const res = await post(signedPayload({ type_event: 'sale_canceled' }))
+    expect(res.status).toBe(200)
+    expect((await res.json()).detail).toBe('already_completed')
+    expect(state.rpcCalls).toEqual([])
+    // XP-PAYTECH-04: nothing even attempts to move a completed row.
+    expect(state.updates.filter(u => 'status' in u)).toEqual([])
+  })
+
+  it('a completion arriving after a cancellation re-opens nothing', async () => {
+    // XP-PAYTECH-04: a closed payment is final (063). It is reported, not
+    // re-decided, and the authority is not asked.
+    state.payment = freshPayment({ status: 'cancelled' })
+    const res = await post(signedPayload())
     expect(res.status).toBe(200)
     expect((await res.json()).detail).toBe('already_terminal')
     expect(state.rpcCalls).toEqual([])
-    // The update was attempted but matched no row, because it excludes
-    // completed payments. Nothing moved the row out of 'completed'.
-    const statusWrites = state.updates.filter(u => 'status' in u)
-    expect(statusWrites.every(u => u.status !== 'completed')).toBe(true)
-  })
-
-  it('a completion arriving after a cancellation is still decided by the authority', async () => {
-    state.payment = freshPayment({ status: 'cancelled' })
-    state.rpc = { error: { message: 'x', details: '{"reason":"status_not_completable"}' } }
-    const res = await post(signedPayload())
-    expect(res.status).toBe(200)
-    expect(state.updates.some(u => u.failure_reason === 'status_not_completable')).toBe(true)
   })
 })
 
@@ -437,26 +480,43 @@ describe('XP-PAYTECH-01 · scenario 12 — concurrent fulfilment', () => {
 })
 
 describe('XP-PAYTECH-01 · scenario 16 — provider unavailable', () => {
-  it('503s and fulfils nothing when PayTech is not enabled here', async () => {
-    vi.stubEnv('PAYTECH_ENABLED', '')
+  it('503s and fulfils nothing when PayTech cannot be processed here', async () => {
+    vi.stubEnv('PAYTECH_MODE', '')
     const res = await post(signedPayload())
     expect(res.status).toBe(503)
     expect(state.rpcCalls).toEqual([])
   })
 
-  it('refuses in production unless production is explicitly approved', async () => {
-    vi.stubEnv('VERCEL_ENV', 'production')
-    const res = await post(signedPayload())
-    expect(res.status).toBe(503)
-    expect(state.rpcCalls, 'a preview flag must not become a production fulfilment path').toEqual([])
-  })
-
-  it('processes in production once PAYTECH_ALLOW_PRODUCTION is set', async () => {
-    vi.stubEnv('VERCEL_ENV', 'production')
-    vi.stubEnv('PAYTECH_ALLOW_PRODUCTION', 'true')
+  it('XP-PAYTECH-04 safeguard 2: closing CHECKOUT does not stop processing a payment already taken', async () => {
+    vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', '')
     const res = await post(signedPayload())
     expect(res.status).toBe(200)
     expect(state.rpcCalls).toHaveLength(1)
+  })
+
+  it('refuses TEST mode on production: a sandbox flag never becomes a production fulfilment path', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('PAYTECH_ALLOW_PRODUCTION', 'true')
+    const res = await post(signedPayload())
+    expect(res.status).toBe(503)
+    expect(state.rpcCalls).toEqual([])
+  })
+
+  it('processes in production in LIVE mode, for a LIVE payment only', async () => {
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('PAYTECH_MODE', 'prod')
+    vi.stubEnv('PAYTECH_PROD_API_KEY', API_KEY)
+    vi.stubEnv('PAYTECH_PROD_API_SECRET', API_SECRET)
+    state.payment = freshPayment({ provider_mode: 'live' })
+    expect((await post(signedPayload())).status).toBe(200)
+    expect(state.rpcCalls).toHaveLength(1)
+
+    // A TEST-mode payment seen by production is never completed (safeguard 4).
+    state.rpcCalls = []
+    state.payment = freshPayment({ provider_mode: 'test' })
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('ineligible:test_payment_in_production')
+    expect(state.rpcCalls).toEqual([])
   })
 })
 
@@ -528,7 +588,7 @@ describe('XP-PAYTECH-02 · settlement, not the notification, decides', () => {
   it('a FLIPPED type_event cannot buy a course when PayTech says it was cancelled', async () => {
     // The attacker's payload: a genuine, correctly signed notification whose
     // only modification is the unauthenticated outcome field.
-    state.settlement = { success: 1, type_event: 'sale_canceled', item_price: AMOUNT }
+    state.settlement = settledBody('canceled')
 
     const forged = signedPayload({ type_event: 'sale_complete' })
     const res = await post(forged)
@@ -552,7 +612,7 @@ describe('XP-PAYTECH-02 · settlement, not the notification, decides', () => {
   })
 
   it('fulfils nothing while the transaction is still pending at the provider', async () => {
-    state.settlement = { success: 1, status: 'pending' }
+    state.settlement = settledBody('pending')
     const res = await post(signedPayload())
     expect((await res.json()).detail).toBe('unsettled:pending')
     expect(state.rpcCalls).toEqual([])
@@ -562,7 +622,9 @@ describe('XP-PAYTECH-02 · settlement, not the notification, decides', () => {
   it('fulfils nothing when the provider cannot be reached', async () => {
     state.settlement = null // the fake transport throws
     const res = await post(signedPayload())
-    expect((await res.json()).detail).toBe('unsettled:unknown')
+    // XP-PAYTECH-04: unresolved is 503 — come back — not an acknowledgement.
+    expect(res.status).toBe(503)
+    expect((await res.json()).detail).toBe('unsettled:network_error')
     expect(state.rpcCalls, 'an unreachable provider must not grant access').toEqual([])
   })
 
@@ -570,33 +632,53 @@ describe('XP-PAYTECH-02 · settlement, not the notification, decides', () => {
     // The /payment/get-status response shape is undocumented, so an
     // unrecognised value is the EXPECTED case until a real sandbox response
     // confirms it. It must refuse, not lean towards paid.
-    state.settlement = { success: 1, status: 'quelque_chose_inattendu' }
+    state.settlement = settledBody('quelque_chose_inattendu')
     const res = await post(signedPayload())
-    expect((await res.json()).detail).toBe('unsettled:unknown')
+    expect(res.status).toBe(503)
+    expect((await res.json()).detail).toBe('unsettled:status_unrecognised')
     expect(state.rpcCalls).toEqual([])
   })
 
   it('fulfils nothing when the provider itself reports failure', async () => {
     state.settlement = { success: -1, message: 'nope' }
     const res = await post(signedPayload())
-    expect((await res.json()).detail).toBe('unsettled:unknown')
+    expect(res.status).toBe(503)
+    expect((await res.json()).detail).toBe('unsettled:provider_refused')
     expect(state.rpcCalls).toEqual([])
   })
 
   it('refuses when the CONFIRMED amount is not the stored amount', async () => {
     // The notification claimed the right amount and signed it; the
     // authoritative source disagrees. That is the failure only this check sees.
-    state.settlement = { success: 1, type_event: 'sale_complete', item_price: 1 }
+    state.settlement = settledBody('completed', 1)
     const res = await post(signedPayload())
-    expect((await res.json()).detail).toBe('amount_mismatch')
+    expect((await res.json()).detail).toBe('refused:settlement_amount_mismatch')
     expect(state.rpcCalls).toEqual([])
     expect(state.updates.some(u => u.failure_reason === 'settlement_amount_mismatch')).toBe(true)
   })
 
-  it('reads a status nested one level down', async () => {
-    state.settlement = { success: 1, data: { status: 'sale_complete', amount: AMOUNT } }
-    await post(signedPayload())
-    expect(state.rpcCalls).toHaveLength(1)
+  it('reads ONLY the contract\'s status path — a request envelope saying "success" is not a payment', async () => {
+    state.settlement = { success: 1, status: 'success', payment: { status: 'pending', amount: AMOUNT, currency: 'XOF', ref_command: REFERENCE } }
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('unsettled:pending')
+    expect(state.rpcCalls).toEqual([])
+  })
+
+  it('XP-PAYTECH-04 safeguard 3: with NO confirmed contract nothing is inferred, and PayTech is not even asked', async () => {
+    state.contract = null
+    const res = await post(signedPayload())
+    expect(res.status).toBe(503)
+    expect((await res.json()).detail).toBe('unsettled:contract_unconfirmed')
+    expect(state.statusCalls).toEqual([])
+    expect(state.rpcCalls).toEqual([])
+    expect(state.updates.some(u => u.failure_reason === 'settlement_unknown:contract_unconfirmed')).toBe(true)
+  })
+
+  it('an echoed reference that is not ours is unknown, never paid', async () => {
+    state.settlement = { success: 1, payment: { status: 'completed', amount: AMOUNT, currency: 'XOF', ref_command: 'SCX-SOMEONE-ELSE' } }
+    const res = await post(signedPayload())
+    expect((await res.json()).detail).toBe('unsettled:reference_mismatch')
+    expect(state.rpcCalls).toEqual([])
   })
 
   it('never asks PayTech before the notification is authenticated', async () => {

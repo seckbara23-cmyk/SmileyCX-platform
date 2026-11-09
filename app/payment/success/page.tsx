@@ -15,8 +15,9 @@ import { createAdminClient } from '@/lib/supabase/admin'
  * RPC and grants no access. It reads the payment's stored status and reports
  * exactly what it finds.
  *
- * Fulfilment happens only in `/api/payments/paytech/ipn`, from a notification
- * whose HMAC verified against our own stored amount and reference.
+ * Fulfilment happens only when PayTech itself confirms the payment, server to
+ * server — from the IPN, the reconciliation sweep or an operator's check, all
+ * through `lib/payments/paytech-reconcile.ts` (XP-PAYTECH-04).
  *
  * ── A DELAYED NOTIFICATION MUST NOT LOOK LIKE SUCCESS ─────────────────────
  *
@@ -168,6 +169,28 @@ export default async function PaymentSuccessPage({ searchParams }: Props) {
   }
 
   // ── terminal, but not paid ──
+  // ── refunded: the money went back ──
+  if (status === 'refunded') {
+    return (
+      <div className={SHELL}>
+        <div className="cx-container">
+          <div className={CARD}>
+            <Clock className="w-14 h-14 text-warning mx-auto mb-4" aria-hidden="true" />
+            <h1 className="text-2xl font-extrabold text-primary mb-3">Paiement remboursé</h1>
+            <p className="text-cx-gray">
+              Ce paiement de <strong className="text-dark">{amountLabel}</strong> a été remboursé.
+              Pour toute question, contactez-nous en indiquant la référence ci-dessous.
+            </p>
+            <p className="text-xs text-cx-gray mt-4">
+              Référence&nbsp;: <span className="font-mono">{String(payment.reference)}</span>
+            </p>
+            <Actions primaryHref="/courses" primaryLabel="Voir le catalogue" />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (status === 'cancelled' || status === 'failed' || status === 'expired') {
     return (
       <div className={SHELL}>
@@ -176,8 +199,9 @@ export default async function PaymentSuccessPage({ searchParams }: Props) {
             <XCircle className="w-14 h-14 text-error mx-auto mb-4" aria-hidden="true" />
             <h1 className="text-2xl font-extrabold text-primary mb-3">Paiement non abouti</h1>
             <p className="text-cx-gray">
-              Ce paiement n&apos;a pas été finalisé. Aucun montant n&apos;a été débité par
-              XP&nbsp;Client Academy. Vous pouvez réessayer depuis le catalogue.
+              Ce paiement n&apos;a pas été finalisé. Si un montant a néanmoins été débité,
+              contactez-nous en indiquant la référence ci-dessous : nous le vérifierons
+              auprès de PayTech. Vous pouvez réessayer depuis le catalogue.
             </p>
             <p className="text-xs text-cx-gray mt-4">
               Référence&nbsp;: <span className="font-mono">{String(payment.reference)}</span>

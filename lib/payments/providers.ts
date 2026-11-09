@@ -4,37 +4,41 @@ import { paydunyaConfigError } from '@/lib/payments/paydunya-config'
 import type { EnvLike } from '@/lib/payments/paytech-config'
 
 /**
- * Which payment providers this deployment may offer — XP-PAYTECH-01 Phase F.
+ * Which payment work this deployment may do — XP-PAYTECH-01, split by XP-PAYTECH-04.
  *
- * ── WHY A SERVER-ONLY FLAG AND NOT A CHECKOUT REDESIGN ────────────────────
+ * ── TWO QUESTIONS, NOT ONE ────────────────────────────────────────────────
  *
- * PayTech's merchant account is created but PRODUCTION APPROVAL IS NOT
- * CONFIRMED, and the IPN signature format rests on a single documentation
- * source (see `paytech-ipn.ts`). So PayTech must be reachable for controlled
- * sandbox UAT and unreachable in production, with no code change in between
- * and no way for a preview flag to leak into production by accident.
+ * XP-PAYTECH-01 had a single switch, `PAYTECH_ENABLED`, gating BOTH new
+ * checkouts and the notification endpoint. So the only way to stop selling was
+ * to stop processing — and a payment already taken would then have its
+ * notification refused. Stopping sales must never strand money already paid
+ * (XP-PAYTECH-04 safeguard 2). There are now two answers:
  *
- * Three independent conditions must ALL hold before PayTech is offered. Each
- * fails closed on absence, which is the house rule every other flag in this
- * codebase follows:
+ *   * `paytechProcessingAvailability()` — may this deployment confirm and
+ *     record PayTech payments that ALREADY EXIST (the IPN, the reconciliation
+ *     sweep, the admin "verify" action)? Credentials + a mode that belongs to
+ *     this environment. No sales switch is consulted.
  *
- *   1. `PAYTECH_ENABLED` is exactly 'true'.
- *   2. PayTech's credentials actually resolve (`paytechConfigError()` is null).
- *      A checkout button for an unconfigured provider is a broken promise, so
- *      "configured" is part of "available" rather than discovered at click time.
- *   3. In production, `PAYTECH_ALLOW_PRODUCTION` is ALSO exactly 'true'.
- *      Enabling PayTech everywhere is therefore not enough to enable it in
- *      production: that takes a second, differently-named decision, which is
- *      what "production provider switching requires explicit approval" means
- *      in practice.
+ *   * `paytechCheckoutAvailability()` — may this deployment open NEW
+ *     checkouts? Everything processing needs, PLUS `PAYTECH_CHECKOUT_ENABLED`,
+ *     PLUS (in production) `PAYTECH_ALLOW_PRODUCTION`.
  *
- * Note none of these is a `NEXT_PUBLIC_` variable. The availability answer is
- * computed on the server and sent to the browser as a boolean; the credentials
- * and the flags never cross that boundary.
+ * ── TEST AND LIVE BELONG TO DIFFERENT ENVIRONMENTS ────────────────────────
  *
- * PayDunya is deliberately untouched by all of this. Its availability is its
- * own configuration, exactly as before, so nothing here can change how
- * production behaves today.
+ * PayTech's test mode debits a real 100–150 CFA whatever the price and must
+ * not be used for public transactions; its live mode moves real money. So:
+ *
+ *   production  (VERCEL_ENV=production)  → PAYTECH_MODE must be 'prod'
+ *   anything else                         → PAYTECH_MODE must NOT be 'prod'
+ *
+ * Both directions are refused here and again at deploy time
+ * (`verify-prod-config.mjs`), and test mode a third time in the database
+ * (migration 063).
+ * Separately, `payment-database-guard.ts` refuses all payment work on any
+ * non-production deployment whose database does not declare itself a sandbox.
+ *
+ * None of these is a `NEXT_PUBLIC_` variable. The answers are computed on the
+ * server; the flags and credentials never reach the browser.
  */
 
 export const PAYMENT_PROVIDERS = ['paydunya', 'paytech'] as const
@@ -42,7 +46,7 @@ export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number]
 
 /** Every provider-selection variable this application recognises. */
 export function providerFlagNames(): string[] {
-  return ['PAYTECH_ENABLED', 'PAYTECH_ALLOW_PRODUCTION']
+  return ['PAYTECH_CHECKOUT_ENABLED', 'PAYTECH_ALLOW_PRODUCTION']
 }
 
 /** Exactly 'true', trimmed. Nothing else enables anything. */
@@ -62,56 +66,72 @@ export function isProductionDeployment(env: EnvLike = process.env): boolean {
   return (env.VERCEL_ENV ?? '').trim() === 'production'
 }
 
+/** Why PAYTECH_MODE does not belong to this environment, or null when it does. */
+export function paytechModeEnvironmentError(env: EnvLike = process.env): string | null {
+  const mode = (env.PAYTECH_MODE ?? '').trim()
+  if (isProductionDeployment(env)) {
+    return mode === 'prod' ? null : "this is production and PAYTECH_MODE is not 'prod'"
+  }
+  return mode === 'prod' ? "PAYTECH_MODE='prod' is refused outside production" : null
+}
+
 export interface ProviderAvailability {
   readonly available: boolean
   /** Why not, for logs and the operator report. Never shown to a learner. */
   readonly blockedBy: string | null
 }
 
-/** Whether PayTech may be offered here, and if not, which condition failed. */
-export function paytechAvailability(env: EnvLike = process.env): ProviderAvailability {
-  if (!isTrue(env, 'PAYTECH_ENABLED')) {
-    return { available: false, blockedBy: "PAYTECH_ENABLED is not 'true'" }
-  }
+const OK: ProviderAvailability = Object.freeze({ available: true, blockedBy: null })
 
-  const configError = paytechConfigError(env)
-  if (configError !== null) {
+/** May this deployment confirm and record PayTech payments that already exist? */
+export function paytechProcessingAvailability(env: EnvLike = process.env): ProviderAvailability {
+  if (paytechConfigError(env) !== null) {
     return { available: false, blockedBy: 'PayTech credentials do not resolve' }
   }
+  const modeError = paytechModeEnvironmentError(env)
+  if (modeError !== null) return { available: false, blockedBy: modeError }
+  return OK
+}
 
+/** May this deployment open NEW PayTech checkouts? */
+export function paytechCheckoutAvailability(env: EnvLike = process.env): ProviderAvailability {
+  if (!isTrue(env, 'PAYTECH_CHECKOUT_ENABLED')) {
+    return { available: false, blockedBy: "PAYTECH_CHECKOUT_ENABLED is not 'true'" }
+  }
+  const processing = paytechProcessingAvailability(env)
+  if (!processing.available) return processing
   if (isProductionDeployment(env) && !isTrue(env, 'PAYTECH_ALLOW_PRODUCTION')) {
     return {
       available: false,
       blockedBy: "this is production and PAYTECH_ALLOW_PRODUCTION is not 'true'",
     }
   }
-
-  return { available: true, blockedBy: null }
+  return OK
 }
 
-/** Whether PayDunya may be offered here. Unchanged behaviour: configuration alone. */
+/**
+ * Whether PayDunya may be offered here. Configuration alone, as before.
+ *
+ * Note PayDunya has no checkout and no notification route in this code base;
+ * nothing renders it, and `availableProviders()` is not consulted by checkout.
+ */
 export function paydunyaAvailability(env: EnvLike = process.env): ProviderAvailability {
   const configError = paydunyaConfigError(env)
   if (configError !== null) {
     return { available: false, blockedBy: 'PayDunya credentials do not resolve' }
   }
-  return { available: true, blockedBy: null }
+  return OK
 }
 
+/** Whether a provider may take NEW payments here. */
 export function providerAvailability(
   provider: PaymentProvider,
   env: EnvLike = process.env,
 ): ProviderAvailability {
-  return provider === 'paytech' ? paytechAvailability(env) : paydunyaAvailability(env)
+  return provider === 'paytech' ? paytechCheckoutAvailability(env) : paydunyaAvailability(env)
 }
 
-/**
- * The providers a learner may actually be offered, in display order.
- *
- * "No public checkout option may appear unless its provider is configured and
- * operational" is implemented by deriving the list from availability rather
- * than hard-coding it in a component.
- */
+/** The providers that may take new payments here, in display order. */
 export function availableProviders(env: EnvLike = process.env): PaymentProvider[] {
   return PAYMENT_PROVIDERS.filter(p => providerAvailability(p, env).available)
 }
@@ -120,9 +140,10 @@ export function availableProviders(env: EnvLike = process.env): PaymentProvider[
 export function describeProviders(env: EnvLike = process.env): Record<
   PaymentProvider,
   ProviderAvailability
-> {
+> & { paytechProcessing: ProviderAvailability } {
   return {
-    paydunya: paydunyaAvailability(env),
-    paytech:  paytechAvailability(env),
+    paydunya:          paydunyaAvailability(env),
+    paytech:           paytechCheckoutAvailability(env),
+    paytechProcessing: paytechProcessingAvailability(env),
   }
 }

@@ -350,10 +350,10 @@ describe('CAT-1 — the database remains the final authority', () => {
                    '059_payment_column_select_security.sql',
                    '060_payment_completion_contract.sql',
                    '061_audit_log_privilege_hardening.sql',
-                   '062_atomic_payment_completion.sql']
+                   '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql']
     expect(files.filter(f => !LATER.includes(f))).toHaveLength(50)
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(62)
+    expect(Math.max(...nums)).toBe(64)
     expect(files.filter(f => f.startsWith('054'))).toEqual(['054_lesson_media_derived_source.sql'])
     expect(files.filter(f => f.startsWith('055'))).toEqual(['055_restrict_lesson_media_columns.sql'])
     expect(files.filter(f => f.startsWith('056'))).toEqual(['056_catalogue_display_order.sql'])

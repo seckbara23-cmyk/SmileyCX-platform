@@ -1,15 +1,21 @@
 import Link from 'next/link'
 import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import PaymentMethodSelector from '@/components/payment/PaymentMethodSelector'
+import PaytechCheckoutButton from '@/components/payment/PaytechCheckoutButton'
 import { formatPrice } from '@/lib/utils/cn'
-import { PAYMENTS_ENABLED } from '@/lib/pilot'
+import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { inflightPaytechAttempt } from '@/lib/payments/paytech-resume'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 
 // ENR-01C-b dropped PILOT_MODE from this page: the pilot redirect was its
-// last consumer here, and a deployment mode is not an access fact. `lib/pilot.ts`
-// is untouched and PILOT_MODE still has consumers elsewhere; PAYMENTS_ENABLED
-// stays and still gates the payment UI.
+// last consumer here, and a deployment mode is not an access fact.
+//
+// XP-PAYTECH-04 dropped PAYMENTS_ENABLED too. It was a NEXT_PUBLIC_ build-time
+// flag, so a browser-visible variable decided whether money could be taken,
+// and when true it rendered PaymentMethodSelector — a form that collected card
+// numbers and CVVs on this page and wrote a pending row nothing ever settled.
+// The decision is now `paytechCheckoutAvailability()`, evaluated on the server
+// from server-only variables, and the only control is a PayTech redirect.
 import type { Metadata } from 'next'
 
 // ENR-01C-a — three imports left with the code that used them.
@@ -160,7 +166,10 @@ export default async function CheckoutPage({ searchParams }: Props) {
   // NOTHING replaces it. This slice introduces no enrollment or entitlement
   // write of any kind.
 
-  // ── PAYMENTS_ENABLED guard ────────────────────────────────────────────────
+  // ── Can this deployment take a payment? (server-side) ─────────────────────
+  //
+  // XP-PAYTECH-04: the server-only PayTech checkout availability, not a
+  // NEXT_PUBLIC flag. When it is off, the honest "not yet" panel below is shown.
   //
   // ENR-01C-a (C5). This panel announced "Accès gratuit en cours -- La
   // plateforme est en phase pilote. L'accès aux formations est entièrement
@@ -175,7 +184,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
   // The replacement states the commercial fact from the course ROW, using the
   // same derivation and the same wording as the public detail page, and sends
   // the learner somewhere that works.
-  if (!PAYMENTS_ENABLED) {
+  if (!paytechCheckoutAvailability().available) {
     const price    = Number(course.price)
     const currency = String(course.currency)
     const isFree   = course.is_free === true
@@ -217,21 +226,58 @@ export default async function CheckoutPage({ searchParams }: Props) {
     )
   }
 
-  // Below is the payment UI — only reached when PAYMENTS_ENABLED is true
+  // ── XP-LAUNCH-04 — a RESUME is said to be one ─────────────────────────────
+  //
+  // PayTech's « Annuler » button only sends the browser back to /payment/cancel;
+  // the hosted page it leaves stays payable and the provider keeps calling the
+  // attempt pending. The checkout action therefore re-offers the SAME page rather
+  // than opening a second chargeable one (safeguard 1). Before XP-LAUNCH-04 that
+  // was a silent redirect; this page now tells the learner before they click.
+  // Read only, scoped to the signed-in learner and this course; the action still
+  // asks the provider on the click and decides. No URL or token reaches the page.
+  const resume = await inflightPaytechAttempt(user.id, String(course.id))
+  const openedOn = resume && !Number.isNaN(Date.parse(resume.createdAt))
+    ? new Date(resume.createdAt).toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' })
+    : null
+
+  // Below is the payment UI — reached only when PayTech checkout is available here.
   return (
     <div className="cx-section">
       <div className="cx-container max-w-4xl">
         <h1 className="text-2xl font-extrabold text-dark mb-8">
-          Finaliser votre inscription
+          {resume ? 'Reprendre votre paiement' : 'Finaliser votre inscription'}
         </h1>
 
         <div className="grid md:grid-cols-[1fr_320px] lg:grid-cols-[1fr_360px] gap-6 md:gap-8 items-start">
           {/* Payment selector */}
           <div className="cx-card p-6">
             <h2 className="text-lg font-bold text-dark mb-6">
-              Choisir un mode de paiement
+              Paiement sécurisé
             </h2>
-            <PaymentMethodSelector course={course} profile={profile} />
+            {resume && (
+              <div role="status" className="mb-6 rounded-cx border border-primary/20 bg-primary/5 p-4 text-sm text-dark">
+                <p className="font-bold">Reprise de votre paiement en cours</p>
+                <p className="mt-1 text-cx-gray">
+                  {resume.resumable ? (
+                    <>
+                      Votre session de paiement PayTech pour cette formation
+                      {openedOn ? `, ouverte le ${openedOn},` : ''} est toujours active. Vous pouvez y
+                      retourner pour la terminer&nbsp;: aucune nouvelle commande n&apos;est créée, et nous
+                      vérifions d&apos;abord auprès de PayTech si elle a déjà été réglée.
+                    </>
+                  ) : (
+                    <>
+                      Un paiement{openedOn ? ` commencé le ${openedOn}` : ''} est en cours de vérification
+                      pour cette formation. Nous demandons son état à PayTech avant toute nouvelle commande.
+                    </>
+                  )}
+                </p>
+                <p className="mt-2 text-xs text-cx-gray">
+                  Référence : <span className="font-mono">{resume.reference}</span>
+                </p>
+              </div>
+            )}
+            <PaytechCheckoutButton courseId={String(course.id)} resume={resume ? { resumable: resume.resumable } : null} />
           </div>
 
           {/* Order summary */}
@@ -267,7 +313,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
             </div>
 
             <div className="mt-4 pt-4 border-t border-black/[0.06] text-xs text-cx-gray space-y-1">
-              <p>✅ Accès immédiat après paiement</p>
+              <p>✅ Accès activé dès la confirmation du paiement</p>
               <p>✅ Contenu à vie</p>
               <p>✅ Certificat de réussite</p>
             </div>
