@@ -2,12 +2,14 @@
 import { useState } from 'react'
 import { Loader2, Lock, RotateCcw } from 'lucide-react'
 import { startPaytechCheckout, startPaytechPackCheckout } from '@/app/actions/paytech-checkout'
+import type { CheckoutConsent } from '@/lib/legal/checkout-consent'
 
 /**
  * The only payment control a learner sees — XP-PAYTECH-04.
  *
- * It sends ONE thing to the server: the course id. Price, currency, payer and
- * order reference are all decided there. It collects no card number, no CVV,
+ * It sends the course id and the three boxes the learner ticked (CGV art. 4,
+ * XP-LAUNCH-FINAL-11), and nothing else. Price, currency, payer and order
+ * reference are all decided there. It collects no card number, no CVV,
  * no expiry and no phone number: the learner chooses and enters their payment
  * instrument on PayTech's own hosted page, so no payment data ever transits or
  * is stored by XP Client Academy (XP-PAYTECH-04 safeguard 7). This replaces
@@ -44,15 +46,16 @@ function isSafeDestination(url: string): boolean {
 
 const FALLBACK = 'Le paiement n’a pas pu être lancé. Veuillez réessayer.'
 
-/** A single course: the ONE thing sent is its id. */
-function startCourse(courseId: string) {
-  return startPaytechCheckout({ courseId })
+/** A single course: its id and the ticked boxes are all that is sent. */
+function startCourse(courseId: string, consent: CheckoutConsent | null) {
+  return startPaytechCheckout({ courseId, consent })
 }
 
 export default function PaytechCheckoutButton({
   courseId,
   packCode,
   acknowledgedCourseIds,
+  consent = null,
   blocked = false,
   resume = null,
 }: {
@@ -65,6 +68,11 @@ export default function PaytechCheckoutButton({
    */
   packCode?: string
   acknowledgedCourseIds?: string[]
+  /**
+   * XP-LAUNCH-FINAL-11: the three boxes of CGV art. 4, or null while one is unticked
+   * (`CheckoutConsents`). The server checks them again and records them on the order.
+   */
+  consent?: CheckoutConsent | null
   /** True until the learner has acknowledged what the page asks (the pack warning). */
   blocked?: boolean
   resume?: PaytechResumeNotice | null
@@ -82,8 +90,8 @@ export default function PaytechCheckoutButton({
     setReference(null)
     try {
       const result = packCode
-        ? await startPaytechPackCheckout({ packCode, acknowledgedCourseIds: acknowledgedCourseIds ?? [] })
-        : await startCourse(courseId ?? '')
+        ? await startPaytechPackCheckout({ packCode, acknowledgedCourseIds: acknowledgedCourseIds ?? [], consent })
+        : await startCourse(courseId ?? '', consent)
       const destination = result.redirectUrl ?? result.accessUrl
       if (destination && isSafeDestination(destination)) {
         if (result.resumed === true) setResuming(true)

@@ -268,7 +268,9 @@ describe('XPA-1 — contact address is single-sourced', () => {
     for (const f of [
       'app/(public)/contact/page.tsx',
       'app/page.tsx',
-      'app/(public)/terms/page.tsx',
+      // XP-LAUNCH-FINAL-11: the terms page renders the CGU 1.0 text, which reads the
+      // address from the constant where the legal texts live.
+      'lib/legal/documents.ts',
       // XP-PAYTECH-04: checkout/confirm is now a bare redirect to /payment/success
       // and displays nothing, so it no longer reaches the address at all.
       'components/layout/Footer.tsx',

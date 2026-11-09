@@ -138,11 +138,12 @@ export default function Footer() {
         <hr className="border-white/10 mt-10 mb-5" />
         <div className="flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-white/40">
           <p>© {year} {BRAND_LEGAL_NAME}. Tous droits réservés.</p>
-          {/* Only pages that exist. There is no /legal route, so "mentions
-              légales" is not linked rather than linked to a 404. */}
-          <div className="flex gap-4">
-            <Link href="/privacy" className="hover:text-white/70 transition-colors">Confidentialité</Link>
-            <Link href="/terms"   className="hover:text-white/70 transition-colors">CGU</Link>
+          {/* XP-LAUNCH-FINAL-11: the four legal texts, version 1.0 (CGU/CGV « liens en pied de page »). */}
+          <div className="flex flex-wrap justify-center gap-4">
+            <Link href="/mentions-legales" className="hover:text-white/70 transition-colors">Mentions légales</Link>
+            <Link href="/terms"            className="hover:text-white/70 transition-colors">CGU</Link>
+            <Link href="/cgv"              className="hover:text-white/70 transition-colors">CGV</Link>
+            <Link href="/privacy"          className="hover:text-white/70 transition-colors">Confidentialité</Link>
           </div>
         </div>
         <div className="mt-5 flex justify-center">

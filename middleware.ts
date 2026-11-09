@@ -93,6 +93,8 @@ const PRIVATE_MODE_EXEMPT = [
   '/contact',
   '/terms',
   '/privacy',
+  '/cgv',              // XP-LAUNCH-FINAL-11: sales terms, read before any purchase
+  '/mentions-legales', // XP-LAUNCH-FINAL-11: legal notice
 ]
 
 /** Exact-match exemptions. `/` would prefix-match everything. */

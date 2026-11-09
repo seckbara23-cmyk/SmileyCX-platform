@@ -2,6 +2,8 @@
 import { useState } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import PaytechCheckoutButton, { type PaytechResumeNotice } from '@/components/payment/PaytechCheckoutButton'
+import CheckoutConsents from '@/components/payment/CheckoutConsents'
+import type { CheckoutConsent } from '@/lib/legal/checkout-consent'
 
 /**
  * Paying for a pack — XP-LAUNCH-FINAL-08 (CGV v0.3 art. 3, decision D8).
@@ -12,7 +14,10 @@ import PaytechCheckoutButton, { type PaytechResumeNotice } from '@/components/pa
  * until then, and sends the ids of exactly the courses shown here; the server
  * re-derives what the learner owns and refuses if the two differ.
  *
- * The checkbox lives here, not in the payment button, which renders no input at all
+ * Then the three boxes of CGV art. 4 (XP-LAUNCH-FINAL-11): the button also stays
+ * locked until all three are ticked.
+ *
+ * The checkboxes live here, not in the payment button, which renders no input at all
  * (it collects no payment data; safeguard 7).
  */
 export default function PackCheckoutPanel({
@@ -25,6 +30,7 @@ export default function PackCheckoutPanel({
   resume?: PaytechResumeNotice | null
 }) {
   const [acknowledged, setAcknowledged] = useState(false)
+  const [consent, setConsent] = useState<CheckoutConsent | null>(null)
   const mustAcknowledge = ownedCourses.length > 0
 
   return (
@@ -55,10 +61,12 @@ export default function PackCheckoutPanel({
           </label>
         </div>
       )}
+      <CheckoutConsents scope="pack" onChange={setConsent} />
       <PaytechCheckoutButton
         packCode={packCode}
         acknowledgedCourseIds={mustAcknowledge && acknowledged ? ownedCourses.map(c => c.id) : []}
-        blocked={mustAcknowledge && !acknowledged}
+        consent={consent}
+        blocked={(mustAcknowledge && !acknowledged) || consent === null}
         resume={resume}
       />
     </div>

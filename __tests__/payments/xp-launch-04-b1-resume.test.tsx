@@ -16,6 +16,7 @@
  * fixtures of `fixtures/paytech-get-status/`, served without a Content-Type header
  * as PayTech sends them.
  */
+import { tickedCheckoutConsent } from '@/lib/legal/checkout-consent'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -278,7 +279,7 @@ describe('XP-LAUNCH-04 · B1 — the read-only resume lookup', () => {
 describe('XP-LAUNCH-04 · B1 — the checkout action resumes a pending attempt, and says so', () => {
   async function start() {
     const { startPaytechCheckout } = await import('@/app/actions/paytech-checkout')
-    return startPaytechCheckout({ courseId: COURSE_ID })
+    return startPaytechCheckout({ courseId: COURSE_ID, consent: tickedCheckoutConsent() })
   }
 
   it('RESUMED: the provider says running → the SAME stored page, flagged resumed, with the reference', async () => {
@@ -382,7 +383,7 @@ describe('XP-LAUNCH-04 · B1 — the checkout action resumes a pending attempt, 
     expect(q.filters).toContainEqual({ m: 'eq', args: ['user_id', USER_ID] })
     expect(q.filters).toContainEqual({ m: 'eq', args: ['course_id', COURSE_ID] })
     const c = code('app/actions/paytech-checkout.ts')
-    expect(c).toMatch(/startPaytechCheckout\(input: \{\s*courseId: string\s*\}\)/)
+    expect(c).toMatch(/startPaytechCheckout\(input: \{\s*courseId: string\s*consent: CheckoutConsent \| null\s*\}\)/)
     expect(c).not.toMatch(/input\.(paymentId|reference|token|resume|redirect)/)
   })
 })
@@ -541,10 +542,11 @@ describe('XP-LAUNCH-04 · B1 — the checkout page tells a resume from a new pur
   it('the page reads the attempt for the signed-in learner and this course; the action keeps its one caller', () => {
     const page = code('app/(platform)/checkout/page.tsx')
     expect(page).toMatch(/inflightPaytechAttempt\(user\.id, String\(course\.id\)\)/)
-    expect(page).toMatch(/<PaytechCheckoutButton courseId=\{String\(course\.id\)\} resume=/)
+    // XP-LAUNCH-FINAL-11: the button now sits in the panel that holds the three boxes of CGV art. 4.
+    expect(page).toMatch(/<CourseCheckoutPanel courseId=\{String\(course\.id\)\} resume=/)
     expect(page).not.toMatch(/startPaytechCheckout/)
     const button = code('components/payment/PaytechCheckoutButton.tsx')
-    expect(button).toMatch(/startPaytechCheckout\(\{ courseId \}\)/)
+    expect(button).toMatch(/startPaytechCheckout\(\{ courseId, consent \}\)/)
     expect(button).toMatch(/result\.resumed === true/)
     expect(button).toMatch(/window\.location\.assign\(destination\)/)
     // The button renders no link and no field of its own: the server decides where to go.

@@ -74,6 +74,7 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
+      'payment-confirmation.ts',   // XP-LAUNCH-FINAL-11: the purchase confirmation e-mail
       'payment-database-guard.ts', 'payment-exceptions.ts',
       'paytech-callbacks.ts',
       'paytech-client.ts',
@@ -427,7 +428,7 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
     expect(pageCode, 'the NEXT_PUBLIC flag is read again').not.toMatch(/PAYMENTS_ENABLED/)
     expect(existsSync(join(ROOT, 'components/payment/PaymentMethodSelector.tsx'))).toBe(false)
     const button = read('components/payment/PaytechCheckoutButton.tsx')
-    expect(button).toMatch(/startPaytechCheckout\(\{ courseId \}\)/)
+    expect(button).toMatch(/startPaytechCheckout\(\{ courseId, consent \}\)/)
     expect(button, 'the button started talking to PayDunya')
       .not.toMatch(/app\.paydunya\.com|response_text|invoice_url/)
   })
