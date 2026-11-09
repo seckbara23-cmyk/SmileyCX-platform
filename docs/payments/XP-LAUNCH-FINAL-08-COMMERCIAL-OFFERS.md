@@ -1,6 +1,6 @@
 # XP-LAUNCH-FINAL-08 — commercial offers: prices, packs and six-month access
 
-Stacked on PR #61 (the PayTech payment integration). Review after it; merge after it; apply migration 065 after 063 and 064.
+Builds on the PayTech payment integration merged in PR #61. Apply migration 065 after 063 and 064, and before this change is deployed.
 
 ## What was decided
 
@@ -52,7 +52,7 @@ Course prices live in the database and are changed in the administration's cours
 
 ## Release order
 
-1. PR #61 merged, deployed with checkout off; 063, then 064.
+1. PR #61 merged and deployed with checkout off (done); 063, then 064.
 2. 065 applied under its own gate, after a completed nightly backup.
 3. This PR merged and deployed, checkout still off.
 4. Course prices set in the administration; the verifier passes.
