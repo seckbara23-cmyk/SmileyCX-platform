@@ -64,7 +64,8 @@ export default function CourseCard({ course }: { course: CourseItem }) {
               {formatPrice(course.price, course.currency)}
             </span>
           )}
-          <span className="text-[11px] text-cx-gray">Acc&egrave;s &agrave; vie</span>
+          {/* XP-LAUNCH-FINAL-08 (D1, D3): six months for a paid course, no end for the free one. */}
+          <span className="text-[11px] text-cx-gray">{course.isFree ? 'Accès sans limite de durée' : 'Accès 6 mois'}</span>
         </div>
 
         {/* Footer: meta + CTA */}

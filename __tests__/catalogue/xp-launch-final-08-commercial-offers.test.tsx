@@ -252,7 +252,8 @@ describe('XP-LAUNCH-FINAL-08 · six months, said everywhere (decision D1)', () =
   it('no page or component promises lifetime access to a paid course any more', () => {
     for (const f of [...sources('app'), ...sources('components')]) {
       const src = read(f)
-      expect(src, f).not.toMatch(/Accès complet à vie|Accès à vie|Contenu à vie|Accès complet &agrave; vie|Acc&egrave;s complet &agrave; vie/)
+      // Spelled with or without HTML entities: the catalogue card wrote « Acc&egrave;s &agrave; vie ».
+      expect(src, f).not.toMatch(/(Accès|Acc&egrave;s|Contenu)( complet)? (à|&agrave;) vie/)
     }
   })
 
