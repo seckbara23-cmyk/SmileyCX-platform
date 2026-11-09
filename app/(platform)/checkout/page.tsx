@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import PaytechCheckoutButton from '@/components/payment/PaytechCheckoutButton'
+import CourseCheckoutPanel from '@/components/payment/CourseCheckoutPanel'
 import { formatPrice } from '@/lib/utils/cn'
 import { paytechCheckoutAvailability } from '@/lib/payments/providers'
 import { inflightPaytechAttempt } from '@/lib/payments/paytech-resume'
@@ -280,7 +280,7 @@ export default async function CheckoutPage({ searchParams }: Props) {
                 </p>
               </div>
             )}
-            <PaytechCheckoutButton courseId={String(course.id)} resume={resume ? { resumable: resume.resumable } : null} />
+            <CourseCheckoutPanel courseId={String(course.id)} resume={resume ? { resumable: resume.resumable } : null} />
           </div>
 
           {/* Order summary */}

@@ -229,6 +229,9 @@ describe('PAY-1B(a) · every payment reader, and which client it uses', () => {
         // XP-LAUNCH-04: the learner's attempts in flight, for the resume path. Reads only;
         // hands pages a boolean for the stored URL, never the URL or the token.
         'lib/payments/paytech-resume.ts',
+        // XP-LAUNCH-FINAL-11: the purchase confirmation e-mail. Service-role, reads one
+        // completed payment by id after its completion; logs the id and nothing else.
+        'lib/payments/payment-confirmation.ts',
       ], `${r.file} is an unreviewed payment reader`).toContain(r.file)
     }
   })

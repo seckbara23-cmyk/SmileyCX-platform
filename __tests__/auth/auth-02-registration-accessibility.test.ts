@@ -383,6 +383,7 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
+      'payment-confirmation.ts',   // XP-LAUNCH-FINAL-11: the purchase confirmation e-mail
       'payment-database-guard.ts', 'payment-exceptions.ts',
       'paytech-callbacks.ts',
       'paytech-client.ts',

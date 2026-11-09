@@ -42,6 +42,7 @@
  * lock contention (PGlite has one connection, so concurrent handlers
  * interleave at STATEMENT granularity).
  */
+import { tickedCheckoutConsent } from '@/lib/legal/checkout-consent'
 import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest'
 import { createHash, createHmac } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -94,6 +95,9 @@ const H = vi.hoisted(() => ({
   emailMode: 'ok' as 'ok' | 'fail' | 'fail_second' | 'dry',
   /** Runs while an alert goes out, for races. */
   emailDuring: null as null | (() => Promise<void>),
+  /** XP-LAUNCH-FINAL-11: the learner's purchase confirmations. */
+  confirmations: [] as { to: string; data: Record<string, unknown> }[],
+  confirmationMode: 'ok' as 'ok' | 'fail',
   contract: null as null | Record<string, unknown>,
 }))
 
@@ -125,6 +129,10 @@ vi.mock('@/lib/email', () => ({
     if (H.emailMode === 'fail_second' && H.emails.length % 2 === 0) return { success: false, error: 'simulated' }
     if (H.emailMode === 'dry') return { success: true, dryRun: true }
     return { success: true }
+  },
+  sendPaymentConfirmationEmail: async (to: string, data: Record<string, unknown>) => {
+    H.confirmations.push({ to, data })
+    return H.confirmationMode === 'fail' ? { success: false, error: 'simulated' } : { success: true }
   },
 }))
 vi.mock('next/headers', () => ({ headers: async () => new Headers({ 'user-agent': 'harness' }) }))
@@ -493,7 +501,8 @@ const user = (id: string, verified = true): U =>
 async function checkout(u: U | null, courseId: string, extra: Record<string, unknown> = {}) {
   H.user = u
   const { startPaytechCheckout } = await import('@/app/actions/paytech-checkout')
-  return startPaytechCheckout({ courseId, ...extra } as { courseId: string })
+  // XP-LAUNCH-FINAL-11: every purchase carries the three ticked boxes of CGV art. 4.
+  return startPaytechCheckout({ courseId, consent: tickedCheckoutConsent(), ...extra } as Parameters<typeof startPaytechCheckout>[0])
 }
 
 async function access(u: U, courseId: string) {
@@ -723,6 +732,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
 
     H.user = null; H.logs = []; H.rpcFault = null; H.contract = FIXTURE_CONTRACT
     H.rpcFaultFor = null; H.denyAdmin = false; H.emails = []; H.emailMode = 'ok'; H.emailDuring = null
+    H.confirmations = []; H.confirmationMode = 'ok'
     P.next = 0; P.requests = []; P.statusCalls = []; P.refs = new Map(); P.status = new Map(); P.during = null; P.duringStatus = null
 
     vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
@@ -9929,7 +9939,7 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
     async function packCheckout(u: U | null, packCode: string, acknowledgedCourseIds?: string[]) {
       H.user = u
       const { startPaytechPackCheckout } = await import('@/app/actions/paytech-checkout')
-      return startPaytechPackCheckout({ packCode, ...(acknowledgedCourseIds ? { acknowledgedCourseIds } : {}) })
+      return startPaytechPackCheckout({ packCode, consent: tickedCheckoutConsent(), ...(acknowledgedCourseIds ? { acknowledgedCourseIds } : {}) })
     }
     async function packToken(u: U, packCode: string, ack?: string[]) {
       const r = await packCheckout(u, packCode, ack)
@@ -10205,6 +10215,93 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, ids['C2-F5']])
       await exAction('recordExceptionAccess', decisions)
       expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'access_honoured', access_state: 'granted' })
+    })
+
+    // ═════════════════════════════════════════════════════════════════════════
+    describe('XP-LAUNCH-FINAL-11 — the three boxes of CGV art. 4, on the order, and the confirmation e-mail', () => {
+      const legalOf = async (token: string) => {
+        const row = await rowFor(token)
+        return (await asSuper(`select metadata -> 'legal' as legal, (now() - (metadata -> 'legal' ->> 'acceptedAt')::timestamptz) < interval '2 minutes' as recent
+          from public.payments where id = $1`, [row.id]))[0] as { legal: Record<string, unknown> | null; recent: boolean }
+      }
+
+      it('a box left unticked, or ticked at another version, opens nothing and asks PayTech nothing', async () => {
+        H.user = user(L1)
+        const { startPaytechCheckout, startPaytechPackCheckout } = await import('@/app/actions/paytech-checkout')
+        const ticked = tickedCheckoutConsent()
+        for (const consent of [null, undefined, {}, { ...ticked, adultOrGuardian: false }, { ...ticked, immediateAccess: 'true' }, { ...ticked, terms: false }]) {
+          const r = await startPaytechCheckout({ courseId: ids['C1-F1'], consent } as Parameters<typeof startPaytechCheckout>[0])
+          expect(r.error).toMatch(/Cochez les trois cases/)
+          const p = await startPaytechPackCheckout({ packCode: 'PACK-MANAGER', consent } as Parameters<typeof startPaytechPackCheckout>[0])
+          expect(p.error).toMatch(/Cochez les trois cases/)
+        }
+        const stale = await startPaytechCheckout({ courseId: ids['C1-F1'], consent: { ...ticked, version: '0.9+0.9' } })
+        expect(stale.error).toMatch(/Rechargez-la/)
+        expect(P.requests).toEqual([])
+        expect((await asSuper(`select count(*)::int as n from public.payments where user_id = $1`, [L1]))[0].n).toBe(0)
+      })
+
+      it('a course order records CGU 1.0 and CGV 1.0, the two requests, and the SERVER time of acceptance', async () => {
+        const token = await startAndToken(user(L1), ids['C1-F1'])
+        const { legal, recent } = await legalOf(token)
+        expect(legal).toEqual({
+          cgu: '1.0', cgv: '1.0', acceptedAt: expect.any(String),
+          immediateAccessRequested: true, adultOrGuardianCertified: true,
+        })
+        expect(recent).toBe(true)
+      })
+
+      it('a pack order records them too, beside the pack it bought', async () => {
+        const token = await packToken(user(L1), 'PACK-MANAGER')
+        const { legal } = await legalOf(token)
+        expect(legal).toMatchObject({ cgu: '1.0', cgv: '1.0', immediateAccessRequested: true, adultOrGuardianCertified: true })
+        const row = await rowFor(token)
+        expect((await asSuper(`select metadata -> 'pack' ->> 'code' as code from public.payments where id = $1`, [row.id]))[0].code).toBe('PACK-MANAGER')
+      })
+
+      it('the learner gets ONE confirmation e-mail on completion: what, how much, the reference, six months, the conditions', async () => {
+        const token = await startAndToken(user(L1), ids['C1-F1'])
+        says(token, 'completed', 9900)
+        expect((await ipn(token)).status).toBe(200)
+        expect(H.confirmations).toHaveLength(1)
+        const [mail] = H.confirmations
+        const row = await rowFor(token)
+        const title = (await asSuper(`select title from public.courses where id = $1`, [ids['C1-F1']]))[0].title
+        expect(mail.to).toBe('l1@example.test')
+        expect(mail.data).toMatchObject({ productTitle: title, packCourses: [], reference: row.reference, acceptedTerms: 'CGU 1.0 et CGV 1.0' })
+        expect(String(mail.data.amount).replace(/\D/g, '')).toBe('9900')
+        expect(mail.data.accessEndsOn).toMatch(/\d{4}$/)
+        expect(String(mail.data.dashboardUrl)).toMatch(/\/dashboard$/)
+
+        // A replayed notification completes nothing new and announces nothing new.
+        expect((await ipn(token)).status).toBe(200)
+        expect(H.confirmations).toHaveLength(1)
+      })
+
+      it('a pack confirmation lists its courses, and says which ones were already owned and keep their own dates', async () => {
+        await asSuper(`insert into public.entitlements (user_id, course_id, source, status, starts_at, expires_at)
+          values ($1, $2, 'INDIVIDUAL_PURCHASE', 'ACTIVE', now() - interval '1 month', now() + interval '5 months')`, [L1, ids['C1-F1']])
+        const token = await packToken(user(L1), 'PACK-CONSEILLER', [ids['C1-F1']])
+        says(token, 'completed', 37900)
+        expect((await ipn(token)).status).toBe(200)
+        expect(H.confirmations).toHaveLength(1)
+        const { data } = H.confirmations[0]
+        expect(data.productTitle).toBe('Pack Conseiller')
+        const courses = data.packCourses as { title: string; preexisting: boolean }[]
+        expect(courses).toHaveLength(4)
+        expect(courses.filter(c => c.preexisting)).toHaveLength(1)
+        expect(String(data.amount).replace(/\D/g, '')).toBe('37900')
+      })
+
+      it('a failed send changes nothing: the payment stays completed and the access open', async () => {
+        H.confirmationMode = 'fail'
+        const token = await startAndToken(user(L1), ids['C1-F1'])
+        says(token, 'completed', 9900)
+        expect((await ipn(token)).status).toBe(200)
+        expect((await rowFor(token)).status).toBe('completed')
+        expect(await dbHasAccess(L1, ids['C1-F1'])).toBe(true)
+        expect(H.logs.some(l => l.module === 'payments/confirmation' && l.level === 'error')).toBe(true)
+      })
     })
   })
 })

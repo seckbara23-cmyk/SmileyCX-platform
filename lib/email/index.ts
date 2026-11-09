@@ -40,6 +40,12 @@ import {
   passwordResetEmailText,
   type PasswordResetEmailData,
 } from './templates/password-reset'
+import {
+  paymentConfirmationEmailHtml,
+  paymentConfirmationEmailText,
+  paymentConfirmationSubject,
+  type PaymentConfirmationEmailData,
+} from './templates/payment-confirmation'
 
 const log = createLogger('email')
 
@@ -132,6 +138,19 @@ export async function sendPaymentExceptionAlert(
     subject: `Paiement à vérifier — ${data.reference}`,
     html:    paymentExceptionEmailHtml(data),
     text:    paymentExceptionEmailText(data),
+  })
+}
+
+/** XP-LAUNCH-FINAL-11 — to the learner, once, when their payment is completed (CGV art. 4.4). */
+export async function sendPaymentConfirmationEmail(
+  to: string,
+  data: PaymentConfirmationEmailData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: paymentConfirmationSubject(data),
+    html:    paymentConfirmationEmailHtml(data),
+    text:    paymentConfirmationEmailText(data),
   })
 }
 

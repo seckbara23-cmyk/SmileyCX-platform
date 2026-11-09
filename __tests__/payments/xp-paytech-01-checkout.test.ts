@@ -8,6 +8,7 @@
  * structural rules the integration rests on: that exactly one module may call
  * `complete_payment()`, and that nothing a browser touches can fulfil.
  */
+import { tickedCheckoutConsent } from '@/lib/legal/checkout-consent'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -437,7 +438,7 @@ describe('XP-PAYTECH-01 · the transport layer', () => {
 describe('XP-PAYTECH-01 · checkout eligibility', () => {
   async function start() {
     const { startPaytechCheckout } = await import('@/app/actions/paytech-checkout')
-    return startPaytechCheckout({ courseId: COURSE_ID })
+    return startPaytechCheckout({ courseId: COURSE_ID, consent: tickedCheckoutConsent() })
   }
 
   it('scenario 14 — refuses an unauthenticated caller', async () => {
@@ -499,7 +500,7 @@ describe('XP-PAYTECH-01 · checkout eligibility', () => {
 describe('XP-PAYTECH-01 · checkout writes', () => {
   async function start() {
     const { startPaytechCheckout } = await import('@/app/actions/paytech-checkout')
-    return startPaytechCheckout({ courseId: COURSE_ID })
+    return startPaytechCheckout({ courseId: COURSE_ID, consent: tickedCheckoutConsent() })
   }
 
   it('takes the price from the database, never from the caller', async () => {
@@ -510,8 +511,9 @@ describe('XP-PAYTECH-01 · checkout writes', () => {
       provider: 'paytech', provider_mode: 'test',
     })
     const c = code('app/actions/paytech-checkout.ts')
-    // The action's input type carries a course id and nothing else.
-    expect(c).toMatch(/startPaytechCheckout\(input: \{\s*courseId: string\s*\}\)/)
+    // The action's input type carries a course id and the ticked boxes of CGV art. 4
+    // (XP-LAUNCH-FINAL-11), and nothing else: never an amount, a price or a reference.
+    expect(c).toMatch(/startPaytechCheckout\(input: \{\s*courseId: string\s*consent: CheckoutConsent \| null\s*\}\)/)
     expect(c).not.toMatch(/input\.(amount|price|currency|reference)/)
   })
 

@@ -7,6 +7,7 @@
  * checkout and its warning, the six-month wording, the hidden pathways, and that
  * certificates never depend on course access.
  */
+import { tickedCheckoutConsent } from '@/lib/legal/checkout-consent'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
@@ -197,6 +198,13 @@ describe('XP-LAUNCH-FINAL-08 · the pack page', () => {
   })
 })
 
+/** XP-LAUNCH-FINAL-11: tick the three boxes of CGV art. 4. */
+function tickConsents() {
+  fireEvent.click(screen.getByRole('checkbox', { name: /J’ai lu et j’accepte/ }))
+  fireEvent.click(screen.getByRole('checkbox', { name: /activation immédiate/ }))
+  fireEvent.click(screen.getByRole('checkbox', { name: /18 ans ou plus/ }))
+}
+
 describe('XP-LAUNCH-FINAL-08 · buying a pack', () => {
   it('the checkout page shows the pack, its unit total and its price, and asks nothing when nothing is owned', async () => {
     S.user = { id: 'u1' }
@@ -226,25 +234,34 @@ describe('XP-LAUNCH-FINAL-08 · buying a pack', () => {
     expect(button.disabled).toBe(true)
     fireEvent.click(button)
     expect(startPaytechPackCheckout).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('checkbox', { name: /J’ai compris/ }))
+    // XP-LAUNCH-FINAL-11: the three boxes of CGV art. 4 still hold the button.
+    expect(button.disabled).toBe(true)
+    tickConsents()
     expect(button.disabled).toBe(false)
     fireEvent.click(button)
     await waitFor(() => expect(startPaytechPackCheckout).toHaveBeenCalledTimes(1))
-    expect(startPaytechPackCheckout.mock.calls[0]).toEqual([{ packCode: 'PACK-CONSEILLER', acknowledgedCourseIds: [COURSES['C1-F1'].id] }])
+    expect(startPaytechPackCheckout.mock.calls[0]).toEqual([{
+      packCode: 'PACK-CONSEILLER', acknowledgedCourseIds: [COURSES['C1-F1'].id], consent: tickedCheckoutConsent(),
+    }])
   })
 
   it('without an owned course there is no box, and the click sends an empty acknowledgement', async () => {
     const { default: PackCheckoutPanel } = await import('@/components/payment/PackCheckoutPanel')
     render(<PackCheckoutPanel packCode="PACK-MANAGER" ownedCourses={[]} />)
-    expect(screen.queryByRole('checkbox')).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /J’ai compris/ })).toBeNull()
+    // XP-LAUNCH-FINAL-11: only the three boxes of CGV art. 4 remain, and they hold the button.
+    expect(screen.getAllByRole('checkbox')).toHaveLength(3)
+    expect((screen.getByRole('button', { name: /Payer avec PayTech/ }) as HTMLButtonElement).disabled).toBe(true)
+    tickConsents()
     fireEvent.click(screen.getByRole('button', { name: /Payer avec PayTech/ }))
     await waitFor(() => expect(startPaytechPackCheckout).toHaveBeenCalledTimes(1))
-    expect(startPaytechPackCheckout.mock.calls[0]).toEqual([{ packCode: 'PACK-MANAGER', acknowledgedCourseIds: [] }])
+    expect(startPaytechPackCheckout.mock.calls[0]).toEqual([{ packCode: 'PACK-MANAGER', acknowledgedCourseIds: [], consent: tickedCheckoutConsent() }])
   })
 
   it('the payment button itself still renders no input: the box lives in the panel (safeguard 7)', () => {
     expect(read('components/payment/PaytechCheckoutButton.tsx')).not.toMatch(/<input|<Input/)
-    expect(code('components/payment/PaytechCheckoutButton.tsx')).toMatch(/startPaytechCheckout\(\{ courseId \}\)/)
+    expect(code('components/payment/PaytechCheckoutButton.tsx')).toMatch(/startPaytechCheckout\(\{ courseId, consent \}\)/)
   })
 })
 

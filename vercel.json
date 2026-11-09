@@ -2,10 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "git": {
     "deploymentEnabled": {
-      "feat/xp-launch-final-08-commercial-offers": false
+      "feat/xp-launch-final-08-commercial-offers": false,
+      "feat/xp-launch-final-11-legal-checkout": false
     }
   },
-  "ignoreCommand": "[ \"$VERCEL_GIT_COMMIT_REF\" = \"feat/xp-launch-final-08-commercial-offers\" ]",
+  "ignoreCommand": "[ \"$VERCEL_GIT_COMMIT_REF\" = \"feat/xp-launch-final-08-commercial-offers\" ] || [ \"$VERCEL_GIT_COMMIT_REF\" = \"feat/xp-launch-final-11-legal-checkout\" ]",
   "crons": [
     { "path": "/api/payments/paytech/reconcile", "schedule": "0 5 * * *" }
   ]
