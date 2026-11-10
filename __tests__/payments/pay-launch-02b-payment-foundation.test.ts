@@ -743,7 +743,8 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     // Exactly one module may write entitlements: the audited admin grant path.
     expect([...new Set(granters)].sort(),
       `entitlement writers are now: ${[...new Set(granters)].join(', ')}`)
-      .toEqual(['app/actions/entitlements.ts'])
+      // XP-LAUNCH-FINAL-18: the free course's self-service grant (free and published courses only, PROMOTIONAL_GRANT, audited).
+      .toEqual(['app/actions/entitlements.ts', 'lib/learn/free-course.ts'])
   })
 })
 

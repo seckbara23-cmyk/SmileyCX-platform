@@ -140,6 +140,18 @@ describe('learnerAccessEndDates — the date the dashboard shows', async () => {
 describe('the pages use them', () => {
   const read = (rel: string) => readFileSync(join(process.cwd(), rel), 'utf8')
 
+  it('the new entitlement writer writes one kind of grant only, for free published courses, and is no server action', () => {
+    const src = read('lib/learn/free-course.ts')
+    const sources = [...src.matchAll(/source:\s*'([A-Z_]+)'/g)].map(m => m[1])
+    expect(sources.length).toBeGreaterThan(0)
+    expect(new Set(sources)).toEqual(new Set(['PROMOTIONAL_GRANT']))
+    expect(src).not.toMatch(/expires_at:/)
+    expect(src).toContain("course.is_free !== true")
+    expect(src).toContain("course.is_published !== true")
+    expect(src).not.toMatch(/^'use server'/m)
+    expect(src).toMatch(/^import 'server-only'/m)
+  })
+
   it('the course page offers the free start only to a signed-in learner without access to a FREE course, as a form', () => {
     const page = read('app/(public)/courses/[slug]/page.tsx')
     expect(page).toContain('const freeStart = isFree && !!user && !ctaAccess.allowed')

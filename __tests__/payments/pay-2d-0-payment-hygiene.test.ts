@@ -163,7 +163,8 @@ describe('PAY-2D-0 · 2. the guards carry no carve-out any more', () => {
       }
     }
     expect([...new Set(writers)].sort())
-      .toEqual(['app/actions/enrollment.ts', 'app/actions/entitlements.ts'])
+      // XP-LAUNCH-FINAL-18: the free course's self-service grant (free and published courses only, PROMOTIONAL_GRANT, audited).
+      .toEqual(['app/actions/enrollment.ts', 'app/actions/entitlements.ts', 'lib/learn/free-course.ts'])
   })
 
   it('exactly one module writes entitlements, and it is the audited admin path', () => {
@@ -176,7 +177,8 @@ describe('PAY-2D-0 · 2. the guards carry no carve-out any more', () => {
         }
       }
     }
-    expect([...new Set(granters)].sort()).toEqual(['app/actions/entitlements.ts'])
+    // XP-LAUNCH-FINAL-18: the free course's self-service grant (free and published courses only, PROMOTIONAL_GRANT, audited).
+    expect([...new Set(granters)].sort()).toEqual(['app/actions/entitlements.ts', 'lib/learn/free-course.ts'])
   })
 })
 
