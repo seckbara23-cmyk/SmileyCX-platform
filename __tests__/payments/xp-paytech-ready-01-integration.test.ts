@@ -9961,6 +9961,28 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       }
     })
 
+    it('065 takes the platform default rights back from service_role too: the ledger only grows, the packs cannot be emptied', async () => {
+      // This database grants ALL on new tables to service_role by default, as Supabase does.
+      const can = async (table: string, priv: string) =>
+        (await asSuper(`select has_table_privilege('service_role', $1, $2) as ok`, [`public.${table}`, priv]))[0].ok
+      for (const priv of ['SELECT', 'INSERT']) expect(await can('payment_entitlements', priv), priv).toBe(true)
+      for (const priv of ['UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) {
+        expect(await can('payment_entitlements', priv), priv).toBe(false)
+      }
+      for (const table of ['course_packs', 'course_pack_courses']) {
+        for (const priv of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) expect(await can(table, priv), `${table} ${priv}`).toBe(true)
+        for (const priv of ['TRUNCATE', 'REFERENCES', 'TRIGGER']) expect(await can(table, priv), `${table} ${priv}`).toBe(false)
+      }
+      for (const sql of [
+        `update public.payment_entitlements set preexisting = preexisting`,
+        `delete from public.payment_entitlements`,
+        `truncate public.payment_entitlements`,
+        `truncate public.course_packs, public.course_pack_courses`,
+      ]) {
+        await expect(asRole('service_role', null, sql), sql).rejects.toThrow(/permission denied/)
+      }
+    })
+
     it.each([
       ['C1-F1', 9900], ['C1-F2', 9900], ['C1-F3', 9900], ['C2-F4', 14900],
       ['C2-F1', 14900], ['C2-F2', 14900], ['C2-F5', 14900],

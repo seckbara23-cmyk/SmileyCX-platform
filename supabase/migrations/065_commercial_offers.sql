@@ -130,8 +130,8 @@ create policy "course_pack_courses_public_read" on public.course_pack_courses
   for select using (exists (select 1 from public.course_packs p where p.id = pack_id and p.is_published));
 
 -- D-GRANT: Supabase's default privileges gave anon and authenticated ALL on both.
-revoke all on public.course_packs        from public, anon, authenticated;
-revoke all on public.course_pack_courses from public, anon, authenticated;
+revoke all on public.course_packs        from public, anon, authenticated, service_role;
+revoke all on public.course_pack_courses from public, anon, authenticated, service_role;
 grant select on public.course_packs        to anon, authenticated;
 grant select on public.course_pack_courses to anon, authenticated;
 grant select, insert, update, delete on public.course_packs        to service_role;
@@ -280,7 +280,7 @@ comment on table public.payment_entitlements is
   'XP-LAUNCH-FINAL-08. Per completed payment and course: the entitlement complete_payment() granted (preexisting = false) or linked (true). service_role only.';
 
 alter table public.payment_entitlements enable row level security;
-revoke all on public.payment_entitlements from public, anon, authenticated;
+revoke all on public.payment_entitlements from public, anon, authenticated, service_role;
 grant select, insert on public.payment_entitlements to service_role;
 
 
