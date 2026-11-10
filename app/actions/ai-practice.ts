@@ -22,7 +22,7 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { withinInputBounds } from '@/lib/validation/input-bounds'
 import { createLogger } from '@/lib/logger'
-import { AI_COACH_ENABLED } from '@/lib/ai/flags'
+import { AI_COACH_ENABLED, VOICE_PRACTICE_OPEN, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
 import { recordLessonCompletion } from '@/lib/learn/completion'
 import {
@@ -239,6 +239,8 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
 export async function createAiSession(
   input: { scenarioId: string; anonId?: string }
 ): Promise<{ sessionId?: string; error?: string }> {
+  // XP-LAUNCH-FINAL-18: no voice session while voice practice is closed.
+  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
   const parsed = CreateSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { scenarioId, anonId } = parsed.data
@@ -312,6 +314,8 @@ export async function startVoiceSession(
    */
   detail?: string
 }> {
+  // XP-LAUNCH-FINAL-18: no voice session while voice practice is closed.
+  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE, detail: 'voice practice closed' }
   const parsed = CreateSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.', detail: 'input validation failed' }
   const { scenarioId, anonId } = parsed.data

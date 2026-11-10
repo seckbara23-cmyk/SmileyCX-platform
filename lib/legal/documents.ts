@@ -103,15 +103,15 @@ export const CGU: LegalText = {
       id: 'article-6',
       title: 'Article 6 — Certificats',
       blocks: [
-        { p: 'À la fin d’une formation et après réussite à l’évaluation finale, vous pouvez obtenir un certificat XP. Il atteste que vous avez suivi et réussi la formation. Il peut être vérifié en ligne grâce à son QR code. **Il ne s’agit ni d’un diplôme d’État ni d’une certification reconnue par une autorité externe.** Un certificat déjà obtenu reste valide après la fin de votre accès à la formation.' },
+        { p: 'Lorsque vous avez suivi toutes les leçons d’une formation et, si cette formation comporte une évaluation finale, après l’avoir réussie, vous pouvez obtenir un certificat XP. Il atteste que vous avez suivi la formation jusqu’au bout et, le cas échéant, réussi son évaluation finale. Il peut être vérifié en ligne grâce à son QR code. **Il ne s’agit ni d’un diplôme d’État ni d’une certification reconnue par une autorité externe.** Un certificat déjà obtenu reste valide après la fin de votre accès à la formation.' },
       ],
     },
     {
       id: 'article-7',
       title: 'Article 7 — Entraînement vocal',
       blocks: [
-        { p: `Certaines formations (C1-F2) proposent un entraînement vocal : vous parlez à un client simulé et vous recevez un retour. Pour cela, votre voix et le texte de l’échange sont traités par notre prestataire de conversation vocale (ElevenLabs). La plateforme peut enregistrer la transcription de l’échange et l’évaluation de votre entraînement. Une analyse par intelligence artificielle (Anthropic) peut être utilisée pour cette évaluation, selon les formations. Vous pouvez demander la suppression de ces données en écrivant à ${CONTACT_EMAIL}.` },
-        { p: 'Le nombre d’essais inclus est de 5 par leçon concernée (voir CGV, article 8). Cet entraînement est un outil d’apprentissage ; il ne remplace pas une évaluation professionnelle.' },
+        { p: `L’entraînement vocal de la formation C1-F2 n’est pas encore ouvert. Lorsqu’il le sera, vous parlerez à un client simulé et recevrez un retour : votre voix et le texte de l’échange seront traités par notre prestataire de conversation vocale (ElevenLabs), la plateforme pourra enregistrer la transcription de l’échange et l’évaluation de votre entraînement, et une analyse par intelligence artificielle (Anthropic) pourra être utilisée pour cette évaluation. Vous pourrez demander la suppression de ces données en écrivant à ${CONTACT_EMAIL}.` },
+        { p: 'Ses conditions, dont le nombre d’essais inclus, seront publiées dans une nouvelle version des présentes conditions avant son ouverture, et vous ne pourrez l’utiliser qu’après avoir accepté ce traitement. Cet entraînement est un outil d’apprentissage ; il ne remplace pas une évaluation professionnelle.' },
       ],
     },
     {
@@ -293,7 +293,7 @@ export const CGV: LegalText = {
       id: 'article-8',
       title: 'Article 8 — Entraînement vocal',
       blocks: [
-        { p: 'Lorsqu’une formation inclut un entraînement vocal (C1-F2), le prix comprend **5 essais par leçon concernée**. Un compteur vous indique les essais restants. Les essais non utilisés expirent avec votre accès. Ce nombre peut évoluer pour les futurs acheteurs, sans effet sur les achats déjà faits. Quand les 5 essais d’une leçon sont utilisés, l’entraînement n’est plus disponible pour cette leçon.' },
+        { p: 'L’entraînement vocal de la formation C1-F2 n’est pas encore ouvert. Le nombre d’essais inclus et ses conditions seront publiés dans une nouvelle version des présentes conditions avant son ouverture. Ils ne réduiront rien de ce qui a déjà été acheté.' },
       ],
     },
     {
@@ -422,7 +422,7 @@ export const PRIVACY: LegalText = {
         { ul: [
           '**Pour exécuter votre commande et votre formation :** compte, accès, certificat, facture, support.',
           '**Pour respecter la loi :** conservation des factures et des documents comptables.',
-          '**Avec votre accord :** par exemple l’entraînement vocal et, le cas échéant, l’envoi d’informations commerciales. Vous pouvez retirer votre accord à tout moment.',
+          '**Avec votre accord :** par exemple l’entraînement vocal, lorsqu’il sera ouvert, et, le cas échéant, l’envoi d’informations commerciales. Vous pouvez retirer votre accord à tout moment.',
         ] },
       ],
     },
@@ -457,7 +457,7 @@ export const PRIVACY: LegalText = {
       id: 'entrainement-vocal',
       title: '6. L’entraînement vocal',
       blocks: [
-        { p: `Pour l’entraînement vocal de la formation C1-F2, votre micro capte votre voix pendant l’exercice. Elle est traitée par notre prestataire de conversation vocale (ElevenLabs) pour simuler le client et vous donner un retour. La plateforme peut enregistrer la transcription de l’échange et l’évaluation de votre entraînement, que vous retrouvez dans votre espace. Vous ne pouvez utiliser l’entraînement qu’après avoir accepté ce traitement, et vous pouvez demander la suppression de ces données en écrivant à ${CONTACT_EMAIL}.` },
+        { p: `L’entraînement vocal de la formation C1-F2 n’est pas encore ouvert. Lorsqu’il le sera, votre micro captera votre voix pendant l’exercice. Elle sera traitée par notre prestataire de conversation vocale (ElevenLabs) pour simuler le client et vous donner un retour, et la plateforme pourra enregistrer la transcription de l’échange et l’évaluation de votre entraînement, que vous retrouverez dans votre espace. Vous ne pourrez utiliser l’entraînement qu’après avoir accepté ce traitement, et vous pourrez demander la suppression de ces données en écrivant à ${CONTACT_EMAIL}.` },
       ],
     },
     {

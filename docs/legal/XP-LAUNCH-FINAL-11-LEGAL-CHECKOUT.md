@@ -18,9 +18,10 @@ Builds on the commercial offers (packs, six-month access). Merge after them.
 - 6 database tests cover the refusal without the boxes, the record on course and pack orders, one e-mail per completion, a pack's e-mail and a failed send.
 - The existing checkout tests now pass the three boxes.
 
-## Open items that are decisions, not code
+## Texts aligned with the platform (XP-LAUNCH-FINAL-18)
 
-- CGU art. 6 ties the certificate to passing a final evaluation. Published courses issue it on completing the lessons.
-- CGV art. 8 promises five voice-practice attempts per lesson with a visible counter, which is not built.
-- Privacy policy art. 6 makes voice practice conditional on accepting the processing, and there is no consent step yet.
-- CGV art. 11 says a receipt or invoice is issued for each sale. The confirmation e-mail is not an invoice, and invoices are sent on request.
+- **Certificates, CGU art. 6:** a certificate follows the completion of every lesson and, where the course has a final evaluation, its success. That is the rule the platform applies; no exam requirement was added.
+- **Voice practice, CGU art. 7, CGV art. 8, privacy policy art. 3 and 6:** it is not open yet. The texts say so, and say that its conditions, including the number of attempts, will be published in a new version before it opens, and that it will require accepting the voice processing first. The code keeps it closed whatever the environment flag says, until the attempt counter and the consent step exist.
+- **Receipts, CGV art. 11:** the confirmation e-mail is not an invoice; invoices are sent on request, as the texts say.
+
+These sentences differ from the source documents and need XP CLIENT's confirmation before publication. The issuer name shown in the footer and on certificates is a separate decision for XP CLIENT.
