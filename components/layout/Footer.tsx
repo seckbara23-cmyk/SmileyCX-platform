@@ -5,6 +5,7 @@ import { Mail, Phone, MapPin, Linkedin } from 'lucide-react'
 import {
   CONTACT_EMAIL, CONTACT_PHONE, CONTACT_PHONE_HREF, CONTACT_LOCATION,
   BRAND_LEGAL_NAME,
+  BRAND_LEGAL_ENTITY,
 } from '@/lib/brand'
 
 /**
@@ -137,7 +138,7 @@ export default function Footer() {
         {/* ── Bottom row ───────────────────────────────────────────────── */}
         <hr className="border-white/10 mt-10 mb-5" />
         <div className="flex flex-col sm:flex-row justify-between items-center gap-3 text-xs text-white/40">
-          <p>© {year} {BRAND_LEGAL_NAME}. Tous droits réservés.</p>
+          <p>© {year} {BRAND_LEGAL_NAME} — {BRAND_LEGAL_ENTITY}. Tous droits réservés.</p>
           {/* XP-LAUNCH-FINAL-11: the four legal texts, version 1.0 (CGU/CGV « liens en pied de page »). */}
           <div className="flex flex-wrap justify-center gap-4">
             <Link href="/mentions-legales" className="hover:text-white/70 transition-colors">Mentions légales</Link>

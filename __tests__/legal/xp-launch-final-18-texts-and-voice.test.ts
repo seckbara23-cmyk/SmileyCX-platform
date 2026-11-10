@@ -65,6 +65,28 @@ describe('voice practice: no text promises it as a present feature', () => {
   })
 })
 
+describe('identity: XP CLIENT SUARL is the entity, XP Client Consulting its brand (XP-LAUNCH-FINAL-19)', () => {
+  it('the CGU and the legal notice name the entity with its registration and the brand as commercial name', async () => {
+    const { LEGAL_NOTICE } = await import('@/lib/legal/documents')
+    for (const s of [section(CGU, 'article-1'), section(LEGAL_NOTICE, 'editeur')]) {
+      expect(s).toContain('XP CLIENT')
+      expect(s).toContain('SUARL')
+      expect(s).toContain('SN.DKR.2026.B.38780')
+      expect(s).toContain('Nom commercial : XP Client Consulting')
+      expect(s).not.toContain('Nom commercial : XP Client Academy')
+    }
+  })
+
+  it('the footer shows the brand beside the entity; certificates keep the brand as issuer', async () => {
+    const brand = await import('@/lib/brand')
+    expect(brand.BRAND_LEGAL_NAME).toBe('XP Client Consulting')
+    expect(brand.BRAND_LEGAL_ENTITY).toBe('XP CLIENT SUARL')
+    expect(read('components/layout/Footer.tsx')).toContain('© {year} {BRAND_LEGAL_NAME} — {BRAND_LEGAL_ENTITY}.')
+    expect(read('lib/pdf/CertificatePDF.tsx')).toContain('XP Client Consulting')
+    expect(read('app/(platform)/certificates/[certificateId]/CertificateView.tsx')).toContain('XP Client Consulting')
+  })
+})
+
 describe('voice practice is closed in code, whatever the environment says', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.resetModules() })
 

@@ -55,6 +55,7 @@ export const CGU: LegalText = {
       blocks: [
         { p: 'La plateforme XP Client Academy est éditée par **XP CLIENT, SUARL** (société unipersonnelle à responsabilité limitée).' },
         { ul: [
+          'Nom commercial : XP Client Consulting',
           'Siège : Ngor Cité SOCABEG, villa n° 16, Dakar (Sénégal)',
           'Capital social : 150 000 FCFA',
           'RCCM : SN.DKR.2026.B.38780 — NINEA : 013427788',
@@ -527,7 +528,7 @@ export const LEGAL_NOTICE: LegalText = {
       blocks: [
         { p: 'La plateforme XP Client Academy est éditée par **XP CLIENT**, société unipersonnelle à responsabilité limitée (SUARL) de droit sénégalais.' },
         { ul: [
-          'Nom commercial : XP Client Academy',
+          'Nom commercial : XP Client Consulting',
           'Capital social : 150 000 FCFA',
           'Siège social : Ngor Cité SOCABEG, villa n° 16, Dakar, Sénégal',
           'RCCM : SN.DKR.2026.B.38780',
@@ -559,7 +560,7 @@ export const LEGAL_NOTICE: LegalText = {
       id: 'propriete-intellectuelle',
       title: 'Propriété intellectuelle',
       blocks: [
-        { p: 'Les formations, vidéos, textes, quiz, exercices, documents, images, voix et le nom XP Client Academy appartiennent à XP CLIENT ou sont utilisés avec autorisation. Toute reproduction, diffusion ou revente sans autorisation écrite est interdite. Les droits d’usage accordés aux apprenants sont décrits dans les Conditions générales d’utilisation.' },
+        { p: 'Les formations, vidéos, textes, quiz, exercices, documents, images, voix et les noms XP Client Academy et XP Client Consulting appartiennent à XP CLIENT ou sont utilisés avec autorisation. Toute reproduction, diffusion ou revente sans autorisation écrite est interdite. Les droits d’usage accordés aux apprenants sont décrits dans les Conditions générales d’utilisation.' },
       ],
     },
     {

@@ -24,4 +24,6 @@ Builds on the commercial offers (packs, six-month access). Merge after them.
 - **Voice practice, CGU art. 7, CGV art. 8, privacy policy art. 3 and 6:** it is not open yet. The texts say so, and say that its conditions, including the number of attempts, will be published in a new version before it opens, and that it will require accepting the voice processing first. The code keeps it closed whatever the environment flag says, until the attempt counter and the consent step exist.
 - **Receipts, CGV art. 11:** the confirmation e-mail is not an invoice; invoices are sent on request, as the texts say.
 
-These sentences differ from the source documents and need XP CLIENT's confirmation before publication. The issuer name shown in the footer and on certificates is a separate decision for XP CLIENT.
+These sentences differ from the source documents and need XP CLIENT's confirmation before publication.
+
+**Identity (XP-LAUNCH-FINAL-19, confirmed by the owner):** the registered entity is XP CLIENT SUARL, the publisher, seller and copyright holder named in every text; XP Client Consulting is its commercial brand, named as such in the CGU and the legal notice, shown in the footer beside the entity, and kept as the issuer on certificates; XP Client Academy is the platform's name.
