@@ -4,6 +4,7 @@ import { BookOpen, Award, ArrowRight, Play, CheckCircle, ClipboardList, Star, Ex
 import { createClient } from '@/lib/supabase/server'
 import { PILOT_MODE } from '@/lib/pilot'
 import ResendVerificationButton from './ResendVerificationButton'
+import { learnerAccessEndDates } from '@/lib/entitlements/access-end-dates'
 import type { Metadata } from 'next'
 
 /** One row of the learner-safe `my_course_access` view (migration 037). */
@@ -17,6 +18,16 @@ export const metadata: Metadata = { title: 'Mon Espace' }
 
 function formatDateFR(dateStr: string) {
   return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium' }).format(new Date(dateStr))
+}
+
+/** XP-LAUNCH-FINAL-18 — the access end date on each course card. Nothing when unknown. */
+function AccessEndNote({ end }: { end: string | null | undefined }) {
+  if (end === undefined) return null
+  return (
+    <p className="text-[11px] text-cx-gray -mt-1 mb-2.5">
+      {end ? `Accès jusqu’au ${formatDateFR(end)}` : 'Accès sans limite de durée'}
+    </p>
+  )
 }
 
 type NextStep = 'lesson' | 'quiz' | 'final-exam' | 'certificate' | 'done'
@@ -50,6 +61,10 @@ export default async function DashboardPage() {
   ])
 
   if (!profile) redirect('/login')
+
+  // XP-LAUNCH-FINAL-18 — when each open course closes (six months for a
+  // purchase). Display only, the learner's own rows, read on the server.
+  const accessEnds = await learnerAccessEndDates(user.id)
 
   const access = (accessRows ?? []) as CourseAccessRow[]
   const accessibleCourseIds = new Set(access.filter(a => a.has_access).map(a => a.course_id))
@@ -150,6 +165,12 @@ export default async function DashboardPage() {
     .select('id, certificate_number, issued_at, pdf_url, courses(title, slug)')
     .eq('user_id', user.id)
     .order('issued_at', { ascending: false })
+
+  const courseSlugById = new Map(
+    (enrollments ?? [])
+      .filter((e: { courses: { slug: string } | null }) => e.courses)
+      .map((e: { course_id: string; courses: { slug: string } }) => [e.course_id, e.courses.slug]),
+  )
 
   const courseTitleById = new Map(
     (enrollments ?? [])
@@ -270,6 +291,7 @@ export default async function DashboardPage() {
                         {stepChip.label}
                       </span>
                     </div>
+                    <AccessEndNote end={accessEnds.get(enrollment.course_id)} />
                     <div className="mb-3">
                       <div className="flex justify-between text-xs text-cx-gray mb-1">
                         <span>{done} / {total} étapes</span>
@@ -315,6 +337,7 @@ export default async function DashboardPage() {
                         Terminée
                       </span>
                     </div>
+                    <AccessEndNote end={accessEnds.get(enrollment.course_id)} />
                     <p className="text-xs text-success font-medium mb-3">{done} / {total} étapes complétées</p>
                     <div className="flex gap-2">
                       <Link
@@ -401,6 +424,14 @@ export default async function DashboardPage() {
                     Votre progression, vos résultats et vos certificats sont conservés.
                     Contactez-nous pour rétablir votre accès.
                   </p>
+                  {courseSlugById.get(a.course_id) && (
+                    <Link
+                      href={`/courses/${courseSlugById.get(a.course_id)}`}
+                      className="inline-flex mt-2 text-xs font-semibold text-primary hover:underline"
+                    >
+                      Renouveler mon accès (6 mois)
+                    </Link>
+                  )}
                 </div>
               ))}
             </div>
