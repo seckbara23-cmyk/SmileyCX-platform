@@ -699,7 +699,7 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     // provider selection. XP-LAUNCH-04 added the read-only lookup of a learner's
     // attempts in flight (paytech-resume.ts), for the cancel page's resume path.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
-      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-resume.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
+      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-confirmation.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-resume.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
     ])
   })
 
@@ -743,7 +743,8 @@ describe('PAY-1 · 11. no PayDunya network or API code exists', () => {
     // Exactly one module may write entitlements: the audited admin grant path.
     expect([...new Set(granters)].sort(),
       `entitlement writers are now: ${[...new Set(granters)].join(', ')}`)
-      .toEqual(['app/actions/entitlements.ts'])
+      // XP-LAUNCH-FINAL-18: the free course's self-service grant (free and published courses only, PROMOTIONAL_GRANT, audited).
+      .toEqual(['app/actions/entitlements.ts', 'lib/learn/free-course.ts'])
   })
 })
 

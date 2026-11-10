@@ -20,6 +20,7 @@ import {
   type ExceptionSource,
 } from '@/lib/payments/payment-exceptions'
 import type { PaytechEvent } from '@/lib/payments/paytech-ipn'
+import { sendPaymentConfirmation } from '@/lib/payments/payment-confirmation'
 
 const log = createLogger('payments/paytech-reconcile')
 
@@ -478,6 +479,9 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions, done: { co
       // The completion may have flagged what it does not cover. A person hears of that now,
       // not at the next daily sweep. A normal payment has nothing due, and sends nothing.
       await sendPendingExceptionAlerts({ paymentId: row.id })
+      // XP-LAUNCH-FINAL-11 (CGV art. 4.4): the learner's confirmation, once, on the fresh
+      // completion only (`already_completed` returned above). It never throws.
+      await sendPaymentConfirmation(row.id)
       return { kind: 'completed', requiresReview: outcome.requiresReview }
     }
     case 'failed':

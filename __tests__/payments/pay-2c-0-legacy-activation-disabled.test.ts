@@ -352,7 +352,8 @@ describe('PAY-2C-0 — learner access authority is untouched', () => {
       }
     }
     // Exactly the pre-existing admin grant path — this slice adds nobody.
-    expect([...new Set(writers)].sort()).toEqual(['app/actions/entitlements.ts'])
+    // XP-LAUNCH-FINAL-18: the free course's self-service grant (free and published courses only, PROMOTIONAL_GRANT, audited).
+    expect([...new Set(writers)].sort()).toEqual(['app/actions/entitlements.ts', 'lib/learn/free-course.ts'])
   })
 
   it('the admin grant path still refuses to assert a purchase', () => {
@@ -382,7 +383,8 @@ describe('PAY-2C-0 — learner access authority is untouched', () => {
     }
     // The admin payments action is NO LONGER among them.
     const set = [...new Set(writers)].sort()
-    expect(set).toEqual(['app/actions/enrollment.ts', 'app/actions/entitlements.ts'])
+    // XP-LAUNCH-FINAL-18: the free course's self-service grant (free and published courses only, PROMOTIONAL_GRANT, audited).
+    expect(set).toEqual(['app/actions/enrollment.ts', 'app/actions/entitlements.ts', 'lib/learn/free-course.ts'])
     expect(set).not.toContain(ACTION)
   })
 

@@ -17,7 +17,7 @@ import LessonNavigation, { type NavLesson } from '@/components/lms/LessonNavigat
 import AutoAdvanceBanner from '@/components/lms/AutoAdvanceBanner'
 import ExerciseBlock, { type ExerciseData } from '@/components/lms/ExerciseBlock'
 import VoicePracticeBlock from '@/components/ai/VoicePracticeBlock'
-import { AI_VOICE_ENABLED } from '@/lib/ai/flags'
+import { VOICE_PRACTICE_OPEN } from '@/lib/ai/flags'
 import { fetchVoiceScenario, type VoiceScenario } from '@/app/actions/ai-practice'
 import { completeLesson } from '@/app/actions/progress'
 
@@ -372,7 +372,7 @@ export default function LessonPlayerPage() {
     // Voice Practice: only query when the feature flag is enabled, so lessons
     // without the flag (i.e. production by default) make zero extra requests
     // and render exactly as before. Fails safe to null (no block) on any error.
-    if (AI_VOICE_ENABLED) {
+    if (VOICE_PRACTICE_OPEN) {
       fetchVoiceScenario(lesson.id).then(setVoiceScenario).catch(() => setVoiceScenario(null))
     }
 
@@ -812,7 +812,7 @@ export default function LessonPlayerPage() {
               <ExerciseBlock key={ex.id} exercise={ex} />
             ))}
 
-            {AI_VOICE_ENABLED && voiceScenario && (
+            {VOICE_PRACTICE_OPEN && voiceScenario && (
               <VoicePracticeBlock scenario={voiceScenario} pilotMode={PILOT_MODE} />
             )}
 

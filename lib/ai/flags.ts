@@ -10,6 +10,22 @@
 export const AI_VOICE_ENABLED = process.env.NEXT_PUBLIC_AI_VOICE_ENABLED === 'true'
 
 /**
+ * XP-LAUNCH-FINAL-18 — voice practice stays CLOSED, whatever the environment
+ * flag says, until the two things the legal texts require before it opens
+ * exist: the five-attempt counter per lesson (CGV art. 8) and the explicit
+ * consent to the voice processing (privacy policy art. 6). The published texts
+ * say it is not open yet. Opening it is a reviewed code change made together
+ * with those two features and a new version of the texts — never an
+ * environment toggle.
+ */
+export const VOICE_LEGAL_CONDITIONS_BUILT = false
+
+/** The only switch the lesson page and the voice server actions consult. */
+export const VOICE_PRACTICE_OPEN = AI_VOICE_ENABLED && VOICE_LEGAL_CONDITIONS_BUILT
+
+export const VOICE_CLOSED_MESSAGE = 'L’entraînement vocal n’est pas encore ouvert.'
+
+/**
  * AI_COACH_ENABLED — Phase 2A kill-switch for the deterministic AI Coach
  * (briefing, competency engine, replay, coaching summary). Default OFF.
  * When false, Voice Practice behaves exactly like Phase 1B: no briefing,

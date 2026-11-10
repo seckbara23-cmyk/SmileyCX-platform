@@ -39,8 +39,18 @@ export const PUBLIC_SITE_URL: string =
 /** Product name, as shown to users. */
 export const BRAND_NAME = 'XP Client Academy'
 
-/** Legal/issuing entity — used on certificates and in metadata authorship. */
+/**
+ * Commercial brand of XP CLIENT SUARL — the issuer name on certificates and in
+ * metadata authorship (confirmed by the owner, XP-LAUNCH-FINAL-19).
+ */
 export const BRAND_LEGAL_NAME = 'XP Client Consulting'
+
+/**
+ * The registered legal entity (RCCM SN.DKR.2026.B.38780): publisher of the
+ * platform, seller under the CGV and copyright holder. The legal texts name it
+ * in full, with its registration details (lib/legal/documents.ts).
+ */
+export const BRAND_LEGAL_ENTITY = 'XP CLIENT SUARL'
 
 /**
  * Public contact address DISPLAYED in the UI.

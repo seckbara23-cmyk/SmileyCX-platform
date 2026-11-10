@@ -166,6 +166,8 @@ vi.mock('@/lib/supabase/server', () => ({
 }))
 vi.mock('@/lib/ai/flags', () => ({
   AI_VOICE_ENABLED: true, AI_COACH_ENABLED: true, AI_COACH_CLAUDE_ENABLED: false,
+  // XP-LAUNCH-FINAL-18: this file tests an OPEN voice practice's session lifecycle.
+  VOICE_PRACTICE_OPEN: true, VOICE_CLOSED_MESSAGE: 'closed',
 }))
 vi.mock('@/lib/learn/completion', () => ({
   recordLessonCompletion: async () => { state.progressRuns.push('progress'); return { ok: true } },

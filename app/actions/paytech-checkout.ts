@@ -77,6 +77,12 @@ import {
 } from '@/lib/payments/paytech-reconcile'
 import { UuidSchema } from '@/lib/validation/schemas'
 import {
+  checkCheckoutConsent,
+  checkoutConsentRecord,
+  type CheckoutConsent,
+  type CheckoutConsentRecord,
+} from '@/lib/legal/checkout-consent'
+import {
   packCodeFrom,
   loadPackForCheckout,
   packIdsContainingCourse,
@@ -133,10 +139,14 @@ const MSG = {
   packAck:      'Ce pack contient une formation que vous possédez déjà. Elle n’est ni remboursée ni remplacée : confirmez avoir lu l’avertissement avant de payer.',
   packAckChanged: 'Les formations que vous possédez ont changé depuis l’affichage de cette page. Rechargez-la et relisez l’avertissement avant de payer.',
   packEntitled: 'Vous avez maintenant accès à toutes les formations de ce pack.',
+  // XP-LAUNCH-FINAL-11: the three boxes of CGV art. 4.
+  consent:      'Cochez les trois cases (conditions générales, accès immédiat et âge) avant de payer.',
+  consentStale: 'Les conditions ont été mises à jour depuis l’affichage de cette page. Rechargez-la et relisez-les avant de payer.',
 } as const
 
 export async function startPaytechCheckout(input: {
   courseId: string
+  consent: CheckoutConsent | null
 }): Promise<PaytechCheckoutResult> {
   // ── 1. may this deployment take NEW payments? ──
   const availability = paytechCheckoutAvailability()
@@ -156,6 +166,11 @@ export async function startPaytechCheckout(input: {
   const parsed = UuidSchema.safeParse(input?.courseId)
   if (!parsed.success) return { error: MSG.notFound }
   const courseId = parsed.data
+
+  // ── 2b. the three boxes of CGV art. 4, at the version this server offers ──
+  // Before anything is read or asked of the provider, a resume included.
+  const consentRefusal = consentRefused(input?.consent)
+  if (consentRefusal) return { error: consentRefusal }
 
   // ── 3. eligibility — the single entitlement seam ──
   const access = await resolveCourseAccessById(courseId)
@@ -245,7 +260,11 @@ export async function startPaytechCheckout(input: {
   if (heldNow.unreadable) return { error: MSG.failed }
   if (heldNow.reference) return { error: MSG.exception, reference: heldNow.reference }
 
-  return openAttempt({ userId: user.id, product: { kind: 'course', id: courseId, title: String(course.title), price, courseIds: [courseId] } })
+  return openAttempt({
+    userId: user.id,
+    product: { kind: 'course', id: courseId, title: String(course.title), price, courseIds: [courseId] },
+    legal: checkoutConsentRecord(new Date()),
+  })
 }
 
 /**
@@ -259,6 +278,7 @@ export async function startPaytechCheckout(input: {
 export async function startPaytechPackCheckout(input: {
   packCode: string
   acknowledgedCourseIds?: string[]
+  consent: CheckoutConsent | null
 }): Promise<PaytechCheckoutResult> {
   // ── 1. may this deployment take NEW payments? ──
   const availability = paytechCheckoutAvailability()
@@ -275,6 +295,10 @@ export async function startPaytechPackCheckout(input: {
 
   const code = packCodeFrom(input?.packCode)
   if (!code) return { error: MSG.packNotFound }
+
+  // ── 2b. the three boxes of CGV art. 4 (as for a course) ──
+  const consentRefusal = consentRefused(input?.consent)
+  if (consentRefusal) return { error: consentRefusal }
 
   // ── 3. the authoritative pack: price and composition from the database ──
   const pack = await loadPackForCheckout(code)
@@ -369,6 +393,7 @@ export async function startPaytechPackCheckout(input: {
       kind: 'pack', id: pack.id, title: pack.title, price: pack.price, courseIds,
       metadata: { code: pack.code, courseIds, ownedCourseIds: owned },
     },
+    legal: checkoutConsentRecord(new Date()),
   })
 }
 
@@ -549,15 +574,26 @@ function overlapRefusal(error: unknown): string | null {
  * Open ONE new attempt: a fresh row with a fresh reference, then the provider,
  * then the token — and only then a URL for the learner.
  */
+/** The refusal for boxes left unticked or shown at another version, or null when all three hold. */
+function consentRefused(raw: unknown): string | null {
+  const check = checkCheckoutConsent(raw)
+  if (check === 'accepted') return null
+  return check === 'stale' ? MSG.consentStale : MSG.consent
+}
+
 async function openAttempt(args: {
   userId: string
   product: Product
+  /** The checked consent, recorded on the order with the server's clock (CGV art. 4). */
+  legal: CheckoutConsentRecord
 }): Promise<PaytechCheckoutResult> {
   const admin = createAdminClient()
   const config = resolvePaytechConfig()
   const reference = mintReference()
   const isPack = args.product.kind === 'pack'
-  const meta = isPack ? { provider: 'paytech', pack: args.product.metadata ?? {} } : { provider: 'paytech' }
+  const meta = isPack
+    ? { provider: 'paytech', pack: args.product.metadata ?? {}, legal: args.legal }
+    : { provider: 'paytech', legal: args.legal }
 
   // Provider identity is recorded at creation and never changes (063). A payment
   // buys one course OR one pack, never both (065).

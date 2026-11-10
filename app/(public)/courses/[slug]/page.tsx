@@ -16,6 +16,7 @@ import { PLATFORM_MODE } from '@/lib/pilot'
 import { paytechCheckoutAvailability } from '@/lib/payments/providers'
 import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
 import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
+import FreeCourseStartForm from '@/components/learn/FreeCourseStartForm'
 import type { Metadata } from 'next'
 
 const COURSE_META: Record<string, { number: number; objectives: string[]; image: string }> = {
@@ -382,6 +383,11 @@ export default async function CourseDetailPage({ params }: Props) {
    */
   const mayContinue = ctaAccess.allowed && !!enrolledProgress
 
+  // XP-LAUNCH-FINAL-18 — a signed-in learner without access to a FREE course
+  // starts it themselves (CGV art. 5): a POST that grants the free course's
+  // entitlement. Never offered for a priced course, never to a guest.
+  const freeStart = isFree && !!user && !ctaAccess.allowed
+
   const resolvedLearnHref = ctaAccess.allowed
     ? (enrolledProgress?.continueUrl ?? lessonHref)
     : accessRequestHref
@@ -497,6 +503,12 @@ export default async function CourseDetailPage({ params }: Props) {
                     : enrolledProgress?.nextStep === 'certificate'? 'Obtenir le certificat'
                     : 'Continuer la formation'}
                   </Link>
+                ) : freeStart ? (
+                  <FreeCourseStartForm
+                    courseId={String(dbCourse.id)}
+                    slug={slug}
+                    className="inline-flex items-center justify-center gap-2 px-7 py-3.5 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-sm"
+                  />
                 ) : (
                   <Link
                     href={learnHref}
@@ -833,6 +845,12 @@ export default async function CourseDetailPage({ params }: Props) {
               >
                 <Play className="w-5 h-5" /> Continuer la formation
               </Link>
+            ) : freeStart ? (
+              <FreeCourseStartForm
+                courseId={String(dbCourse.id)}
+                slug={slug}
+                className="inline-flex items-center gap-2 px-10 py-4 bg-secondary text-footer font-bold rounded-cx hover:bg-secondary-dark transition-all hover:-translate-y-0.5 shadow-btn text-base"
+              />
             ) : (
               <Link
                 href={learnHref}
