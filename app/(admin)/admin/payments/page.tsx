@@ -133,6 +133,8 @@ interface PaymentRow {
   completed_at: string | null
   profiles: { full_name: string | null; email: string } | null
   courses: { title: string } | null
+  /** XP-LAUNCH-FINAL-08: a payment buys a course or a pack (065). */
+  course_packs?: { title: string } | null
 }
 
 const STALE_MS = 30 * 60 * 1000
@@ -158,14 +160,14 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
 
   const { data } = await supabase
     .from('payments')
-    .select('id, amount, currency, method, status, reference, provider, provider_mode, failure_reason, last_ipn_at, created_at, completed_at, profiles(full_name, email), courses(title)')
+    .select('id, amount, currency, method, status, reference, provider, provider_mode, failure_reason, last_ipn_at, created_at, completed_at, profiles(full_name, email), courses(title), course_packs(title)')
     .order('created_at', { ascending: false })
     .limit(200)
 
   // The newest 200 can leave out an attempt still in flight, and it can only be closed from here.
   const { data: oldestInFlight } = await supabase
     .from('payments')
-    .select('id, amount, currency, method, status, reference, provider, provider_mode, failure_reason, last_ipn_at, created_at, completed_at, profiles(full_name, email), courses(title)')
+    .select('id, amount, currency, method, status, reference, provider, provider_mode, failure_reason, last_ipn_at, created_at, completed_at, profiles(full_name, email), courses(title), course_packs(title)')
     .eq('provider', 'paytech')
     .in('status', ['pending', 'processing'])
     .order('created_at', { ascending: true })
@@ -285,7 +287,7 @@ export default async function AdminPaymentsPage({ searchParams }: Props) {
                       <p className="font-medium text-gray-800">{p.profiles?.full_name || p.profiles?.email || '—'}</p>
                       <p className="text-xs text-gray-400 font-mono">{p.reference}</p>
                     </td>
-                    <td className="px-4 py-3 text-gray-600">{p.courses?.title || '—'}</td>
+                    <td className="px-4 py-3 text-gray-600">{p.courses?.title || p.course_packs?.title || '—'}</td>
                     <td className="px-4 py-3 font-semibold text-gray-800 whitespace-nowrap">
                       {Number(p.amount).toLocaleString('fr-FR')} {p.currency}
                     </td>

@@ -38,6 +38,19 @@
  * Every write is a compare-and-set, and migration 063 enforces the same
  * transitions in the database: `provider_token` is write-once and a completed
  * payment is final.
+ *
+ * ── PACKS (XP-LAUNCH-FINAL-08, migration 065) ─────────────────────────────
+ *
+ * `startPaytechPackCheckout` sells a fixed pack as ONE payment: its price is the
+ * pack row's, and completion opens every course of the pack for six months at the
+ * same instant. The rule above becomes: at most one chargeable attempt per learner
+ * and COURSE, across packs and single courses. A single-course checkout therefore
+ * also settles an in-flight pack containing that course, and a pack checkout every
+ * in-flight attempt for one of its courses, the same way: ask, never supersede on a
+ * guess. Migration 065's `payments_offer_guard` refuses the overlap in the database
+ * as well. A course already owned inside a pack is neither refunded nor replaced:
+ * the learner must acknowledge exactly the owned courses the server finds, or
+ * nothing is opened.
  */
 
 import { createClient } from '@/lib/supabase/server'
@@ -63,6 +76,12 @@ import {
   type PaytechPaymentRow,
 } from '@/lib/payments/paytech-reconcile'
 import { UuidSchema } from '@/lib/validation/schemas'
+import {
+  packCodeFrom,
+  loadPackForCheckout,
+  packIdsContainingCourse,
+  courseIdsOfPack,
+} from '@/lib/commerce/packs'
 import { createLogger } from '@/lib/logger'
 
 const log = createLogger('actions/paytech-checkout')
@@ -105,6 +124,15 @@ const MSG = {
   provider:     'Le service de paiement est momentanément indisponible. Veuillez réessayer.',
   inProgress:   'Un paiement est déjà en cours pour cette formation. Réessayez dans un instant.',
   exception:    "Un paiement précédent pour cette formation est en cours de vérification. Aucun nouveau paiement n'a été créé. Contactez-nous en indiquant la référence ci-dessous.",
+  // XP-LAUNCH-FINAL-08 — packs.
+  packInFlight: "Un paiement est déjà en cours pour un pack contenant cette formation. Terminez-le ou attendez sa confirmation ; aucun nouveau paiement n'a été créé.",
+  courseInFlight: "Un paiement est déjà en cours pour une formation de ce pack. Terminez-le ou attendez sa confirmation ; aucun nouveau paiement n'a été créé.",
+  packNotFound: 'Pack introuvable.',
+  packNotPayable: "Ce pack n'est pas réglable en ligne pour le moment.",
+  packOwned:    'Vous avez déjà accès à toutes les formations de ce pack.',
+  packAck:      'Ce pack contient une formation que vous possédez déjà. Elle n’est ni remboursée ni remplacée : confirmez avoir lu l’avertissement avant de payer.',
+  packAckChanged: 'Les formations que vous possédez ont changé depuis l’affichage de cette page. Rechargez-la et relisez l’avertissement avant de payer.',
+  packEntitled: 'Vous avez maintenant accès à toutes les formations de ce pack.',
 } as const
 
 export async function startPaytechCheckout(input: {
@@ -187,49 +215,20 @@ export async function startPaytechCheckout(input: {
   }
 
   if (inflight) {
-    const row = inflight as PaytechPaymentRow
+    // Paid → in; closed → a fresh attempt; pending → the SAME page, said to be a
+    // resume; unknown → nothing opened. See settleInflight below.
+    const settled = await settleInflight(inflight as PaytechPaymentRow, { sameProduct: true, accessUrl })
+    if (settled) return settled
+  }
 
-    if (!row.provider_token) {
-      // Never opened: no URL was handed out, so it cannot have been paid.
-      const age = Date.now() - new Date(row.created_at).getTime()
-      if (row.provider === 'paytech' && age < INITIALISATION_GRACE_MS) {
-        return { error: MSG.initialising }
-      }
-      const { changed } = await closeUnopenedAttempt({
-        paymentId:     row.id,
-        failureReason: row.provider === 'paytech' ? 'superseded_unopened' : 'superseded_legacy_intent',
-      })
-      if (!changed) return { error: MSG.inProgress }
-      // fall through to a fresh attempt
-    } else if (row.provider !== 'paytech') {
-      // Opened with another provider. Not ours to judge.
-      return { error: MSG.verifying, reference: row.reference }
-    } else {
-      // Opened: it may have been paid. Ask; never supersede on a guess.
-      const result = await reconcilePaytechPayment(row, { source: 'checkout' })
-      switch (result.kind) {
-        case 'completed':
-        case 'already_completed':
-          return { accessUrl }
-        case 'failed':
-        case 'cancelled':
-        case 'already_terminal':
-          break   // reliably closed — a fresh attempt may be opened
-        case 'pending': {
-          const url = await storedCheckoutUrl(row.id)
-          if (url) {
-            // The SAME checkout, not a new one — and said to be, because the learner
-            // may have left it by « Annuler » and would otherwise be sent back without a word.
-            log.info({ paymentId: row.id }, 'PayTech checkout resumed: the same hosted page offered again')
-            return { redirectUrl: url, resumed: true, reference: row.reference }
-          }
-          return { error: MSG.verifying, reference: row.reference }
-        }
-        default:
-          log.warn({ paymentId: row.id, result: result.kind }, 'PayTech checkout refused: earlier attempt unresolved')
-          return { error: MSG.verifying, reference: row.reference }
-      }
-    }
+  // ── 6b. a PACK in flight that contains this course? (065) ──
+  // One chargeable attempt per learner and COURSE: a pack being paid would open this
+  // course too. It is settled the same way, and never superseded on a guess.
+  const containing = await inflightPacksContaining(user.id, courseId)
+  if (containing === null) return { error: MSG.failed }
+  for (const row of containing) {
+    const settled = await settleInflight(row, { sameProduct: false, accessUrl, otherInFlight: MSG.packInFlight })
+    if (settled) return settled
   }
 
   // ── 7. re-check access AFTER the in-flight read (safeguard 5) ──
@@ -246,7 +245,271 @@ export async function startPaytechCheckout(input: {
   if (heldNow.unreadable) return { error: MSG.failed }
   if (heldNow.reference) return { error: MSG.exception, reference: heldNow.reference }
 
-  return openAttempt({ userId: user.id, course: { id: courseId, title: String(course.title), price } })
+  return openAttempt({ userId: user.id, product: { kind: 'course', id: courseId, title: String(course.title), price, courseIds: [courseId] } })
+}
+
+/**
+ * Buy a fixed pack — XP-LAUNCH-FINAL-08, migration 065.
+ *
+ * The browser sends the pack code and the ids of the courses it showed as already
+ * owned. Everything else — the price, the composition, who is paying, what they own —
+ * is derived here. `acknowledgedCourseIds` must equal, exactly, the owned courses the
+ * server finds: the learner confirms the warning for THAT set, or nothing is opened.
+ */
+export async function startPaytechPackCheckout(input: {
+  packCode: string
+  acknowledgedCourseIds?: string[]
+}): Promise<PaytechCheckoutResult> {
+  // ── 1. may this deployment take NEW payments? ──
+  const availability = paytechCheckoutAvailability()
+  if (!availability.available) {
+    log.warn({ blockedBy: availability.blockedBy }, 'PayTech pack checkout refused: checkout unavailable')
+    return { error: MSG.unavailable }
+  }
+
+  // ── 2. who is paying — the session, never the request ──
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: MSG.signIn }
+  if (!(await paymentDatabaseAuthority()).allowed) return { error: MSG.unavailable }
+
+  const code = packCodeFrom(input?.packCode)
+  if (!code) return { error: MSG.packNotFound }
+
+  // ── 3. the authoritative pack: price and composition from the database ──
+  const pack = await loadPackForCheckout(code)
+  if (pack === undefined) return { error: MSG.failed }
+  if (!pack || !pack.isPublished) return { error: MSG.packNotFound }
+  if (pack.currency !== PAYTECH_CURRENCY || !Number.isInteger(pack.price) || pack.price <= 0) {
+    log.error({ pack: pack.code }, 'pack price is not a positive whole number of XOF')
+    return { error: MSG.packNotPayable }
+  }
+  // Every course must be published and priced in XOF: a pack is never sold short.
+  if (pack.courses.length === 0 || pack.courses.some(c => !c.isPublished || c.currency !== PAYTECH_CURRENCY)) {
+    log.error({ pack: pack.code }, 'a course of the pack is not sellable')
+    return { error: MSG.packNotPayable }
+  }
+  const courseIds = pack.courses.map(c => c.id)
+  const accessUrl = '/dashboard'
+
+  // ── 4. eligibility, course by course — the single entitlement seam ──
+  const owned = await ownedCourses(courseIds)
+  if (owned === 'email_unverified') return { error: MSG.unverified }
+  if (owned === 'account_inactive') return { error: MSG.inactive }
+  if (owned.length === courseIds.length) return { error: MSG.packOwned }
+
+  // ── 4b. the warning, acknowledged for exactly what the learner owns ──
+  const acknowledged = acknowledgedIds(input?.acknowledgedCourseIds)
+  if (acknowledged === null || !sameSet(acknowledged, owned)) {
+    if (acknowledged !== null && acknowledged.length === 0 && owned.length > 0) {
+      const titles = pack.courses.filter(c => owned.includes(c.id)).map(c => c.title).join(', ')
+      return { error: `${MSG.packAck} (${titles})` }
+    }
+    return { error: MSG.packAckChanged }
+  }
+
+  // ── 5. would 065 fulfil it? Refuse BEFORE the money moves, for every course ──
+  for (const courseId of courseIds) {
+    const blocker = await purchaseBlocker(user.id, courseId)
+    if (blocker) {
+      log.warn({ pack: pack.code, blocker }, 'PayTech pack checkout refused: completion would be refused')
+      return { error: MSG.conflict }
+    }
+  }
+
+  // ── 5b. might an earlier, closed attempt for one of its courses have been paid? ──
+  for (const courseId of courseIds) {
+    const held = await paymentExceptionBlock(user.id, courseId)
+    if (held.unreadable) return { error: MSG.failed }
+    if (held.reference) return { error: MSG.exception, reference: held.reference }
+  }
+
+  // ── 6. this pack already in flight? ──
+  const admin = createAdminClient()
+  const { data: inflight, error: inflightError } = await admin
+    .from('payments')
+    .select(PAYTECH_PAYMENT_COLUMNS)
+    .eq('user_id', user.id)
+    .eq('pack_id', pack.id)
+    .in('status', ['pending', 'processing'])
+    .maybeSingle()
+  if (inflightError) {
+    log.error({ pack: pack.code }, 'could not read the in-flight pack payment')
+    return { error: MSG.failed }
+  }
+  if (inflight) {
+    const settled = await settleInflight(inflight as PaytechPaymentRow, { sameProduct: true, accessUrl })
+    if (settled) return settled
+  }
+
+  // ── 6b. any OTHER attempt in flight that would open one of its courses? ──
+  const overlapping = await inflightOverlapping(user.id, pack.id, courseIds)
+  if (overlapping === null) return { error: MSG.failed }
+  for (const row of overlapping) {
+    const settled = await settleInflight(row, { sameProduct: false, accessUrl, otherInFlight: MSG.courseInFlight })
+    if (settled) return settled
+  }
+
+  // ── 7. re-check AFTER the in-flight reads (safeguard 5) ──
+  const ownedNow = await ownedCourses(courseIds)
+  if (ownedNow === 'email_unverified') return { error: MSG.unverified }
+  if (ownedNow === 'account_inactive') return { error: MSG.inactive }
+  if (ownedNow.length === courseIds.length) return { accessUrl }
+  if (!sameSet(ownedNow, owned)) return { error: MSG.packAckChanged }
+  for (const courseId of courseIds) {
+    if (await purchaseBlocker(user.id, courseId)) return { error: MSG.conflict }
+    const heldNow = await paymentExceptionBlock(user.id, courseId)
+    if (heldNow.unreadable) return { error: MSG.failed }
+    if (heldNow.reference) return { error: MSG.exception, reference: heldNow.reference }
+  }
+
+  return openAttempt({
+    userId: user.id,
+    product: {
+      kind: 'pack', id: pack.id, title: pack.title, price: pack.price, courseIds,
+      metadata: { code: pack.code, courseIds, ownedCourseIds: owned },
+    },
+  })
+}
+
+// ── shared by both actions ──────────────────────────────────────────────────
+
+/**
+ * What to do with an attempt already in flight. `null` means: nothing stands in the
+ * way, a fresh attempt may be opened. Never supersedes an OPENED attempt on a guess.
+ *
+ *   never opened, young  → « en cours d'initialisation »
+ *   never opened, stale  → closed (it cannot have been paid), then null
+ *   paid                 → the learner goes in
+ *   failed / cancelled   → null
+ *   pending              → the SAME product: the same hosted page, `resumed`;
+ *                          another product: refused with its reference
+ *   unknown              → nothing opened, « en cours de vérification »
+ */
+async function settleInflight(
+  row: PaytechPaymentRow,
+  opts: { sameProduct: boolean; accessUrl: string; otherInFlight?: string },
+): Promise<PaytechCheckoutResult | null> {
+  if (!row.provider_token) {
+    // Never opened: no URL was handed out, so it cannot have been paid.
+    const age = Date.now() - new Date(row.created_at).getTime()
+    if (row.provider === 'paytech' && age < INITIALISATION_GRACE_MS) {
+      return { error: MSG.initialising }
+    }
+    const { changed } = await closeUnopenedAttempt({
+      paymentId:     row.id,
+      failureReason: row.provider === 'paytech' ? 'superseded_unopened' : 'superseded_legacy_intent',
+    })
+    if (!changed) return { error: MSG.inProgress }
+    return null   // a fresh attempt may be opened
+  }
+  if (row.provider !== 'paytech') {
+    // Opened with another provider. Not ours to judge.
+    return { error: MSG.verifying, reference: row.reference }
+  }
+
+  // Opened: it may have been paid. Ask; never supersede on a guess.
+  const result = await reconcilePaytechPayment(row, { source: 'checkout' })
+  switch (result.kind) {
+    case 'completed':
+    case 'already_completed':
+      return { accessUrl: opts.accessUrl }
+    case 'failed':
+    case 'cancelled':
+    case 'already_terminal':
+      return null   // reliably closed — a fresh attempt may be opened
+    case 'pending': {
+      if (!opts.sameProduct) {
+        return { error: opts.otherInFlight ?? MSG.verifying, reference: row.reference }
+      }
+      const url = await storedCheckoutUrl(row.id)
+      if (url) {
+        // The SAME checkout, not a new one — and said to be, because the learner
+        // may have left it by « Annuler » and would otherwise be sent back without a word.
+        log.info({ paymentId: row.id }, 'PayTech checkout resumed: the same hosted page offered again')
+        return { redirectUrl: url, resumed: true, reference: row.reference }
+      }
+      return { error: MSG.verifying, reference: row.reference }
+    }
+    default:
+      log.warn({ paymentId: row.id, result: result.kind }, 'PayTech checkout refused: earlier attempt unresolved')
+      return { error: MSG.verifying, reference: row.reference }
+  }
+}
+
+/** The learner's in-flight PACK attempts whose pack contains this course. `null` if unreadable. */
+async function inflightPacksContaining(userId: string, courseId: string): Promise<PaytechPaymentRow[] | null> {
+  const packIds = await packIdsContainingCourse(courseId)
+  if (packIds.length === 0) return []
+  const { data, error } = await createAdminClient()
+    .from('payments')
+    .select(PAYTECH_PAYMENT_COLUMNS)
+    .eq('user_id', userId)
+    .in('status', ['pending', 'processing'])
+    .in('pack_id', packIds)
+  if (error) {
+    log.error({ courseId }, 'could not read the in-flight pack payments')
+    return null
+  }
+  return (Array.isArray(data) ? (data as unknown as PaytechPaymentRow[]) : [])
+    .filter(r => typeof r.pack_id === 'string' && packIds.includes(r.pack_id))
+}
+
+/**
+ * The learner's OTHER in-flight attempts that would open a course of this pack: a
+ * single course of it, or another pack sharing one of its courses. `null` if unreadable.
+ */
+async function inflightOverlapping(userId: string, packId: string, courseIds: string[]): Promise<PaytechPaymentRow[] | null> {
+  const { data, error } = await createAdminClient()
+    .from('payments')
+    .select(PAYTECH_PAYMENT_COLUMNS)
+    .eq('user_id', userId)
+    .in('status', ['pending', 'processing'])
+  if (error) {
+    log.error('could not read the in-flight payments of a pack buyer')
+    return null
+  }
+  const rows = Array.isArray(data) ? (data as unknown as PaytechPaymentRow[]) : []
+  const out: PaytechPaymentRow[] = []
+  for (const r of rows) {
+    if (typeof r.course_id === 'string' && courseIds.includes(r.course_id)) { out.push(r); continue }
+    if (typeof r.pack_id === 'string' && r.pack_id !== packId) {
+      const theirs = await courseIdsOfPack(r.pack_id)
+      if (theirs.some(id => courseIds.includes(id))) out.push(r)
+    }
+  }
+  return out
+}
+
+/** The courses of this list the signed-in learner can already open, or why none can be bought. */
+async function ownedCourses(courseIds: string[]): Promise<string[] | 'email_unverified' | 'account_inactive'> {
+  const owned: string[] = []
+  for (const id of courseIds) {
+    const access = await resolveCourseAccessById(id)
+    if (access.allowed) { owned.push(id); continue }
+    if (access.reason === 'email_unverified') return 'email_unverified'
+    if (access.reason === 'account_inactive') return 'account_inactive'
+  }
+  return owned
+}
+
+/** The acknowledged ids as sent: an array of uuids, or null if the shape is wrong. */
+function acknowledgedIds(raw: unknown): string[] | null {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw) || raw.length > 20) return null
+  const ids: string[] = []
+  for (const v of raw) {
+    const parsed = UuidSchema.safeParse(v)
+    if (!parsed.success) return null
+    ids.push(parsed.data)
+  }
+  return ids
+}
+
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a)
+  const sb = new Set(b)
+  return sa.size === sb.size && [...sa].every(x => sb.has(x))
 }
 
 /** The checkout URL stored with an opened attempt, if it is still a valid PayTech URL. */
@@ -260,41 +523,72 @@ async function storedCheckoutUrl(paymentId: string): Promise<string | null> {
   return isValidPaytechRedirectUrl(url) ? url : null
 }
 
+/** What an attempt buys: one course, or one pack (065). */
+interface Product {
+  kind: 'course' | 'pack'
+  id: string
+  title: string
+  price: number
+  /** Every course the attempt would open: re-checked for exceptions after the provider call. */
+  courseIds: string[]
+  /** For a pack: its code, its courses and the owned courses the learner acknowledged. */
+  metadata?: Record<string, unknown>
+}
+
+/** The overlap refusal of 065's payments_offer_guard, with the other attempt's reference. */
+function overlapRefusal(error: unknown): string | null {
+  const e = error as { code?: string; details?: string; message?: string } | null
+  if (!e || e.code !== 'P0001') return null
+  const text = `${e.details ?? ''} ${e.message ?? ''}`
+  if (!text.includes('inflight_overlap')) return null
+  const m = /"reference"\s*:\s*"([A-Za-z0-9_-]{4,64})"/.exec(text)
+  return m ? m[1] : ''
+}
+
 /**
  * Open ONE new attempt: a fresh row with a fresh reference, then the provider,
  * then the token — and only then a URL for the learner.
  */
 async function openAttempt(args: {
   userId: string
-  course: { id: string; title: string; price: number }
+  product: Product
 }): Promise<PaytechCheckoutResult> {
   const admin = createAdminClient()
   const config = resolvePaytechConfig()
   const reference = mintReference()
+  const isPack = args.product.kind === 'pack'
+  const meta = isPack ? { provider: 'paytech', pack: args.product.metadata ?? {} } : { provider: 'paytech' }
 
-  // Provider identity is recorded at creation and never changes (063).
+  // Provider identity is recorded at creation and never changes (063). A payment
+  // buys one course OR one pack, never both (065).
   const { data: created, error: insertError } = await admin
     .from('payments')
     .insert({
       user_id:       args.userId,
-      course_id:     args.course.id,
-      amount:        args.course.price,      // server-side price only
+      course_id:     isPack ? null : args.product.id,
+      pack_id:       isPack ? args.product.id : null,
+      amount:        args.product.price,     // server-side price only
       currency:      PAYTECH_CURRENCY,
       method:        'card',                 // the payer chooses the instrument at PayTech
       status:        'pending',
       reference,
       provider:      'paytech',
       provider_mode: config.providerMode,
-      metadata:      { provider: 'paytech' },
+      metadata:      meta,
     })
     .select('id')
     .single()
 
   if (insertError || !created) {
-    // 23505 on 058's in-flight index: a concurrent click created the attempt.
+    // 23505 on 058's or 065's in-flight index: a concurrent click created the attempt.
     // Nothing was sent to the provider.
     if ((insertError as { code?: string } | null)?.code === '23505') return { error: MSG.inProgress }
-    log.error({ courseId: args.course.id }, 'could not create the pending payment intent')
+    // 065's guard: another attempt of this learner would open one of these courses.
+    const other = overlapRefusal(insertError)
+    if (other !== null) {
+      return { error: isPack ? MSG.courseInFlight : MSG.packInFlight, ...(other ? { reference: other } : {}) }
+    }
+    log.error({ product: args.product.kind, id: args.product.id }, 'could not create the pending payment intent')
     return { error: MSG.failed }
   }
   const paymentId = created.id as string
@@ -303,9 +597,9 @@ async function openAttempt(args: {
   let checkout
   try {
     checkout = await requestPayment({
-      itemPrice:   args.course.price,
-      itemName:    args.course.title.slice(0, 120),
-      commandName: `XP Client Academy — ${args.course.title}`.slice(0, 160),
+      itemPrice:   args.product.price,
+      itemName:    args.product.title.slice(0, 120),
+      commandName: `XP Client Academy — ${args.product.title}`.slice(0, 160),
       refCommand:  reference,
       ipnUrl:      urls.ipnUrl,
       successUrl:  urls.successUrl,
@@ -325,10 +619,12 @@ async function openAttempt(args: {
   // The provider call can take many seconds, and a report on an earlier attempt may
   // have landed meanwhile. No URL has been handed out yet, so nothing can be paid
   // against this attempt, and it can still be closed safely.
-  const heldAfter = await paymentExceptionBlock(args.userId, args.course.id)
-  if (heldAfter.unreadable || heldAfter.reference) {
-    await closeUnopenedAttempt({ paymentId, failureReason: 'superseded_by_exception' })
-    return heldAfter.reference ? { error: MSG.exception, reference: heldAfter.reference } : { error: MSG.failed }
+  for (const courseId of args.product.courseIds) {
+    const heldAfter = await paymentExceptionBlock(args.userId, courseId)
+    if (heldAfter.unreadable || heldAfter.reference) {
+      await closeUnopenedAttempt({ paymentId, failureReason: 'superseded_by_exception' })
+      return heldAfter.reference ? { error: MSG.exception, reference: heldAfter.reference } : { error: MSG.failed }
+    }
   }
 
   // Persist the correlation key BEFORE handing out the URL — compare-and-set,
@@ -339,7 +635,7 @@ async function openAttempt(args: {
       provider_token:     checkout.token,
       provider_reference: reference,
       status:             'processing',
-      metadata:           { provider: 'paytech', checkoutUrl: checkout.redirectUrl },
+      metadata:           { ...meta, checkoutUrl: checkout.redirectUrl },
     })
     .eq('id', paymentId)
     .eq('status', 'pending')

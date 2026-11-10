@@ -84,6 +84,9 @@ const PRIVATE_MODE_EXEMPT = [
   // `public_course_lessons`, which structurally cannot return lesson bodies.
   // Protected learning content lives under `/learn/…`, which is NOT exempt.
   '/courses',
+  // XP-LAUNCH-FINAL-08: a pack page is catalogue too — published packs, their price
+  // and their course titles. Buying one goes through `/checkout`, which is NOT exempt.
+  '/packs',
   '/parcours',
   '/secteurs',
   '/about',

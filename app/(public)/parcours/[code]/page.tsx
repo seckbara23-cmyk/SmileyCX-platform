@@ -1,6 +1,8 @@
 import type { Metadata } from 'next'
 import PathDetail from '@/components/courses/PathDetail'
 import { getPublicPath, getPublicPathCourses } from '@/lib/queries/catalogue'
+import { redirect } from 'next/navigation'
+import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
 
 interface Props { params: Promise<{ code: string }> }
 
@@ -30,6 +32,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function Page({ params }: Props) {
+  // XP-LAUNCH-FINAL-08 (requirements V4 §13): configured, kept, hidden at launch.
+  if (!PUBLIC_PATHWAYS_VISIBLE) redirect('/courses')
   const { code } = await params
   return <PathDetail code={code} kind="professional" />
 }

@@ -281,6 +281,7 @@ const M060 = mig('060_payment_completion_contract.sql')
 const M062 = mig('062_atomic_payment_completion.sql')
 const M063 = mig('063_payment_state_machine.sql')
 const M064 = mig('064_payment_exceptions.sql')
+const M065 = mig('065_commercial_offers.sql')
 
 const FROM = {
   auditLog:          take(mig('027_identity_hardening.sql'), /create table if not exists public\.audit_log \([\s\S]*?\n\);/, '027 audit_log'),
@@ -323,6 +324,46 @@ const ROLLBACK_064 = (() => {
   return tail.slice(start, end).split('\n').map(l => l.replace(/^-- ?/, '')).join('\n')
 })()
 
+/** 065's own ROLLBACK block, uncommented: it restores 062's and 064's functions verbatim. */
+const ROLLBACK_065 = (() => {
+  const tail = M065.slice(M065.indexOf('-- ROLLBACK — removes the packs and the six-month window;'))
+  const start = tail.indexOf('-- begin;')
+  const end = tail.indexOf('-- commit;') + '-- commit;'.length
+  return tail.slice(start, end).split('\n').map(l => l.replace(/^-- ?/, '')).join('\n')
+})()
+
+/**
+ * XP-LAUNCH-FINAL-08: 065 seeds the two packs from the seven paid courses by their V8
+ * code, and its preflight refuses to run without them. Every test starts from an empty
+ * catalogue (beforeEach truncates courses, which cascades to the packs' composition), so
+ * applying 065 needs them first. Prices are Marième's confirmed V4 prices.
+ */
+const CATALOGUE_V4 = [
+  ['C1-F1', 9900], ['C1-F2', 9900], ['C1-F3', 9900], ['C2-F4', 14900],
+  ['C2-F1', 14900], ['C2-F2', 14900], ['C2-F5', 14900],
+] as const
+async function seedCatalogueCodes() {
+  for (const [code, price] of CATALOGUE_V4) {
+    await db.exec(`insert into public.courses (slug, title, code, price, currency, is_published)
+      values ('seed-${code.toLowerCase()}', 'Formation ${code}', '${code}', ${price}, 'XOF', true)
+      on conflict (code) do nothing`)
+  }
+}
+
+/**
+ * 064 comes off only after 065 (which replaced three of its functions and added a
+ * trigger 064's preflight refuses to sit beside), and goes back on before it.
+ */
+async function rollback064() {
+  await db.exec(ROLLBACK_065)
+  await db.exec(ROLLBACK_064)
+}
+async function apply064Then065() {
+  await db.exec(M064)
+  await seedCatalogueCodes()
+  await db.exec(M065)
+}
+
 const SCHEMA = `
 create role anon nologin;
 create role authenticated nologin;
@@ -344,6 +385,7 @@ create table public.profiles (
 create table public.courses (
   id uuid primary key default gen_random_uuid(),
   slug text unique not null, title text not null, description text not null default '',
+  code text unique,  -- 028 (courses_code_unique)
   price numeric(10,2) not null default 0, currency text not null default 'XOF',
   is_published boolean not null default false, is_free boolean not null default false
 );
@@ -655,6 +697,10 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
     await db.exec(M063)
     // Migration 064, WHOLE, on top of it.
     await db.exec(M064)
+    // XP-LAUNCH-FINAL-08: migration 065, WHOLE, on top of that. Every test below runs
+    // against its complete_payment(): six months, packs, rollover.
+    await seedCatalogueCodes()
+    await db.exec(M065)
     await db.exec(`create function public.harness_fail() returns trigger language plpgsql as $$ begin raise exception 'simulated storage failure'; end $$`)
   }, 120_000)
 
@@ -765,8 +811,10 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
     it('its ROLLBACK block runs, proves itself, and changes no payment', async () => {
       const token = await startAndToken(user(L1))
       const before = await counts()
-      // In reverse order of application: 064 depends on 063, and 063's preflight
-      // refuses to re-apply beside 064's trigger.
+      // In reverse order of application: 065 replaces functions of 062 and 064, 064
+      // depends on 063, and 063's preflight refuses to re-apply beside 064's trigger.
+      await db.exec(ROLLBACK_065)
+      expect(await asSuper(`select to_regclass('public.course_packs') as t`)).toEqual([{ t: null }])
       await db.exec(ROLLBACK_064)
       await db.exec(ROLLBACK_063)
       expect(await asSuper(`select count(*)::int as n from pg_trigger where tgname = 'payments_transition_guard'`)).toEqual([{ n: 0 }])
@@ -776,6 +824,8 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       // …and re-applying 063 restores it (its preflight accepts the rolled-back state).
       await db.exec(M063)
       await db.exec(M064)
+      await seedCatalogueCodes()
+      await db.exec(M065)
       await setEnvironment('sandbox')
       expect(await asSuper(`select count(*)::int as n from pg_trigger where tgname = 'payments_transition_guard'`)).toEqual([{ n: 1 }])
     })
@@ -1598,7 +1648,8 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
   describe('XP-PAYTECH-05 M064 — the exception migration', () => {
     it('ran WHOLE on top of 063: preflight, self-test and assertions all passed', async () => {
       const t = await asSuper(`select tgname from pg_trigger where tgrelid = 'public.payments'::regclass and not tgisinternal order by 1`)
-      expect(t.map(r => r.tgname)).toEqual(['payment_exceptions_follow_payment', 'payments_transition_guard'])
+      // XP-LAUNCH-FINAL-08: 065 adds its own guard beside 063's and 064's.
+      expect(t.map(r => r.tgname)).toEqual(['payment_exceptions_follow_payment', 'payments_offer_guard', 'payments_transition_guard'])
       expect(await asSuper(`select count(*)::int as n from public.payment_exceptions`)).toEqual([{ n: 0 }])
     })
 
@@ -1754,6 +1805,8 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
 
       const token = await startAndToken(user(L1))
       const before = await counts()
+      // XP-LAUNCH-FINAL-08: 065 replaced three of 064's functions; it is rolled back first.
+      await db.exec(ROLLBACK_065)
       await db.exec(ROLLBACK_064)
       expect(await asSuper(`select to_regclass('public.payment_exceptions') as t`)).toEqual([{ t: null }])
       expect(await asSuper(`select count(*)::int as n from pg_trigger where tgname = 'payment_exceptions_follow_payment'`)).toEqual([{ n: 0 }])
@@ -1766,6 +1819,8 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       await db.exec('rollback').catch(() => undefined)
       await db.exec(M063)
       await db.exec(M064)
+      await seedCatalogueCodes()
+      await db.exec(M065)
       await setEnvironment('sandbox')
       expect(await asSuper(`select count(*)::int as n from public.payment_exceptions`)).toEqual([{ n: 0 }])
     })
@@ -4736,14 +4791,14 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
   describe('XP-PAYTECH-06B — 064 refuses a database it could not protect', () => {
     /** Take 064 out, change the database, and put it all back whatever happens. */
     async function refusedWhen(change: string, undo: string, why: RegExp) {
-      await db.exec(ROLLBACK_064)
+      await rollback064()
       await db.exec(change)
       try {
         await expect(db.exec(M064)).rejects.toThrow(why)
         await db.exec('rollback').catch(() => undefined)
       } finally {
         await db.exec(undo)
-        await db.exec(M064)
+        await apply064Then065()
       }
     }
 
@@ -4765,9 +4820,9 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
     })
 
     it('its rollback removes the second table and its guard as well', async () => {
-      await db.exec(ROLLBACK_064)
+      await rollback064()
       const [{ t, g }] = await asSuper(`select to_regclass('public.payment_completion_notices') as t, to_regprocedure('public.payment_completion_notices_guard()') as g`)
-      await db.exec(M064)
+      await apply064Then065()
       expect(t).toBeNull()
       expect(g).toBeNull()
     })
@@ -9842,6 +9897,314 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
       for (const s of [API_KEY, API_SECRET, sha256(API_KEY), sha256(API_SECRET), token, '770000000', CRON]) {
         expect(all, `log contains ${s.slice(0, 6)}…`).not.toContain(s)
       }
+    })
+  })
+  // ═══ XP-LAUNCH-FINAL-08 — six months, packs, renewal (migration 065) ═══════
+  //
+  // Marième's confirmed commercial conditions, on the real engine: every price is the
+  // database's, a purchase opens six calendar months from the validation of the
+  // payment, a pack is ONE payment that opens its courses together, a lapsed purchase
+  // can be bought again, administrative grants are never re-dated, and one learner
+  // never holds two payable attempts that would open the same course.
+  describe('XP-LAUNCH-FINAL-08 — six months, packs and renewal (migration 065)', () => {
+    const PACKS_V4 = [
+      ['PACK-CONSEILLER', 'C1-F1', 1], ['PACK-CONSEILLER', 'C1-F2', 2], ['PACK-CONSEILLER', 'C1-F3', 3],
+      ['PACK-CONSEILLER', 'C2-F4', 4],
+      ['PACK-MANAGER', 'C2-F1', 1], ['PACK-MANAGER', 'C2-F2', 2], ['PACK-MANAGER', 'C2-F5', 3],
+    ] as const
+    let ids: Record<string, string>
+
+    beforeEach(async () => {
+      H.contract = FIXTURE_CONTRACT
+      // beforeEach above emptied the catalogue, which cascades to the packs' courses.
+      await seedCatalogueCodes()
+      for (const [pack, code, position] of PACKS_V4) {
+        await asSuper(`insert into public.course_pack_courses (pack_id, course_id, position)
+          select p.id, c.id, $3 from public.course_packs p, public.courses c where p.code = $1 and c.code = $2
+          on conflict do nothing`, [pack, code, position])
+      }
+      ids = Object.fromEntries((await asSuper(`select code, id from public.courses where code is not null`)).map(r => [r.code, r.id]))
+    })
+
+    async function packCheckout(u: U | null, packCode: string, acknowledgedCourseIds?: string[]) {
+      H.user = u
+      const { startPaytechPackCheckout } = await import('@/app/actions/paytech-checkout')
+      return startPaytechPackCheckout({ packCode, ...(acknowledgedCourseIds ? { acknowledgedCourseIds } : {}) })
+    }
+    async function packToken(u: U, packCode: string, ack?: string[]) {
+      const r = await packCheckout(u, packCode, ack)
+      expect(r.error, `pack checkout refused: ${r.error}`).toBeUndefined()
+      return r.redirectUrl!.split('/').pop()!
+    }
+    const packId = async (code: string) => (await asSuper(`select id from public.course_packs where code = $1`, [code]))[0].id as string
+    const windows = (userId: string) => asSuper(`select course_id, source, status, starts_at, expires_at,
+        (expires_at = starts_at + interval '6 months') as six_months,
+        (abs(extract(epoch from (starts_at - now()))) < 120) as opened_now
+      from public.entitlements where user_id = $1 order by created_at, course_id`, [userId])
+
+    it('065 ran WHOLE: two published packs at the decided prices, and nothing a browser may write', async () => {
+      expect(await asSuper(`select code, price::int as price, is_published from public.course_packs order by position`)).toEqual([
+        { code: 'PACK-CONSEILLER', price: 37900, is_published: true },
+        { code: 'PACK-MANAGER', price: 38000, is_published: true },
+      ])
+      expect((await asRole('anon', null, `select code from public.course_packs order by position`)).map(r => r.code))
+        .toEqual(['PACK-CONSEILLER', 'PACK-MANAGER'])
+      expect((await asRole('anon', null, `select count(*)::int as n from public.course_pack_courses`))[0].n).toBe(7)
+      for (const sql of [
+        `insert into public.course_packs (code, title, price) values ('PACK-X', 'Pack X', 1)`,
+        `update public.course_packs set price = 1`,
+        `delete from public.course_pack_courses`,
+        `select * from public.payment_entitlements`,
+        `select pack_id from public.payments`,
+      ]) {
+        await expect(asRole('authenticated', L1, sql), sql).rejects.toThrow(/permission denied/)
+      }
+    })
+
+    it('065 takes the platform default rights back from service_role too: the ledger only grows, the packs cannot be emptied', async () => {
+      // This database grants ALL on new tables to service_role by default, as Supabase does.
+      const can = async (table: string, priv: string) =>
+        (await asSuper(`select has_table_privilege('service_role', $1, $2) as ok`, [`public.${table}`, priv]))[0].ok
+      for (const priv of ['SELECT', 'INSERT']) expect(await can('payment_entitlements', priv), priv).toBe(true)
+      for (const priv of ['UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER']) {
+        expect(await can('payment_entitlements', priv), priv).toBe(false)
+      }
+      for (const table of ['course_packs', 'course_pack_courses']) {
+        for (const priv of ['SELECT', 'INSERT', 'UPDATE', 'DELETE']) expect(await can(table, priv), `${table} ${priv}`).toBe(true)
+        for (const priv of ['TRUNCATE', 'REFERENCES', 'TRIGGER']) expect(await can(table, priv), `${table} ${priv}`).toBe(false)
+      }
+      for (const sql of [
+        `update public.payment_entitlements set preexisting = preexisting`,
+        `delete from public.payment_entitlements`,
+        `truncate public.payment_entitlements`,
+        `truncate public.course_packs, public.course_pack_courses`,
+      ]) {
+        await expect(asRole('service_role', null, sql), sql).rejects.toThrow(/permission denied/)
+      }
+    })
+
+    it.each([
+      ['C1-F1', 9900], ['C1-F2', 9900], ['C1-F3', 9900], ['C2-F4', 14900],
+      ['C2-F1', 14900], ['C2-F2', 14900], ['C2-F5', 14900],
+    ] as const)('%s is charged its database price, %d XOF: the payment row and PayTech agree', async (code, price) => {
+      const r = await checkout(user(L1), ids[code])
+      expect(r.redirectUrl).toBeDefined()
+      expect(await asSuper(`select amount::int as amount, currency, course_id, pack_id from public.payments where user_id = $1`, [L1]))
+        .toEqual([{ amount: price, currency: 'XOF', course_id: ids[code], pack_id: null }])
+      expect(P.requests.at(-1)).toMatchObject({ item_price: price, currency: 'XOF' })
+    })
+
+    it('C1-F4, the free course, is never sold: nothing is opened, PayTech is not called', async () => {
+      await asSuper(`insert into public.courses (slug, title, code, price, currency, is_published, is_free)
+        values ('seed-c1-f4', 'Formation gratuite', 'C1-F4', 0, 'XOF', true, true)`)
+      const free = (await asSuper(`select id from public.courses where code = 'C1-F4'`))[0].id
+      const r = await checkout(user(L1), free)
+      expect(r.redirectUrl).toBeUndefined()
+      expect(r.error).toMatch(/réglable/)
+      expect(P.requests).toEqual([])
+    })
+
+    it('a course purchase opens SIX MONTHS from the validation of the payment, and records what it granted', async () => {
+      const token = await startAndToken(user(L1), ids['C1-F1'])
+      says(token, 'completed', 9900)
+      expect((await ipn(token)).status).toBe(200)
+      expect(await windows(L1)).toMatchObject([
+        { course_id: ids['C1-F1'], source: 'INDIVIDUAL_PURCHASE', status: 'ACTIVE', six_months: true, opened_now: true },
+      ])
+      const row = await rowFor(token)
+      expect(row.status).toBe('completed')
+      expect(await asSuper(`select course_id, preexisting from public.payment_entitlements where payment_id = $1`, [row.id]))
+        .toEqual([{ course_id: ids['C1-F1'], preexisting: false }])
+      expect(await dbHasAccess(L1, ids['C1-F1'])).toBe(true)
+    })
+
+    it('Pack Conseiller: ONE payment of 37 900 XOF opens its four courses at the same instant, for six months', async () => {
+      const token = await packToken(user(L1), 'PACK-CONSEILLER')
+      const row = await rowFor(token)
+      expect(row).toMatchObject({ course_id: null, pack_id: await packId('PACK-CONSEILLER'), status: 'processing' })
+      expect(Number(row.amount)).toBe(37900)
+      expect(P.requests.at(-1)).toMatchObject({ item_price: 37900, currency: 'XOF', item_name: 'Pack Conseiller' })
+
+      says(token, 'completed', 37900)
+      expect((await ipn(token)).status).toBe(200)
+      const ents = await windows(L1)
+      expect(ents).toHaveLength(4)
+      expect(new Set(ents.map(e => e.course_id))).toEqual(new Set(['C1-F1', 'C1-F2', 'C1-F3', 'C2-F4'].map(c => ids[c])))
+      expect(new Set(ents.map(e => String(e.starts_at))).size).toBe(1)
+      expect(new Set(ents.map(e => String(e.expires_at))).size).toBe(1)
+      expect(ents.every(e => e.six_months && e.opened_now && e.source === 'INDIVIDUAL_PURCHASE' && e.status === 'ACTIVE')).toBe(true)
+      for (const c of ['C1-F1', 'C1-F2', 'C1-F3', 'C2-F4']) expect(await dbHasAccess(L1, ids[c])).toBe(true)
+      expect(await dbHasAccess(L1, ids['C2-F1'])).toBe(false)
+      expect((await asSuper(`select count(*)::int as n from public.enrollments where user_id = $1`, [L1]))[0].n).toBe(4)
+
+      const done = await rowFor(token)
+      expect(done.status).toBe('completed')
+      expect((await asSuper(`select count(*)::int as n from public.entitlements where id = $1`, [done.entitlement_id]))[0].n).toBe(1)
+      const [audit] = await asSuper(`select metadata from public.audit_log where event_type = 'payment.completed'`)
+      expect(audit.metadata).toMatchObject({ courseId: null, packId: row.pack_id })
+      expect(audit.metadata.items).toHaveLength(4)
+
+      // A replayed notification changes nothing: no second entitlement, enrollment or link.
+      expect((await ipn(token)).status).toBe(200)
+      expect(await windows(L1)).toHaveLength(4)
+      expect((await asSuper(`select count(*)::int as n from public.enrollments where user_id = $1`, [L1]))[0].n).toBe(4)
+      expect((await asSuper(`select count(*)::int as n from public.payment_entitlements where payment_id = $1`, [done.id]))[0].n).toBe(4)
+    })
+
+    it('Pack Manager: 38 000 XOF for exactly its three courses', async () => {
+      const token = await packToken(user(L2), 'PACK-MANAGER')
+      expect(P.requests.at(-1)).toMatchObject({ item_price: 38000, currency: 'XOF' })
+      says(token, 'completed', 38000)
+      await ipn(token)
+      expect(new Set((await windows(L2)).map(e => e.course_id))).toEqual(new Set(['C2-F1', 'C2-F2', 'C2-F5'].map(c => ids[c])))
+    })
+
+    it('a pack containing an owned course: refused until the warning is acknowledged for exactly that course; the owned course is linked, never re-dated', async () => {
+      const first = await startAndToken(user(L1), ids['C1-F1'])
+      says(first, 'completed', 9900)
+      await ipn(first)
+      const [owned] = await asSuper(`select id, expires_at from public.entitlements where user_id = $1 and course_id = $2`, [L1, ids['C1-F1']])
+
+      const unacknowledged = await packCheckout(user(L1), 'PACK-CONSEILLER')
+      expect(unacknowledged.error).toMatch(/possédez déjà/)
+      expect(unacknowledged.error).toContain('Formation C1-F1')
+      expect((await packCheckout(user(L1), 'PACK-CONSEILLER', [ids['C1-F2']])).error).toMatch(/ont changé/)
+      expect(await asSuper(`select count(*)::int as n from public.payments where pack_id is not null`)).toEqual([{ n: 0 }])
+
+      const token = await packToken(user(L1), 'PACK-CONSEILLER', [ids['C1-F1']])
+      const row = await rowFor(token)
+      expect(row.metadata.pack).toMatchObject({ code: 'PACK-CONSEILLER', ownedCourseIds: [ids['C1-F1']] })
+      says(token, 'completed', 37900)
+      await ipn(token)
+
+      expect(await windows(L1)).toHaveLength(4)
+      expect((await asSuper(`select id, expires_at from public.entitlements where user_id = $1 and course_id = $2`, [L1, ids['C1-F1']])))
+        .toEqual([owned])
+      expect(await asSuper(`select course_id, preexisting from public.payment_entitlements where payment_id = $1 and preexisting`, [row.id]))
+        .toEqual([{ course_id: ids['C1-F1'], preexisting: true }])
+      const done = await rowFor(token)
+      expect(done.status).toBe('completed')
+      // An ordinary sale: three courses were opened, nothing waits for a person.
+      expect(done.metadata.completionReview).toBeUndefined()
+    })
+
+    it('a pack whose courses are all owned is not sold', async () => {
+      for (const c of ['C2-F1', 'C2-F2', 'C2-F5']) {
+        await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, ids[c]])
+      }
+      const r = await packCheckout(user(L1), 'PACK-MANAGER', ['C2-F1', 'C2-F2', 'C2-F5'].map(c => ids[c]))
+      expect(r.error).toMatch(/déjà accès à toutes/)
+      expect(P.requests).toEqual([])
+    })
+
+    it('an administrator\'s grant inside a pack is linked and never re-dated; an EXPIRED one blocks the purchase and is left as it was', async () => {
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, ids['C2-F1']])
+      const token = await packToken(user(L1), 'PACK-MANAGER', [ids['C2-F1']])
+      says(token, 'completed', 38000)
+      await ipn(token)
+      expect(await asSuper(`select source, status, expires_at from public.entitlements where user_id = $1 and course_id = $2`, [L1, ids['C2-F1']]))
+        .toEqual([{ source: 'MANUAL_ADMIN', status: 'ACTIVE', expires_at: null }])
+
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status, starts_at, expires_at)
+        values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE', now() - interval '2 days', now() - interval '1 day')`, [L2, ids['C1-F2']])
+      const r = await checkout(user(L2), ids['C1-F2'])
+      expect(r.error).toMatch(/régularisation/)
+      expect(await asSuper(`select source, status from public.entitlements where user_id = $1 and course_id = $2`, [L2, ids['C1-F2']]))
+        .toEqual([{ source: 'MANUAL_ADMIN', status: 'ACTIVE' }])
+    })
+
+    it('six months later the course closes; it can be bought again, and the new purchase opens a new window beside the expired one', async () => {
+      const first = await startAndToken(user(L1), ids['C1-F3'])
+      says(first, 'completed', 9900)
+      await ipn(first)
+      expect(await dbHasAccess(L1, ids['C1-F3'])).toBe(true)
+
+      // Six months pass.
+      await asSuper(`update public.entitlements set starts_at = starts_at - interval '6 months 1 day', expires_at = expires_at - interval '6 months 1 day'
+        where user_id = $1 and course_id = $2`, [L1, ids['C1-F3']])
+      expect(await dbHasAccess(L1, ids['C1-F3'])).toBe(false)
+
+      const second = await startAndToken(user(L1), ids['C1-F3'])
+      expect(second).not.toBe(first)
+      says(second, 'completed', 9900)
+      await ipn(second)
+      expect((await windows(L1)).map(e => ({ status: e.status, opened_now: e.opened_now })))
+        .toEqual([{ status: 'EXPIRED', opened_now: false }, { status: 'ACTIVE', opened_now: true }])
+      expect(await dbHasAccess(L1, ids['C1-F3'])).toBe(true)
+      // The learner's progress record is not duplicated.
+      expect((await asSuper(`select count(*)::int as n from public.enrollments where user_id = $1 and course_id = $2`, [L1, ids['C1-F3']]))[0].n).toBe(1)
+    })
+
+    it('one payable attempt per learner and course across packs: an open course attempt blocks the pack, an open pack blocks its courses, and the database refuses the overlap on its own', async () => {
+      const course = await startAndToken(user(L1), ids['C1-F2'])
+      says(course, 'pending', 9900)
+      const blocked = await packCheckout(user(L1), 'PACK-CONSEILLER')
+      expect(blocked.error).toMatch(/une formation de ce pack/)
+      expect(blocked.reference).toBe((await rowFor(course)).reference)
+      expect(await asSuper(`select count(*)::int as n from public.payments where pack_id is not null`)).toEqual([{ n: 0 }])
+      await expect(asRole('service_role', null, `insert into public.payments
+          (user_id, pack_id, amount, currency, method, status, reference, provider, provider_mode)
+          values ($1, $2, 37900, 'XOF', 'card', 'pending', 'SCX-OVERLAP-0001', 'paytech', 'test')`, [L1, await packId('PACK-CONSEILLER')]))
+        .rejects.toMatchObject({ detail: expect.stringContaining('inflight_overlap') })
+
+      const pack = await packToken(user(L2), 'PACK-CONSEILLER')
+      says(pack, 'pending', 37900)
+      const refused = await checkout(user(L2), ids['C1-F3'])
+      expect(refused.error).toMatch(/pack contenant cette formation/)
+      expect(refused.reference).toBe((await rowFor(pack)).reference)
+      await expect(asRole('service_role', null, `insert into public.payments
+          (user_id, course_id, amount, currency, method, status, reference, provider, provider_mode)
+          values ($1, $2, 9900, 'XOF', 'card', 'pending', 'SCX-OVERLAP-0002', 'paytech', 'test')`, [L2, ids['C1-F3']]))
+        .rejects.toMatchObject({ detail: expect.stringContaining('inflight_overlap') })
+      // A course outside the pack is unaffected.
+      expect((await checkout(user(L2), ids['C2-F1'])).redirectUrl).toBeDefined()
+    })
+
+    it('an open pack attempt is RESUMED: the same hosted page, no second payment', async () => {
+      const token = await packToken(user(L1), 'PACK-MANAGER')
+      says(token, 'pending', 38000)
+      expect(await packCheckout(user(L1), 'PACK-MANAGER'))
+        .toMatchObject({ redirectUrl: `https://paytech.sn/payment/checkout/${token}`, resumed: true })
+      expect(await asSuper(`select count(*)::int as n from public.payments where user_id = $1`, [L1])).toEqual([{ n: 1 }])
+    })
+
+    it('while a pack is being paid its composition is frozen, and a payment never changes what it buys', async () => {
+      const token = await packToken(user(L1), 'PACK-MANAGER')
+      const row = await rowFor(token)
+      await expect(asRole('service_role', null, `delete from public.course_pack_courses where pack_id = $1`, [row.pack_id]))
+        .rejects.toMatchObject({ detail: expect.stringContaining('pack_composition_locked') })
+      await expect(asRole('service_role', null, `update public.payments set pack_id = $1 where id = $2`, [await packId('PACK-CONSEILLER'), row.id]))
+        .rejects.toMatchObject({ detail: expect.stringContaining('payment_pack_immutable') })
+      await expect(asRole('service_role', null, `insert into public.payments
+          (user_id, course_id, pack_id, amount, currency, method, status, reference)
+          values ($1, $2, $3, 1, 'XOF', 'card', 'failed', 'SCX-BOTH-0001')`, [L2, ids['C1-F1'], await packId('PACK-CONSEILLER')]))
+        .rejects.toThrow(/payments_one_product/)
+    })
+
+    it('an exception on a pack payment concerns every course of the pack, and access is honoured only when all of them are open', async () => {
+      H.contract = null
+      const token = await packToken(user(L1), 'PACK-MANAGER')
+      const { id } = await rowFor(token)
+      await asRole('service_role', null, `update public.payments set status = 'expired', failure_reason = 'closed_for_test' where id = $1`, [id])
+      await ipn(token)
+      const e = await exceptionFor(token)
+      expect(e).toMatchObject({ state: 'open', first_signal: 'paid_hint' })
+
+      H.contract = FIXTURE_CONTRACT
+      const r = await checkout(user(L1), ids['C2-F2'])
+      expect(r.error).toMatch(/en cours de vérification/)
+      expect(r.reference).toBe((await rowFor(token)).reference)
+      expect((await checkout(user(L1), ids['C1-F1'])).redirectUrl).toBeDefined()
+
+      const decisions = { exceptionId: e.id, note: NOTE, attestAll: 'yes' }
+      await exAction('confirmExceptionReceipt', { ...decisions, attest: 'yes' })
+      for (const c of ['C2-F1', 'C2-F2']) {
+        await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, ids[c]])
+      }
+      expect(await exAction('recordExceptionAccess', decisions)).toBe('exception_refused_no_live_entitlement')
+      await asSuper(`insert into public.entitlements (user_id, course_id, source, status) values ($1, $2, 'MANUAL_ADMIN', 'ACTIVE')`, [L1, ids['C2-F5']])
+      await exAction('recordExceptionAccess', decisions)
+      expect(await exceptionFor(token)).toMatchObject({ state: 'resolved', resolution: 'access_honoured', access_state: 'granted' })
     })
   })
 })

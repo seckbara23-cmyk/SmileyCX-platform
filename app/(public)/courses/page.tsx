@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import CoursesView from './CoursesView'
 import { levelLabel, type CourseItem, type ParcoursId } from './content'
 import { getPublishedCoursesByCatalogue } from '@/lib/queries/catalogue'
+import CommercialOffers from '@/components/catalogue/CommercialOffers'
 
 export const metadata: Metadata = {
   title: 'Nos formations — XP Client Academy',
@@ -85,5 +86,13 @@ export default async function CoursesPage() {
     }
   }
 
-  return <CoursesView courses={courses} />
+  return (
+    <>
+      <CoursesView courses={courses} />
+      {/* XP-LAUNCH-FINAL-08 (requirements V4 §17): the three commercial offers. */}
+      <div className="cx-container">
+        <CommercialOffers />
+      </div>
+    </>
+  )
 }

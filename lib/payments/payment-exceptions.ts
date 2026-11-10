@@ -521,7 +521,7 @@ export async function listPaymentExceptions(
 
   const { data: paymentData, error: paymentError } = await admin
     .from('payments')
-    .select('id, reference, status, amount, currency, provider_mode, user_id, course_id')
+    .select('id, reference, status, amount, currency, provider_mode, user_id, course_id, pack_id')
     .in('id', rows.map(r => String(r.payment_id)))
   if (paymentError) {
     log.error('could not read the payments behind the exception queue')
@@ -530,24 +530,29 @@ export async function listPaymentExceptions(
   const payments = new Map(((paymentData ?? []) as Row[]).map(p => [String(p.id), p]))
   const userIds = [...new Set([...payments.values()].map(p => text(p.user_id)).filter((v): v is string => v !== null))]
   const courseIds = [...new Set([...payments.values()].map(p => text(p.course_id)).filter((v): v is string => v !== null))]
+  // XP-LAUNCH-FINAL-08 (065): a pack payment concerns every course of its pack.
+  const packIds = [...new Set([...payments.values()].map(p => text(p.pack_id)).filter((v): v is string => v !== null))]
 
   // Read as evidence for a human. These decide nothing: the database re-checks
   // access itself when a decision is recorded. A failed read fails the whole list,
   // because "no access" and "could not tell" must never look the same.
   const empty = { data: [] as Row[], error: null }
   const reads = userIds.length === 0
-    ? [empty, empty, empty, empty]
+    ? [empty, empty, empty, empty, empty, empty]
     : await Promise.all([
         admin.from('profiles').select('id, full_name, email').in('id', userIds),
         courseIds.length === 0 ? Promise.resolve(empty) : admin.from('courses').select('id, title').in('id', courseIds),
         admin.from('entitlements').select('user_id, course_id, status, starts_at, expires_at, revoked_at').in('user_id', userIds),
         admin.from('payments').select('id, reference, user_id, course_id').in('user_id', userIds).eq('status', 'completed'),
+        packIds.length === 0 ? Promise.resolve(empty) : admin.from('course_pack_courses').select('pack_id, course_id').in('pack_id', packIds),
+        packIds.length === 0 ? Promise.resolve(empty) : admin.from('course_packs').select('id, title').in('id', packIds),
       ])
   if (reads.some(r => r.error)) {
     log.error('could not read the facts behind the exception queue')
     return null
   }
-  const [profiles, courses, entitlements, completed] = reads.map(r => (r.data ?? []) as Row[])
+  const [profiles, courses, entitlements, completed, packCourses, packs] = reads.map(r => (r.data ?? []) as Row[])
+  const packTitleOf = new Map(packs.map(k => [String(k.id), text(k.title)]))
   const profileOf = new Map(profiles.map(p => [String(p.id), p]))
   const titleOf = new Map(courses.map(c => [String(c.id), text(c.title)]))
 
@@ -557,6 +562,10 @@ export async function listPaymentExceptions(
     const courseId = p ? text(p.course_id) : null
     const profile = userId ? profileOf.get(userId) ?? null : null
     const sameCourse = (x: Row) => text(x.user_id) === userId && text(x.course_id) === courseId
+    const packId = p ? text(p.pack_id) : null
+    const packTitle = packId ? packTitleOf.get(packId) ?? null : null
+    const ofPack = new Set(packCourses.filter(pc => text(pc.pack_id) === packId).map(pc => text(pc.course_id)))
+    const inPack = (x: Row) => packId !== null && text(x.user_id) === userId && ofPack.has(text(x.course_id))
     return {
       id: String(r.id),
       paymentId: String(r.payment_id),
@@ -605,8 +614,9 @@ export async function listPaymentExceptions(
         providerMode: text(p.provider_mode),
       },
       learner: profile && { name: text(profile.full_name), email: text(profile.email) },
-      courseTitle: courseId ? titleOf.get(courseId) ?? null : null,
-      accessLive: Boolean(userId && courseId) && entitlements.some(e => sameCourse(e) && isEntitlementAccessible(e as never)),
+      courseTitle: courseId ? titleOf.get(courseId) ?? null : packTitle,
+      accessLive: (Boolean(userId && courseId) && entitlements.some(e => sameCourse(e) && isEntitlementAccessible(e as never)))
+        || entitlements.some(e => inPack(e) && isEntitlementAccessible(e as never)),
       otherCompletedReference: !userId || !courseId
         ? null
         : text(completed.find(c => sameCourse(c) && String(c.id) !== String(r.payment_id))?.reference),

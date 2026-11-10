@@ -22,12 +22,19 @@ const log = createLogger('payments/paytech-resume')
  * token or a URL: it says whether a stored redirect exists, so the cancel page and
  * the checkout page can offer the resume honestly. Every query is scoped to the
  * signed-in learner; nothing a browser sends selects the attempt.
+ *
+ * XP-LAUNCH-FINAL-08: an attempt buys one course or one pack (migration 065), and a
+ * pack attempt is resumed the same way, from the pack's checkout.
  */
 export interface InflightPaytechAttempt {
   readonly paymentId: string
+  /** The course the attempt buys; empty for a pack. */
   readonly courseId: string
   readonly courseSlug: string | null
   readonly courseTitle: string | null
+  /** The pack the attempt buys, when it buys one. */
+  readonly packCode: string | null
+  readonly packTitle: string | null
   /** The order reference, the only identifier a learner is shown. */
   readonly reference: string
   readonly createdAt: string
@@ -38,6 +45,8 @@ export interface InflightPaytechAttempt {
 /** How many attempts a page lists. One per course is the invariant, so this is generous. */
 const DEFAULT_LIMIT = 5
 
+const SELECT = 'id, course_id, pack_id, reference, created_at, metadata, courses(slug, title), course_packs(code, title)'
+
 /**
  * The learner's OPENED attempts still in flight (a token was stored, so a hosted
  * page was handed out), newest first. `null` when they cannot be read, so a
@@ -45,19 +54,21 @@ const DEFAULT_LIMIT = 5
  */
 export async function inflightPaytechAttempts(
   userId: string,
-  opts: { courseId?: string; limit?: number } = {},
+  opts: { courseId?: string; packId?: string; limit?: number } = {},
 ): Promise<InflightPaytechAttempt[] | null> {
   if (typeof userId !== 'string' || userId.length === 0) return []
   try {
     const admin = createAdminClient()
-    const scoped = admin
+    let scoped = admin
       .from('payments')
-      .select('id, course_id, reference, created_at, metadata, courses(slug, title)')
+      .select(SELECT)
       .eq('user_id', userId)
       .eq('provider', 'paytech')
       .in('status', [...IN_FLIGHT_STATUSES])
       .not('provider_token', 'is', null)
-    const { data, error } = await (opts.courseId ? scoped.eq('course_id', opts.courseId) : scoped)
+    if (opts.courseId) scoped = scoped.eq('course_id', opts.courseId)
+    if (opts.packId) scoped = scoped.eq('pack_id', opts.packId)
+    const { data, error } = await scoped
       .order('created_at', { ascending: false })
       .limit(opts.limit ?? DEFAULT_LIMIT)
 
@@ -82,18 +93,33 @@ export async function inflightPaytechAttempt(
   return attempts && attempts.length > 0 ? attempts[0] : null
 }
 
+/** The one attempt in flight for this pack, or none. */
+export async function inflightPaytechPackAttempt(
+  userId: string,
+  packId: string,
+): Promise<InflightPaytechAttempt | null> {
+  const attempts = await inflightPaytechAttempts(userId, { packId, limit: 1 })
+  return attempts && attempts.length > 0 ? attempts[0] : null
+}
+
+const one = (v: unknown) => (Array.isArray(v) ? v[0] : v) as Record<string, unknown> | null | undefined
+
 function toAttempt(row: Record<string, unknown>): InflightPaytechAttempt | null {
-  // An attempt without a course cannot be resumed from a checkout page; it is an
-  // administrator's matter (`payment_identity_incomplete`), not a learner's.
-  if (typeof row.course_id !== 'string' || row.course_id.length === 0) return null
-  const joined = row.courses
-  const course = (Array.isArray(joined) ? joined[0] : joined) as { slug?: unknown; title?: unknown } | null | undefined
+  const course = one(row.courses)
+  const pack = one(row.course_packs)
+  const isCourse = typeof row.course_id === 'string' && row.course_id.length > 0
+  const isPack = !isCourse && typeof pack?.code === 'string' && pack.code.length > 0
+  // An attempt with neither a course nor a readable pack cannot be resumed from a
+  // checkout page; it is an administrator's matter (`payment_identity_incomplete`).
+  if (!isCourse && !isPack) return null
   const stored = (row.metadata as { checkoutUrl?: unknown } | null | undefined)?.checkoutUrl
   return {
     paymentId:   String(row.id),
-    courseId:    row.course_id,
-    courseSlug:  typeof course?.slug === 'string' ? course.slug : null,
-    courseTitle: typeof course?.title === 'string' ? course.title : null,
+    courseId:    isCourse ? String(row.course_id) : '',
+    courseSlug:  isCourse && typeof course?.slug === 'string' ? course.slug : null,
+    courseTitle: isCourse && typeof course?.title === 'string' ? course.title : null,
+    packCode:    isPack ? String(pack!.code) : null,
+    packTitle:   isPack && typeof pack?.title === 'string' ? pack.title : null,
     reference:   String(row.reference ?? ''),
     createdAt:   String(row.created_at ?? ''),
     // Only whether it exists and is the provider's. The URL itself stays on the server.

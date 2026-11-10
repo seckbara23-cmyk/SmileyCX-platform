@@ -15,6 +15,7 @@ import { COURSE_MODULES, COURSE_COPY } from '@/data/seed'
 import { PLATFORM_MODE } from '@/lib/pilot'
 import { paytechCheckoutAvailability } from '@/lib/payments/providers'
 import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
+import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
 import type { Metadata } from 'next'
 
 const COURSE_META: Record<string, { number: number; objectives: string[]; image: string }> = {
@@ -295,7 +296,11 @@ export default async function CourseDetailPage({ params }: Props) {
   const meta           = COURSE_META[slug]
   // XPA-3: paths that publicly feature this course (V4 §8 "ce cours fait
   // partie des parcours…"). Only publicly visible paths are returned.
-  const memberPaths    = await getPublicPathsForCourse((dbCourse?.code as string | null) ?? null)
+  // XP-LAUNCH-FINAL-08 (requirements V4 §13): the pathways stay configured but are
+  // hidden from the public at launch, so this section renders nothing until they return.
+  const memberPaths    = PUBLIC_PATHWAYS_VISIBLE
+    ? await getPublicPathsForCourse((dbCourse?.code as string | null) ?? null)
+    : []
   const coverImage     = dbCourse?.cover_url      ?? meta?.image ?? null
   const introVideoUrl  = (dbCourse as Record<string, unknown> | null)?.intro_video_url as string | null ?? null
 
@@ -347,7 +352,7 @@ export default async function CourseDetailPage({ params }: Props) {
   const accessRequestLabel = !user
     ? 'Créer mon compte'
     : paidPurchaseAvailable
-      ? COURSE_COPY.enrollment_cta
+      ? (ctaAccess.reason === 'access_ended' ? 'Renouveler mon accès (6 mois)' : COURSE_COPY.enrollment_cta)
       : PURCHASE_UNAVAILABLE_NOTE
 
   /**
@@ -539,7 +544,7 @@ export default async function CourseDetailPage({ params }: Props) {
                   ) : (
                     <>
                       <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                      {formatPrice(price, currency)} · Accès complet à vie · Certificat inclus
+                      {formatPrice(price, currency)} · Accès 6 mois · Certificat inclus
                     </>
                   )}
                 </p>
@@ -629,7 +634,7 @@ export default async function CourseDetailPage({ params }: Props) {
                     'Quiz par module',
                     'Certificat de réussite',
                     'Accès mobile & desktop',
-                    'Accès à vie',
+                    isFree ? 'Accès sans limite de durée' : 'Accès 6 mois',
                   ].map(item => (
                     <div key={item} className="flex items-center gap-1.5">
                       <CheckCircle className="w-3.5 h-3.5 text-success shrink-0" />
@@ -646,13 +651,13 @@ export default async function CourseDetailPage({ params }: Props) {
                   {isFree ? (
                     <div className="flex items-baseline gap-2">
                       <span className="text-lg font-extrabold text-success">Gratuit</span>
-                      <span className="text-xs text-cx-gray">Acc&egrave;s complet &agrave; vie</span>
+                      <span className="text-xs text-cx-gray">Acc&egrave;s sans limite de dur&eacute;e</span>
                     </div>
                   ) : (
                     <>
                       <div className="flex items-baseline gap-2 mb-2">
                         <span className="text-lg font-extrabold text-dark">{formatPrice(price, currency)}</span>
-                        <span className="text-xs text-cx-gray">Accès complet à vie</span>
+                        <span className="text-xs text-cx-gray">Accès complet 6 mois</span>
                       </div>
                       <div className="flex flex-wrap gap-1.5">
                         {['🟠 Orange Money', '🔵 Wave', '💳 Carte'].map(m => (
@@ -819,7 +824,7 @@ export default async function CourseDetailPage({ params }: Props) {
                 ? 'Formation gratuite · Certificat inclus · Compte requis'
                 : paidPurchaseAvailable
                 ? `${formatPrice(price, currency)} · Accès immédiat après paiement`
-                : `${formatPrice(price, currency)} · Accès complet à vie · ${PURCHASE_UNAVAILABLE_NOTE}`}
+                : `${formatPrice(price, currency)} · Accès 6 mois · ${PURCHASE_UNAVAILABLE_NOTE}`}
             </p>
             {mayContinue ? (
               <Link

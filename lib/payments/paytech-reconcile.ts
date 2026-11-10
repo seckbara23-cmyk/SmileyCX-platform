@@ -65,12 +65,14 @@ const PENDING_CLOSE_AFTER_MS = 7 * 24 * 60 * 60 * 1000
 
 /** The columns every path reads. Never `metadata`, never anything personal. */
 export const PAYTECH_PAYMENT_COLUMNS =
-  'id, user_id, course_id, amount, currency, reference, status, provider, provider_mode, provider_token, created_at'
+  'id, user_id, course_id, pack_id, amount, currency, reference, status, provider, provider_mode, provider_token, created_at'
 
 export interface PaytechPaymentRow {
   readonly id: string
   readonly user_id: string | null
   readonly course_id: string | null
+  /** XP-LAUNCH-FINAL-08 (065): the pack a payment buys, when it buys one; course_id is then null. */
+  readonly pack_id?: string | null
   readonly amount: number | string
   readonly currency: string
   readonly reference: string
@@ -349,7 +351,8 @@ async function decide(row: PaytechPaymentRow, opts: ReconcileOptions, done: { co
     return decideClosed(row, opts, env)
   }
   if (!row.provider_token) return { kind: 'ineligible', reason: 'never_opened' }
-  if (!row.user_id || !row.course_id) {
+  // A payment buys one course or one pack (065): it needs a learner and one of the two.
+  if (!row.user_id || (!row.course_id && !row.pack_id)) {
     await recordSettlementNote({ paymentId: row.id, failureReason: 'payment_identity_incomplete' })
     return { kind: 'ineligible', reason: 'payment_identity_incomplete' }
   }

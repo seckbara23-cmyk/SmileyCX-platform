@@ -7,6 +7,7 @@ import ContactForm from '@/app/(public)/contact/ContactForm'
 import FinalCtaButton from '@/components/site/FinalCtaButton'
 import { CONTACT_PHONE, CONTACT_PHONE_HREF } from '@/lib/brand'
 import ContactEmailLink from '@/components/site/ContactEmailLink'
+import CommercialOffers from '@/components/catalogue/CommercialOffers'
 
 const FEATURE_ITEMS = [
   { icon: BookOpen, label: 'Formations pratiques et concrètes' },
@@ -14,6 +15,9 @@ const FEATURE_ITEMS = [
   { icon: Users,    label: 'Cas réels inspirés du terrain' },
   { icon: Award,    label: 'Certificats de réussite' },
 ]
+
+/** XP-LAUNCH-FINAL-08: the offers read the packs; a minute bounds how stale a price can be. */
+export const revalidate = 60
 
 export default function HomePage() {
   return (
@@ -194,6 +198,9 @@ export default function HomePage() {
               </div>
 
             </div>
+
+            {/* XP-LAUNCH-FINAL-08 (requirements V4 §17): the three commercial offers. */}
+            <CommercialOffers />
           </div>
         </section>
 

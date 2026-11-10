@@ -109,13 +109,15 @@ function Resume({ attempts, canResume }: { attempts: InflightPaytechAttempt[]; c
           <ul className="mt-6 flex flex-col gap-4 text-left">
             {attempts.map(attempt => (
               <li key={attempt.paymentId} className="rounded-cx border border-black/[0.08] p-4">
-                <p className="font-semibold text-dark">{attempt.courseTitle ?? 'Votre formation'}</p>
+                <p className="font-semibold text-dark">{attempt.courseTitle ?? attempt.packTitle ?? 'Votre formation'}</p>
                 <p className="text-xs text-cx-gray mt-1">
                   Référence : <span className="font-mono">{attempt.reference}</span>
                 </p>
                 {canResume && attempt.resumable ? (
                   <Link
-                    href={`/checkout?course=${encodeURIComponent(attempt.courseId)}`}
+                    href={attempt.packCode
+                      ? `/checkout?pack=${encodeURIComponent(attempt.packCode)}`
+                      : `/checkout?course=${encodeURIComponent(attempt.courseId)}`}
                     className={`${PRIMARY} mt-4 w-full sm:w-auto`}
                   >
                     <RotateCcw className="w-4 h-4" aria-hidden="true" />

@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils/cn'
 import { createClient } from '@/lib/supabase/client'
 import { PILOT_MODE } from '@/lib/pilot'
 import type { Profile } from '@/types'
+import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
 
 /**
  * Homepage section anchors (scroll-spy). `formations` moved to ROUTE_LINKS in
@@ -28,6 +29,8 @@ const ROUTE_LINKS = [
   { href: '/parcours', label: 'Parcours métier' },
   { href: '/secteurs', label: 'Secteurs' },
 ]
+  // XP-LAUNCH-FINAL-08 (requirements V4 §13): pathways configured but hidden at launch.
+  .filter(l => PUBLIC_PATHWAYS_VISIBLE || (l.href !== '/parcours' && l.href !== '/secteurs'))
 
 export default function Header({ compact = false }: { compact?: boolean }) {
   const [scrolled,      setScrolled]      = useState(false)

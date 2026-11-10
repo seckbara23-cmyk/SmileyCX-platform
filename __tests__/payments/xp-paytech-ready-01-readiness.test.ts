@@ -417,7 +417,10 @@ describe('DATABASE GUARD — the structure that keeps every payment write behind
 describe('vercel.json — this branch does not create a preview deployment', () => {
   // Delete this block together with the two vercel.json keys, in a commit on
   // main AFTER the merge. Removing them on the branch would itself deploy it.
-  const BRANCH = 'feat/xp-paytech-04-checkout-reconciliation'
+  // XP-LAUNCH-FINAL-11: PR #61 is merged, so its branch's opt-out is gone and
+  // the commercial-offers branch is the one this file now keeps off Vercel.
+  const BRANCH = 'feat/xp-launch-final-08-commercial-offers'
+  const MERGED = 'feat/xp-paytech-04-checkout-reconciliation'
   const config = JSON.parse(read('vercel.json')) as {
     git: { deploymentEnabled: Record<string, boolean> }
     ignoreCommand: string
@@ -431,7 +434,7 @@ describe('vercel.json — this branch does not create a preview deployment', () 
     return spawnSync('sh', ['-c', config.ignoreCommand], { env }).status
   }
 
-  it('disables automatic deployment for exactly this one branch', () => {
+  it('disables automatic deployment for exactly this branch', () => {
     expect(config.git.deploymentEnabled).toEqual({ [BRANCH]: false })
   })
 
@@ -442,11 +445,13 @@ describe('vercel.json — this branch does not create a preview deployment', () 
 
   it('the second layer names the same branch and fits Vercel\'s limit', () => {
     expect(config.ignoreCommand).toContain(`"${BRANCH}"`)
+    expect(config.ignoreCommand).not.toContain(MERGED)
     expect(config.ignoreCommand.length).toBeLessThanOrEqual(256)
   })
 
   it.skipIf(!hasSh)('the second layer skips this branch and builds everything else', () => {
     expect(exitFor(BRANCH), 'exit 0 means Vercel skips the build').toBe(0)
+    expect(exitFor(MERGED), 'the merged branch is no longer special').toBe(1)
     expect(exitFor('main'), 'exit 1 means Vercel builds').toBe(1)
     expect(exitFor('feat/anything-else')).toBe(1)
     expect(exitFor(undefined), 'a deployment with no git ref still builds').toBe(1)
@@ -532,8 +537,10 @@ describe('XP-PAYTECH-05 — the exception workflow cannot complete, grant or ref
 
   it('vercel.json keeps both protections for this branch', () => {
     const config = JSON.parse(read('vercel.json')) as { git: { deploymentEnabled: Record<string, boolean> }; ignoreCommand: string }
-    expect(config.git.deploymentEnabled).toEqual({ 'feat/xp-paytech-04-checkout-reconciliation': false })
-    expect(config.ignoreCommand).toContain('feat/xp-paytech-04-checkout-reconciliation')
+    expect(config.git.deploymentEnabled).toEqual({
+      'feat/xp-launch-final-08-commercial-offers': false,   // XP-LAUNCH-FINAL-11, after PR #61's merge
+    })
+    expect(config.ignoreCommand).toContain('feat/xp-launch-final-08-commercial-offers')
   })
 })
 

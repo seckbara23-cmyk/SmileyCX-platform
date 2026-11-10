@@ -1,5 +1,7 @@
 import type { Metadata } from 'next'
 import PathIndex from '@/components/courses/PathIndex'
+import { redirect } from 'next/navigation'
+import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
 
 export const metadata: Metadata = {
   title: 'Parcours métier',
@@ -9,6 +11,8 @@ export const metadata: Metadata = {
 }
 
 export default function ParcoursPage() {
+  // XP-LAUNCH-FINAL-08 (requirements V4 §13): configured, kept, hidden at launch.
+  if (!PUBLIC_PATHWAYS_VISIBLE) redirect('/courses')
   return (
     <PathIndex
       kind="professional"

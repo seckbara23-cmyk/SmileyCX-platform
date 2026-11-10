@@ -110,7 +110,7 @@ export default async function PaymentSuccessPage({ searchParams }: Props) {
   const admin = createAdminClient()
   let query = admin
     .from('payments')
-    .select('id, status, amount, currency, reference, course_id, courses(title, slug)')
+    .select('id, status, amount, currency, reference, course_id, pack_id, courses(title, slug), course_packs(title)')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
     .limit(1)
@@ -139,11 +139,15 @@ export default async function PaymentSuccessPage({ searchParams }: Props) {
   }
 
   const course = (payment as { courses?: { title?: string; slug?: string } | null }).courses ?? null
+  // XP-LAUNCH-FINAL-08: a payment buys a course or a pack (065).
+  const packTitle = (payment as { course_packs?: { title?: string } | null }).course_packs?.title ?? null
+  const productTitle = course?.title ?? packTitle
   const status = String(payment.status)
   const amountLabel = `${Number(payment.amount).toLocaleString('fr-FR')} ${payment.currency}`
 
   // ── confirmed ──
   if (status === 'completed') {
+    const accessUntil = await accessEndOf(String(payment.id))
     return (
       <div className={SHELL}>
         <div className="cx-container">
@@ -152,8 +156,8 @@ export default async function PaymentSuccessPage({ searchParams }: Props) {
             <h1 className="text-2xl font-extrabold text-primary mb-3">Paiement confirmé</h1>
             <p className="text-cx-gray">
               Merci — votre paiement de <strong className="text-dark">{amountLabel}</strong> a été
-              confirmé{course?.title ? <> pour <strong className="text-dark">{course.title}</strong></> : null}.
-              Votre accès est actif.
+              confirmé{productTitle ? <> pour <strong className="text-dark">{productTitle}</strong></> : null}.
+              Votre accès est actif{accessUntil ? <> jusqu&apos;au <strong className="text-dark">{accessUntil}</strong></> : null}.
             </p>
             <p className="text-xs text-cx-gray mt-4">
               Référence&nbsp;: <span className="font-mono">{String(payment.reference)}</span>
@@ -239,4 +243,30 @@ export default async function PaymentSuccessPage({ searchParams }: Props) {
       </div>
     </div>
   )
+}
+
+/**
+ * XP-LAUNCH-FINAL-08: the end of the access this payment granted — six months from the
+ * validation of the payment (065), the same date for every course of a pack. Read on
+ * the server, for this learner's own payment only; null when it cannot be read or
+ * when the payment only linked access the learner already had.
+ */
+async function accessEndOf(paymentId: string): Promise<string | null> {
+  try {
+    const { data } = await createAdminClient()
+      .from('payment_entitlements')
+      .select('preexisting, entitlements(expires_at)')
+      .eq('payment_id', paymentId)
+    const ends = (Array.isArray(data) ? data : [])
+      .filter(r => (r as { preexisting?: boolean }).preexisting === false)
+      .map(r => {
+        const e = (r as { entitlements?: { expires_at?: string | null } | { expires_at?: string | null }[] | null }).entitlements
+        return (Array.isArray(e) ? e[0] : e)?.expires_at ?? null
+      })
+      .filter((v): v is string => typeof v === 'string')
+    if (ends.length === 0) return null
+    return new Intl.DateTimeFormat('fr-FR', { dateStyle: 'long', timeZone: 'Africa/Dakar' }).format(new Date(ends.sort()[0]))
+  } catch {
+    return null
+  }
 }

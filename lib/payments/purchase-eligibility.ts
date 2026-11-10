@@ -23,17 +23,35 @@ import { isEntitlementAccessible, LIVE_STATUSES } from '@/lib/entitlements'
  */
 export type PurchaseBlocker = 'entitlement_conflict' | 'entitlement_revoked_requires_decision'
 
+/**
+ * XP-LAUNCH-FINAL-08 (065): a PURCHASE whose six-month window has closed is rolled over
+ * to EXPIRED by `complete_payment()` before it grants the new window, so it blocks
+ * nothing: the learner may buy the course again. Only a purchase: an expired
+ * administrative, corporate or promotional grant still blocks, because 065 does not
+ * touch it and would refuse the completion.
+ */
+function isLapsedPurchase(e: { source?: unknown; status?: unknown; expires_at?: unknown; revoked_at?: unknown }, now: number): boolean {
+  return e.source === 'INDIVIDUAL_PURCHASE'
+    && e.status === 'ACTIVE'
+    && !e.revoked_at
+    && typeof e.expires_at === 'string'
+    && new Date(e.expires_at).getTime() <= now
+}
+
 export async function purchaseBlocker(userId: string, courseId: string): Promise<PurchaseBlocker | null> {
   const { data, error } = await createAdminClient()
     .from('entitlements')
-    .select('status, starts_at, expires_at, revoked_at')
+    .select('source, status, starts_at, expires_at, revoked_at')
     .eq('user_id', userId)
     .eq('course_id', courseId)
 
   // Fail closed: if we cannot tell, we do not take the money.
   if (error || !Array.isArray(data)) return 'entitlement_conflict'
 
-  const live = data.filter(e => (LIVE_STATUSES as readonly string[]).includes(String(e.status)))
+  const now = Date.now()
+  const live = data
+    .filter(e => (LIVE_STATUSES as readonly string[]).includes(String(e.status)))
+    .filter(e => !isLapsedPurchase(e, now))
   if (live.length > 0) {
     // An accessible live entitlement is "already has access", which checkout
     // refuses earlier; anything else live is 062's conflict.
