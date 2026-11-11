@@ -433,9 +433,16 @@ describe('VOICE-A1 F-2 — nothing adjacent moved', () => {
   })
 
   it('the provider integration is untouched — no agent, voice or endpointing change', () => {
-    const src = stripJs(read(ACTION))
-    expect(src).toMatch(/get-signed-url/)
-    for (const forbidden of ['agent_id:', 'voice_id', 'turn_timeout', 'vad_', 'first_message'])
-      expect(src, `${forbidden} appeared`).not.toContain(forbidden)
+    // XP-F2-01: the signed-URL call moved into the shared provider client; the ban
+    // on any agent, voice, endpointing or first-message override covers both files.
+    const provider = stripJs(read('lib/voice/elevenlabs.ts'))
+    expect(provider).toMatch(/get-signed-url/)
+    for (const forbidden of ['agent_id:', 'voice_id', 'turn_timeout', 'vad_', 'first_message', 'overrides'])
+      expect(stripJs(read(ACTION)), `${forbidden} appeared`).not.toContain(forbidden)
+    // The provider client READS agent_id from a conversation (to refuse another
+    // agent's conversation); it never writes an agent, a voice or an override.
+    for (const forbidden of ['voice_id', 'turn_timeout', 'vad_', 'first_message', 'overrides', 'conversation_config', '/agents'])
+      expect(provider, `${forbidden} appeared`).not.toContain(forbidden)
+    expect(provider).not.toMatch(/method:\s*'(POST|PATCH|PUT)'/)
   })
 })

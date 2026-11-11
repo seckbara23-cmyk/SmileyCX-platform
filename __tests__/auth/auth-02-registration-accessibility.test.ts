@@ -362,12 +362,14 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
   it('no migration was added', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(63)
+    expect(migs).toHaveLength(64)
     expect(migs).toContain('063_payment_state_machine.sql')
     // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
     expect(migs).toContain('064_payment_exceptions.sql')
     // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access); it is admitted by name.
     expect(migs).toContain('065_commercial_offers.sql')
+    // XP-F2-01 authored 066 (voice-training consent, session mode); it is admitted by name.
+    expect(migs).toContain('066_voice_training_foundation.sql')
   })
 
   it('payment work stayed paused — 062 and the transport client are untouched', () => {

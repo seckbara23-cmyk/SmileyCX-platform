@@ -372,8 +372,8 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
     expect(files.filter(f => parseInt(f, 10) > 57))
       .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                 '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql'])
-    expect(Math.max(...nums)).toBe(65)  // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access)
+                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql', '066_voice_training_foundation.sql'])
+    expect(Math.max(...nums)).toBe(66)  // XP-F2-01 authored 066 (voice-training consent, session mode).
     // 061 went to AUDIT-SEC-01, not PAY-2C: the audit_log TRUNCATE exposure was
     // found during the PAY-2C preflight and fixed first. PAY-2C landed as 062.
     // XP-PAYTECH-04 authored 063, the payment state machine — admitted by
@@ -395,7 +395,7 @@ describe('PAY-LAUNCH-02A — scope guard: nothing else moved', () => {
                         '059_payment_column_select_security.sql',
                         '060_payment_completion_contract.sql',
                         '061_audit_log_privilege_hardening.sql',
-                        '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql']) {
+                        '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql', '066_voice_training_foundation.sql']) {
       const sql = read(`supabase/migrations/${name}`)
       for (const forbidden of FORBIDDEN) {
         expect(sql, `${name} contains PayDunya API material: ${forbidden}`).not.toMatch(forbidden)
