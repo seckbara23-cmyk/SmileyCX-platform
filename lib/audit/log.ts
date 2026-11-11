@@ -93,6 +93,7 @@ export type AuditEventType =
   | 'voice.consent_accepted'
   | 'voice.consent_withdrawn'
   | 'voice.data_deleted'
+  | 'voice.retention_purged'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

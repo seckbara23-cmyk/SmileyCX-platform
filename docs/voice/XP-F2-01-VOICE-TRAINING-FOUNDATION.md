@@ -41,19 +41,34 @@ The server actions (`app/actions/ai-practice.ts`), the session component and the
   - provider messages reach the browser in development only.
 - **No score shown:** the coach summary shows a level word instead of « N/10 ».
 
+## XP-F2-03: the five scenarios, complete
+
+- **Content.** Every persona now carries, besides the source text: its reactions to each register of the learner, example closing lines for both endings, and strict success and failure definitions per criterion. Fatou has the document's four forbidden phrases, their French form and a positive rephrasing for each. Kader has his insistence lines and acceptable alternatives. Awa has her F1 continuity. Amara confirms with « Oui, c’est ça. » when the rephrasing is there.
+- **Transcript guards** (`lib/voice/dialogue-guards.ts`). After the provider's analysis, deterministic checks on the transcript can only lower a verdict:
+  - a learner who only said « oui » or « d’accord » fails the objective;
+  - a forbidden phrase fails Fatou's negative-phrasing criterion, quoting it;
+  - no explicit refusal caps Kader's refusal criterion at « unknown »;
+  - no time frame caps Awa's commitment criterion at « unknown ».
+- **Approval dossier.** `docs/voice/F2-DOSSIER-APPROBATION.md`, in French for Marième, generated from the registry and kept equal to it by a test. It separates the exact source text from every proposal.
+- **Provisioning readiness.** `lib/voice/provisioning.ts` builds each agent's exact payload. `lib/voice/agents.manifest.json` is its committed output, with a fingerprint per agent. `scripts/voice/compare-agents.mjs` compares the manifest with live agents, read-only, printing hashes only. Nothing in the repository creates or updates an agent.
+- **Ibrahima.** His repository content follows the document. His live agent and his database row are unchanged. The learner already reads the reviewed situation and criteria, not the older database text.
+- **Self-assessment is not a voice session.** The one-live-session rule, the stale-session close and the attempt count apply to voice sessions only.
+- **Retention.** A tested, unscheduled purge and the design to decide: `docs/voice/XP-F2-03-RETENTION.md`. A learner's erasure no longer loses the provider reference when the provider cannot delete at once.
+
 ## Migration 066
 
 **Not applied by this change.** It adds:
 - the consent table, with row security, own-row reads and server-only writes;
-- `ai_sessions.mode`, 'voice' or 'self';
-- `ai_sessions.provider_conversation_id`;
-- one live session per learner.
+- `ai_sessions.mode`, 'voice' or 'self'; every existing row becomes 'self';
+- `ai_sessions.provider_conversation_id`, `content_purged_at` and `erasure_requested_at`;
+- one live **voice** session per learner (XP-F2-03 revision: the first version covered every session, and would have failed on existing data);
+- the browser roles lose their write rights on the five learner-owned AI tables, and keep their reads.
 
-It must be applied before voice practice is opened.
+It changes no existing row. It must be applied before voice practice is opened.
 
-## Before opening (F2-03)
+## Before opening (F2-04)
 
-1. XP CLIENT confirms the French criteria labels, the examples and non-examples, and the banned-phrase wording for Fatou.
-2. Provision the four new agents from `buildAgentConfig()`, and realign Ibrahima's agent and database text with the document.
-3. Decide the retention period for transcripts.
+1. Marième approves the dossier, or corrects it. The corrections go into the registry and the dossier is regenerated.
+2. The owner decides the retention period, and the privacy and consent texts announce it.
+3. The owner authorizes provisioning: four new agents from the manifest, and the update of Ibrahima's agent. `compare-agents.mjs` then shows every agent matching.
 4. Apply 066, publish the scenarios, and open voice practice in a reviewed change with a new version of the texts.

@@ -140,7 +140,8 @@ describe('the prompt contract every agent follows', () => {
 
 describe('qualitative feedback: success, failure, unknown — never a score, never invented', () => {
   const amara = VOICE_PERSONAS.find(p => p.id === 'amara')!
-  const said = ['Si je comprends bien, vous avez reçu un SMS sur votre forfait et vous voulez savoir ce qui change ?']
+  const saidText = ['Si je comprends bien, vous avez reçu un SMS sur votre forfait et vous voulez savoir ce qui change ?']
+  const said = saidText.map(text => ({ speaker: 'learner' as const, text }))
   const ok = (r: string) => ({ result: 'success', rationale: r })
 
   it('objective met: every objective criterion is a success, no retry, no digit', () => {
@@ -178,22 +179,22 @@ describe('qualitative feedback: success, failure, unknown — never a score, nev
   })
 
   it('a rationale with a grade is dropped, and its verdict is not trusted', () => {
-    expect(sanitizeRationale('Très bien, 8/10.', said)).toBeNull()
-    expect(sanitizeRationale('Note de 4 sur ce point.', said)).toBeNull()
-    expect(sanitizeRationale('Réussi à 75 %.', said)).toBeNull()
+    expect(sanitizeRationale('Très bien, 8/10.', saidText)).toBeNull()
+    expect(sanitizeRationale('Note de 4 sur ce point.', saidText)).toBeNull()
+    expect(sanitizeRationale('Réussi à 75 %.', saidText)).toBeNull()
     const f = buildVoiceFeedback(amara, { amara_reformulation: ok('Reformulation réussie, 9/10.') }, said)
     expect(f.criteria[0].result).toBe('unknown')
     expect(f.objectiveMet).toBe(false)
   })
 
   it('a rationale quoting words the learner never said is dropped', () => {
-    expect(sanitizeRationale('Le conseiller a dit « je vous rembourse tout de suite ».', said)).toBeNull()
+    expect(sanitizeRationale('Le conseiller a dit « je vous rembourse tout de suite ».', saidText)).toBeNull()
     const f = buildVoiceFeedback(amara, { amara_reformulation: ok('Il a dit « je vous rembourse tout de suite ».') }, said)
     expect(f.criteria[0].result).toBe('unknown')
   })
 
   it('a rationale quoting the learner faithfully is kept, accents and case aside', () => {
-    expect(sanitizeRationale('Il a dit « SI JE COMPRENDS BIEN, vous avez reçu un SMS ».', said)).not.toBeNull()
+    expect(sanitizeRationale('Il a dit « SI JE COMPRENDS BIEN, vous avez reçu un SMS ».', saidText)).not.toBeNull()
   })
 
   it('the objective needs every objective criterion', () => {
@@ -202,7 +203,7 @@ describe('qualitative feedback: success, failure, unknown — never a score, nev
       awa_accueil_sans_justification: ok('Accueil sans justification.'),
       awa_empathie_sincere: ok('Déception reconnue.'),
       awa_engagement_precis: { result: 'failure', rationale: 'Aucun délai donné.' },
-    }, ['Je suis désolé.'])
+    }, [{ speaker: 'learner', text: 'Je suis désolé, je vous rappelle demain avant midi.' }])
     expect(f.objectiveMet).toBe(false)
   })
 })
@@ -218,14 +219,32 @@ describe('migration 066: consent and session mode, never applied by this change'
     expect(sql).not.toMatch(/grant\s+(all|insert|update|delete)[^;]*to\s+(anon|authenticated)/i)
   })
 
-  it('one live session per learner, voice sessions counted, conversations kept for analysis and erasure', () => {
+  it('one live VOICE session per learner; self-assessment is never constrained (XP-F2-03)', () => {
     expect(sql).toContain("check (mode in ('voice', 'self'))")
-    expect(sql).toContain('ai_sessions_one_live_per_user')
+    expect(sql).toMatch(/create unique index if not exists ai_sessions_one_live_voice_per_user\s+on public\.ai_sessions \(user_id\)\s+where status = 'active' and user_id is not null and mode = 'voice';/)
+    expect(sql).not.toContain('ai_sessions_one_live_per_user ')
     expect(sql).toContain('provider_conversation_id')
   })
 
-  it('touches no scenario, turn or feedback row', () => {
-    expect(sql).not.toMatch(/update public\.ai_scenarios|delete from|update public\.ai_turns|update public\.ai_feedback/i)
+  it('retention and erasure columns, nullable, never back-filled', () => {
+    expect(sql).toContain('add column if not exists content_purged_at timestamptz')
+    expect(sql).toContain('add column if not exists erasure_requested_at timestamptz')
+  })
+
+  it('changes no existing row of any table: no UPDATE, no DELETE, no INSERT', () => {
+    const body = sql.split('-- ROLLBACK')[0].replace(/^\s*--.*$/gm, '')
+    expect(body).not.toMatch(/\bupdate\s+public\./i)
+    expect(body).not.toMatch(/\bdelete\s+from\b/i)
+    expect(body).not.toMatch(/\binsert\s+into\b/i)
+  })
+
+  it('removes the browser roles\' write rights on the learner-owned AI tables, keeps their reads, and asserts it', () => {
+    const tables = 'public.ai_sessions, public.ai_turns, public.ai_feedback, public.ai_scores, public.ai_recommendations'
+    expect(sql).toContain(`revoke all on ${tables}\n  from anon;`)
+    expect(sql).toContain(`revoke insert, update, delete, truncate, references, trigger\n  on ${tables}\n  from authenticated;`)
+    expect(sql).toContain("has_table_privilege('authenticated', 'public.ai_sessions', 'TRUNCATE')")
+    expect(sql).toContain("not has_table_privilege('authenticated', 'public.ai_sessions', 'SELECT')")
+    expect(sql).not.toMatch(/revoke[^;]*ai_scenarios/i)
   })
 })
 

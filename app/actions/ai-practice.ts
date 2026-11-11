@@ -24,7 +24,7 @@ import { withinInputBounds } from '@/lib/validation/input-bounds'
 import { createLogger } from '@/lib/logger'
 import { AI_COACH_ENABLED, VOICE_PRACTICE_OPEN, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
 import { personaBySlug, publicPersona, type PublicVoicePersona } from '@/lib/voice/personas'
-import { checkVoiceStart, closeStaleSessions, countLiveSessions, START_REFUSAL_FR } from '@/lib/voice/session-policy'
+import { checkVoiceStart, START_REFUSAL_FR } from '@/lib/voice/session-policy'
 import { requestSignedUrl, fetchConversationAnalysis, ConversationId } from '@/lib/voice/elevenlabs'
 import { buildVoiceFeedback, type VoiceFeedback } from '@/lib/voice/feedback'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
@@ -241,8 +241,12 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
       slug:           data.slug,
       title:          data.title,
       personaName:    data.persona_name,
-      situation:      data.situation,
-      objectives:     Array.isArray(data.objectives) ? (data.objectives as string[]) : [],
+      // XP-F2-03: the reviewed persona's brief wins over the older database text
+      // (Ibrahima's row predates the approved document); the database is untouched.
+      situation:      persona ? persona.customer.situationFr : data.situation,
+      objectives:     persona
+        ? persona.observationCriteria.map(c => c.labelFr)
+        : (Array.isArray(data.objectives) ? (data.objectives as string[]) : []),
       selfAssessment: Array.isArray(data.self_assessment)
         ? (data.self_assessment as SelfAssessmentQuestion[])
         : [],
@@ -298,11 +302,8 @@ export async function createAiSession(
     const access = courseId ? await resolveCourseAccessById(courseId) : { allowed: false, reason: 'course_not_found' as const }
     if (!access.allowed) return { error: denialMessage(access.reason ?? 'not_entitled').body }
 
-    // One live session per learner: close the ones a closed tab left open, then check.
-    if (!(await closeStaleSessions(admin, user.id, new Date()))) return { error: START_REFUSAL_FR.unavailable }
-    const live = await countLiveSessions(admin, user.id)
-    if (live === null) return { error: START_REFUSAL_FR.unavailable }
-    if (live > 0) return { error: START_REFUSAL_FR.session_in_progress }
+    // XP-F2-03: the self-assessment fallback is not a voice session: no live-session
+    // limit and no stale-session close apply to it (migration 066 is voice-only).
 
     const { data: session, error: insErr } = await admin
       .from('ai_sessions')
@@ -856,6 +857,7 @@ export async function getSessionCoaching(
 // ── XP-F2-01: qualitative feedback from the agent's post-call analysis ────────
 
 const VoiceFeedbackSchema = z.object({ sessionId: Uuid })
+const VOICE_CONTENT_PURGED_FR = 'Le détail de cet entraînement n’est plus conservé.'
 
 /**
  * The learner's feedback for one finished voice session: per observation
@@ -882,12 +884,15 @@ export async function getVoiceFeedback(
     const admin = createAdminClient()
     const { data: session } = await admin
       .from('ai_sessions')
-      .select('id, user_id, status, mode, scenario_id, provider_conversation_id')
+      .select('id, user_id, status, mode, scenario_id, provider_conversation_id, content_purged_at')
       .eq('id', sessionId)
       .maybeSingle()
     // Ownership: the learner who held the session, and no one else.
     if (!session || session.user_id !== user.id) return { error: 'Session introuvable.' }
     if (session.status === 'active') return { pending: true }
+    // XP-F2-03: once the content is deleted (retention or erasure), no feedback is
+    // rebuilt from an empty transcript and the provider is not asked again.
+    if (session.content_purged_at) return { error: VOICE_CONTENT_PURGED_FR }
     if (session.mode !== 'voice' || !session.provider_conversation_id) {
       return { error: 'Aucun retour n’est disponible pour cette session.' }
     }
@@ -912,13 +917,13 @@ export async function getVoiceFeedback(
 
     const { data: turns } = await admin
       .from('ai_turns')
-      .select('transcript')
+      .select('speaker, transcript')
       .eq('session_id', sessionId)
-      .eq('speaker', 'learner')
       .order('turn_index', { ascending: true })
-    const learnerTurns = ((turns ?? []) as { transcript: string }[]).map(t => t.transcript)
+    const transcript = ((turns ?? []) as { speaker: 'learner' | 'agent'; transcript: string }[])
+      .map(t => ({ speaker: t.speaker, text: t.transcript }))
 
-    return { feedback: buildVoiceFeedback(persona, analysis.evaluations, learnerTurns) }
+    return { feedback: buildVoiceFeedback(persona, analysis.evaluations, transcript) }
   } catch (e) {
     log.error({ error: (e as Error).message }, 'getVoiceFeedback failed')
     return { error: 'Service indisponible.' }

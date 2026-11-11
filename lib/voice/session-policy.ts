@@ -53,22 +53,29 @@ export async function hasVoiceConsent(db: Db, userId: string): Promise<boolean |
   return !!data && !data.withdrawn_at
 }
 
-/** Closes this learner's sessions still « active » after the time-out. Returns false if the write failed. */
+/**
+ * Closes this learner's VOICE sessions still « active » after the time-out.
+ * Self-assessment sessions are never touched (XP-F2-03): a long self-assessment
+ * must still complete its lesson. Returns false if the write failed.
+ */
 export async function closeStaleSessions(db: Db, userId: string, now: Date): Promise<boolean> {
   const { error } = await db
     .from('ai_sessions')
     .update({ status: 'abandoned', completed_at: now.toISOString() })
     .eq('user_id', userId)
+    .eq('mode', 'voice')
     .eq('status', 'active')
     .lt('started_at', new Date(now.getTime() - ACTIVE_SESSION_TIMEOUT_MS).toISOString())
   return !error
 }
 
+/** Live VOICE sessions of this learner (migration 066's index enforces at most one). */
 export async function countLiveSessions(db: Db, userId: string): Promise<number | null> {
   const { count, error } = await db
     .from('ai_sessions')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
+    .eq('mode', 'voice')
     .eq('status', 'active')
   return error ? null : (count ?? 0)
 }

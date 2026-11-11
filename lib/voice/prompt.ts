@@ -14,6 +14,7 @@ import type { ObservationCriterion, VoicePersona } from '@/lib/voice/personas'
  */
 
 const bullets = (items: readonly string[]) => items.map(i => `- ${i}`).join('\n')
+const lowerFirst = (s: string) => s.charAt(0).toLowerCase() + s.slice(1)
 
 export function buildSystemPrompt(p: VoicePersona): string {
   const c = p.customer
@@ -21,6 +22,7 @@ export function buildSystemPrompt(p: VoicePersona): string {
   const sections = [
     `# Ton rôle\nTu es ${c.name}. ${c.identityFr}\n${c.situationFr}` +
       (c.learnerRoleFr ? `\nLa personne qui te répond est ${c.learnerRoleFr}` : '') +
+      (c.continuityFr ? `\n${c.continuityFr}` : '') +
       `\nTon état : ${p.emotion.stateFr}\n${p.emotion.reactionsFr}`,
     `# Ta première phrase (déjà prononcée)\n« ${p.openingLineFr} »`,
     `# Règles absolues\n${COMMON_AGENT_RULES.map((r, i) => `${i + 1}. ${r.textFr}`).join('\n')}`,
@@ -29,8 +31,13 @@ export function buildSystemPrompt(p: VoicePersona): string {
     `# Ce qui compte comme réussi (exemples)\n${bullets(o.examplesFr)}`,
     `# Ce qui ne compte PAS\n${bullets(o.nonExamplesFr)}` +
       (o.bannedPhrasesFr ? `\nPhrases à éviter par le conseiller : ${o.bannedPhrasesFr.map(b => `« ${b} »`).join(', ')}.` : ''),
+    ...(o.positiveRephrasingsFr ? [`# Formulations positives attendues\n${bullets(o.positiveRephrasingsFr)}`] : []),
+    `# Tes réactions selon le comportement du conseiller\n${p.emotion.registerResponsesFr.map(r => `- Si ${lowerFirst(r.whenFr)} → ${r.reactionFr}`).join('\n')}`,
+    ...(o.insistenceLinesFr ? [`# Comment tu insistes (une ou deux fois au plus)\n${bullets(o.insistenceLinesFr)}`] : []),
+    ...(o.alternativeExamplesFr ? [`# Alternatives que tu peux accepter\n${bullets(o.alternativeExamplesFr)}`] : []),
     `# Relances\nSi l’objectif n’est pas atteint, relance au plus ${MAX_REPROMPTS} fois sur ce point précis, en restant dans ton rôle, puis conclus.`,
-    `# Fin de l’échange\nSi l’objectif est atteint : ${p.endings.successFr}\nSinon : ${p.endings.failureFr}`,
+    `# Fin de l’échange\nSi l’objectif est atteint : ${p.endings.successFr} Par exemple : ${p.closingLinesFr.successFr.join(' ')}\n` +
+      `Sinon : ${p.endings.failureFr} Par exemple : ${p.closingLinesFr.failureFr.join(' ')}`,
     `# Limites\n${bullets(p.boundariesFr)}`,
   ]
   return sections.join('\n\n')
