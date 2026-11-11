@@ -13,6 +13,9 @@ import SelfAssessmentForm from './SelfAssessmentForm'
 import SessionSummary from './SessionSummary'
 import CoachBriefing from './CoachBriefing'
 import CoachDebrief from './CoachDebrief'
+import VoiceConsentGate from './VoiceConsentGate'
+import VoiceFeedbackPanel from './VoiceFeedbackPanel'
+import { getVoiceConsentStatus } from '@/app/actions/voice-consent'
 import { AI_COACH_ENABLED } from '@/lib/ai/flags'
 
 const ANON_ID_KEY = 'ai_practice_anon_id'
@@ -31,7 +34,7 @@ function getAnonId(): string | undefined {
   }
 }
 
-type Phase = 'intro' | 'voice' | 'coached' | 'assessment' | 'summary'
+type Phase = 'intro' | 'consent' | 'voice' | 'feedback' | 'coached' | 'assessment' | 'summary'
 
 interface Props {
   scenario:  VoiceScenario
@@ -46,6 +49,7 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
   const [startedAt, setStartedAt] = useState(0)
   const [isPending, startTransition] = useTransition()
   const [anonId,    setAnonId]    = useState<string | undefined>(undefined)
+  const [consent,   setConsent]   = useState<{ version: string; textFr: string } | null>(null)
 
   useEffect(() => {
     if (pilotMode) setAnonId(getAnonId())
@@ -72,11 +76,34 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
 
   // Live voice completed → coach debrief when the coach flag is on (Phase 2A),
   // otherwise straight to the deterministic self-assessment (Phase 1 behavior).
+  /** XP-F2-01: the voice processing needs the learner's consent before the first conversation. */
+  function handleStartVoice() {
+    setError('')
+    startTransition(async () => {
+      const status = await getVoiceConsentStatus()
+      if (!status) {
+        setError('L’entraînement vocal n’est pas disponible.')
+        return
+      }
+      setConsent({ version: status.version, textFr: status.textFr })
+      setPhase(status.accepted ? 'voice' : 'consent')
+    })
+  }
+
+  function handleConsentRequired() {
+    startTransition(async () => {
+      const status = await getVoiceConsentStatus()
+      if (status) setConsent({ version: status.version, textFr: status.textFr })
+      setPhase('consent')
+    })
+  }
+
   function handleVoiceComplete(voiceSessionId: string) {
     setSessionId(voiceSessionId)
     setStartedAt(Date.now())
     setError('')
-    setPhase(AI_COACH_ENABLED ? 'coached' : 'assessment')
+    // XP-F2-01: the persona's qualitative feedback comes first.
+    setPhase('feedback')
   }
 
   function handleSubmit(submitted: Record<string, number | string>) {
@@ -146,7 +173,7 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
             pending={isPending}
             disabled={pilotMode && !anonId}
             startLabel={scenario.voiceAvailable ? 'Commencer la conversation' : "Commencer l'auto-évaluation"}
-            onStart={scenario.voiceAvailable ? () => setPhase('voice') : handleStartSelfAssessment}
+            onStart={scenario.voiceAvailable ? handleStartVoice : handleStartSelfAssessment}
           />
         </div>
       )}
@@ -181,7 +208,7 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
               <div>
                 <button
                   type="button"
-                  onClick={() => setPhase('voice')}
+                  onClick={handleStartVoice}
                   disabled={pilotMode && !anonId}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                 >
@@ -223,11 +250,29 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
           anonId={anonId}
           onComplete={handleVoiceComplete}
           onCancel={() => setPhase('intro')}
+          onConsentRequired={handleConsentRequired}
         />
       )}
 
       {/* Phase 2A: deterministic coach debrief (summary + replay), then the
           Phase 1 self-assessment continues below. */}
+      {phase === 'consent' && consent && (
+        <VoiceConsentGate
+          version={consent.version}
+          textFr={consent.textFr}
+          onAccepted={() => setPhase('voice')}
+          onCancel={() => setPhase('intro')}
+        />
+      )}
+
+      {phase === 'feedback' && sessionId && (
+        <VoiceFeedbackPanel
+          sessionId={sessionId}
+          onContinue={() => setPhase(AI_COACH_ENABLED ? 'coached' : 'assessment')}
+          onRetry={handleRetry}
+        />
+      )}
+
       {phase === 'coached' && sessionId && (
         <CoachDebrief
           sessionId={sessionId}
