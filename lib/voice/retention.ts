@@ -1,47 +1,66 @@
 import 'server-only'
 import type { createAdminClient } from '@/lib/supabase/admin'
 import { logAuditEvent } from '@/lib/audit/log'
+import { createLogger } from '@/lib/logger'
 import { deleteConversation as deleteProviderConversation } from '@/lib/voice/elevenlabs'
+import { ERASURE_QUEUE } from '@/lib/voice/erasure'
 
 /**
- * XP-F2-03 — transcript retention, as a tested mechanism. NOT SCHEDULED.
+ * XP-F2-03/04 — transcript retention and provider erasure, as a tested
+ * mechanism. NOT SCHEDULED: the only caller is the route
+ * `app/api/voice/retention`, which no cron lists.
  *
- * The 30-day period is a PROPOSAL (docs/voice/XP-F2-03-RETENTION.md), not an
- * approved policy: nothing in the platform calls `purgeExpiredVoiceContent`,
- * there is no cron and no production setting. The caller must always pass the
- * period.
+ * The retention period is CONFIGURATION, not a constant: the environment
+ * variable `VOICE_TRANSCRIPT_RETENTION_DAYS`, unset by default. 30 days is the
+ * proposal under review (docs/voice/XP-F2-03-RETENTION.md); it is not an
+ * approved policy and is written nowhere as a default.
  *
- * What a purge removes, for every session started before the period:
- *   1. here: the transcript turns, the self-assessment answers and coaching
- *      reports (ai_feedback), the engine scores and recommendations, and the
- *      engine result kept on the session (`engine_signals`, which quotes the
- *      learner) — everything that can carry the learner's words — and it stamps
- *      `content_purged_at`;
- *   2. at the provider: the conversation (audio, transcript, analysis), through
- *      ElevenLabs' delete endpoint, once the local content is gone. On success
- *      the conversation id is forgotten; on failure it is kept and retried on
- *      the next run. A row kept only because a learner's erasure could not
- *      reach the provider (`erasure_requested_at`) is deleted once it does.
- * What it keeps: the session row itself (scenario, learner, dates, status,
- * mode), because attempts per lesson and lesson completion depend on it. It
- * contains no words of the learner.
- *
- * Auditable: one audit record per run, with counts only.
+ * `runVoiceRetention` does three things, each safe to repeat:
+ *   1. PURGE (only when a period is configured). For every session started
+ *      before the period: delete the transcript turns, the self-assessment
+ *      answers and coaching reports, the engine scores and recommendations,
+ *      clear the engine result kept on the session (it quotes the learner),
+ *      and stamp `content_purged_at`. The session row stays, without any words:
+ *      attempts per lesson and lesson completion depend on it.
+ *   2. PROVIDER COPIES of purged sessions: delete each conversation at the
+ *      provider; on success forget its id, on failure keep it for the next run.
+ *   3. ERASURE QUEUE (always): conversations a learner's erasure or an account
+ *      deletion could not delete at the time (lib/voice/erasure.ts). Each attempt
+ *      is counted; success stamps `completed_at`.
+ * Then it measures what is OVERDUE — a provider copy still pending after
+ * `overdueAfterDays` — writes one audit record with counts only, and raises an
+ * error-level log (`VOICE_ERASURE_OVERDUE`, `VOICE_RETENTION_ERRORS`) when
+ * something is overdue or failed. No transcript, quote or learner id is logged.
  */
 
 type Db = ReturnType<typeof createAdminClient>
 
-/** The period under review. Not used by default anywhere. */
+const log = createLogger('voice/retention')
+
+/** The period under review. Used by no default anywhere. */
 export const PROPOSED_TRANSCRIPT_RETENTION_DAYS = 30
+export const RETENTION_ENV = 'VOICE_TRANSCRIPT_RETENTION_DAYS'
+export const DEFAULT_OVERDUE_AFTER_DAYS = 3
 
 /** Every table whose rows can carry the learner's words, keyed by session. */
 export const CONTENT_TABLES = ['ai_turns', 'ai_feedback', 'ai_scores', 'ai_recommendations'] as const
 
-export interface PurgeResult {
+/** The configured period: a whole number of days from 1 to 3650, or null (no purge). */
+export function configuredRetentionDays(raw: string | undefined = process.env[RETENTION_ENV]): number | null {
+  const v = (raw ?? '').trim()
+  if (!/^\d{1,4}$/.test(v)) return null
+  const n = Number(v)
+  return n >= 1 && n <= 3650 ? n : null
+}
+
+export interface RetentionResult {
+  readonly retentionDays: number | null
   readonly sessionsPurged: number
   readonly providerDeleted: number
   readonly providerPending: number
-  readonly erasuresCompleted: number
+  readonly queueCompleted: number
+  readonly queuePending: number
+  readonly overdue: number
   readonly errors: number
 }
 
@@ -55,83 +74,117 @@ export async function purgeSessionContent(db: Db, sessionId: string): Promise<bo
   return ok
 }
 
-export async function purgeExpiredVoiceContent(
+export async function runVoiceRetention(
   db: Db,
   opts: {
-    retentionDays: number
+    /** null: no purge this run; the provider retries still happen. */
+    retentionDays: number | null
     now?: Date
     apiKey?: string
     batchSize?: number
+    overdueAfterDays?: number
     deleteConversation?: (conversationId: string, apiKey: string) => Promise<boolean>
   },
-): Promise<PurgeResult> {
-  if (!Number.isInteger(opts.retentionDays) || opts.retentionDays < 1) {
-    throw new Error('purgeExpiredVoiceContent: retentionDays must be a whole number of days, at least 1')
+): Promise<RetentionResult> {
+  const days = opts.retentionDays
+  if (days !== null && (!Number.isInteger(days) || days < 1)) {
+    throw new Error('runVoiceRetention: retentionDays must be null or a whole number of days, at least 1')
   }
   const now = opts.now ?? new Date()
-  const cutoff = new Date(now.getTime() - opts.retentionDays * 86_400_000).toISOString()
   const limit = opts.batchSize ?? 200
   const remove = opts.deleteConversation ?? deleteProviderConversation
+  const overdueBefore = new Date(now.getTime() - (opts.overdueAfterDays ?? DEFAULT_OVERDUE_AFTER_DAYS) * 86_400_000).toISOString()
   let sessionsPurged = 0
   let providerDeleted = 0
   let providerPending = 0
-  let erasuresCompleted = 0
+  let queueCompleted = 0
+  let queuePending = 0
+  let overdue = 0
   let errors = 0
 
   // 1. Local content of sessions started before the period. A session lasts
   //    minutes, so a start that old means the session is over, whatever status a
   //    closed tab left it in.
-  const { data: due, error: readError } = await db
-    .from('ai_sessions')
-    .select('id')
-    .is('content_purged_at', null)
-    .lt('started_at', cutoff)
-    .limit(limit)
-  if (readError) errors++
-  for (const s of (due ?? []) as { id: string }[]) {
-    let ok = await purgeSessionContent(db, s.id)
-    if (ok) {
-      const { error } = await db
-        .from('ai_sessions')
-        .update({ content_purged_at: now.toISOString(), engine_signals: null })
-        .eq('id', s.id)
-      if (error) ok = false
+  if (days !== null) {
+    const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString()
+    const { data: due, error: readError } = await db
+      .from('ai_sessions')
+      .select('id')
+      .is('content_purged_at', null)
+      .lt('started_at', cutoff)
+      .limit(limit)
+    if (readError) errors++
+    for (const s of (due ?? []) as { id: string }[]) {
+      let ok = await purgeSessionContent(db, s.id)
+      if (ok) {
+        const { error } = await db
+          .from('ai_sessions')
+          .update({ content_purged_at: now.toISOString(), engine_signals: null })
+          .eq('id', s.id)
+        if (error) ok = false
+      }
+      if (ok) sessionsPurged++
+      else errors++
     }
-    if (ok) sessionsPurged++
-    else errors++
   }
 
-  // 2. Provider conversations of purged sessions (retention or erasure), retried until done.
+  // 2. Provider conversations of purged sessions, retried until done.
   const { data: remote, error: remoteError } = await db
     .from('ai_sessions')
-    .select('id, provider_conversation_id, erasure_requested_at')
+    .select('id, provider_conversation_id, content_purged_at')
     .not('content_purged_at', 'is', null)
     .not('provider_conversation_id', 'is', null)
     .limit(limit)
   if (remoteError) errors++
-  for (const s of (remote ?? []) as { id: string; provider_conversation_id: string; erasure_requested_at: string | null }[]) {
+  for (const s of (remote ?? []) as { id: string; provider_conversation_id: string; content_purged_at: string }[]) {
     const done = opts.apiKey ? await remove(s.provider_conversation_id, opts.apiKey) : false
     if (!done) {
       providerPending++
+      if (s.content_purged_at < overdueBefore) overdue++
       continue
     }
-    const { error } = s.erasure_requested_at
-      ? await db.from('ai_sessions').delete().eq('id', s.id)
-      : await db.from('ai_sessions').update({ provider_conversation_id: null }).eq('id', s.id)
+    const { error } = await db.from('ai_sessions').update({ provider_conversation_id: null }).eq('id', s.id)
     if (error) errors++
+    else providerDeleted++
+  }
+
+  // 3. The erasure queue: conversations whose session, or whose learner's account, is already gone.
+  const { data: queued, error: queueError } = await db
+    .from(ERASURE_QUEUE)
+    .select('provider_conversation_id, requested_at, attempts')
+    .is('completed_at', null)
+    .limit(limit)
+  if (queueError) errors++
+  for (const q of (queued ?? []) as { provider_conversation_id: string; requested_at: string; attempts: number | null }[]) {
+    const done = opts.apiKey ? await remove(q.provider_conversation_id, opts.apiKey) : false
+    const { error } = await db
+      .from(ERASURE_QUEUE)
+      .update({
+        attempts: (q.attempts ?? 0) + 1,
+        last_attempt_at: now.toISOString(),
+        ...(done ? { completed_at: now.toISOString() } : {}),
+      })
+      .eq('provider_conversation_id', q.provider_conversation_id)
+    if (error) errors++
+    if (done && !error) queueCompleted++
     else {
-      providerDeleted++
-      if (s.erasure_requested_at) erasuresCompleted++
+      queuePending++
+      if (q.requested_at < overdueBefore) overdue++
     }
   }
+
+  const counts = { retentionDays: days, sessionsPurged, providerDeleted, providerPending, queueCompleted, queuePending, overdue, errors }
+  if (overdue > 0) log.error({ code: 'VOICE_ERASURE_OVERDUE', ...counts }, 'provider erasure overdue')
+  if (errors > 0) log.error({ code: 'VOICE_RETENTION_ERRORS', ...counts }, 'voice retention run had errors')
 
   await logAuditEvent({
     eventType: 'voice.retention_purged',
     actorType: 'system',
     method: 'voice_retention',
-    outcome: errors === 0 ? 'success' : 'failure',
-    metadata: { retentionDays: opts.retentionDays, sessionsPurged, providerDeleted, providerPending, erasuresCompleted, errors },
+    outcome: errors === 0 && overdue === 0 ? 'success' : 'failure',
+    reason: overdue > 0 ? 'provider_erasure_overdue' : errors > 0 ? 'errors' : undefined,
+    metadata: counts,
   })
 
-  return { sessionsPurged, providerDeleted, providerPending, erasuresCompleted, errors }
+  return counts
 }

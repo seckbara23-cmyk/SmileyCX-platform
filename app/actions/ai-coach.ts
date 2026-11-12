@@ -21,7 +21,8 @@ import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { createLogger } from '@/lib/logger'
-import { AI_COACH_ENABLED, AI_COACH_CLAUDE_ENABLED, VOICE_PRACTICE_OPEN } from '@/lib/ai/flags'
+import { AI_COACH_ENABLED, AI_COACH_CLAUDE_ENABLED } from '@/lib/ai/flags'
+import { voiceGateForCaller } from '@/lib/voice/access'
 import {
   REPORT_JSON_SCHEMA,
   validateReport,
@@ -92,7 +93,7 @@ export async function evaluateSessionWithClaude(
   input: { sessionId: string; anonId?: string }
 ): Promise<EvaluateResult> {
   // XP-F2-01: the Claude evaluation is voice practice too: closed while voice practice is closed.
-  if (!VOICE_PRACTICE_OPEN || !AI_COACH_ENABLED || !AI_COACH_CLAUDE_ENABLED) return { reason: 'disabled' }
+  if (!AI_COACH_ENABLED || !AI_COACH_CLAUDE_ENABLED || (await voiceGateForCaller()) === 'closed') return { reason: 'disabled' }
   const parsed = InputSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { sessionId, anonId } = parsed.data

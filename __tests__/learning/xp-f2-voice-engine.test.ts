@@ -217,6 +217,8 @@ describe('migration 066: consent and session mode, never applied by this change'
     expect(sql).toContain('grant select on public.voice_processing_consents to authenticated')
     expect(sql).toMatch(/using \(user_id = auth\.uid\(\)\)/)
     expect(sql).not.toMatch(/grant\s+(all|insert|update|delete)[^;]*to\s+(anon|authenticated)/i)
+    // One policy in the whole migration, and it compares the row's learner with the caller.
+    expect(sql.match(/create policy/gi)).toHaveLength(1)
   })
 
   it('one live VOICE session per learner; self-assessment is never constrained (XP-F2-03)', () => {
@@ -228,7 +230,18 @@ describe('migration 066: consent and session mode, never applied by this change'
 
   it('retention and erasure columns, nullable, never back-filled', () => {
     expect(sql).toContain('add column if not exists content_purged_at timestamptz')
-    expect(sql).toContain('add column if not exists erasure_requested_at timestamptz')
+    expect(sql).not.toContain('erasure_requested_at')
+  })
+
+  it('the provider erasure queue names no learner and is server-only (XP-F2-04)', () => {
+    const table = sql.slice(sql.indexOf('create table public.voice_provider_erasures'), sql.indexOf('comment on table public.voice_provider_erasures'))
+    expect(table).toContain('provider_conversation_id text        primary key')
+    expect(table).not.toMatch(/user_id|anon_id|email|session_id|references/)
+    expect(sql).toContain('alter table public.voice_provider_erasures enable row level security')
+    expect(sql).toContain('revoke all on public.voice_provider_erasures from public, anon, authenticated, service_role')
+    expect(sql).toContain('grant select, insert, update on public.voice_provider_erasures to service_role')
+    expect(sql).not.toMatch(/create policy[^;]*voice_provider_erasures/i)
+    expect(sql).toContain("raise exception 'XP-F2-04 066: the provider erasure queue is not server-only'")
   })
 
   it('changes no existing row of any table: no UPDATE, no DELETE, no INSERT', () => {

@@ -23,6 +23,18 @@ export const VOICE_LEGAL_CONDITIONS_BUILT = false
 /** The only switch the lesson page and the voice server actions consult. */
 export const VOICE_PRACTICE_OPEN = AI_VOICE_ENABLED && VOICE_LEGAL_CONDITIONS_BUILT
 
+/**
+ * XP-F2-04 — restricted UAT. Set at build time on a deployment made for a UAT,
+ * it only makes the lesson page ASK the server whether a voice exercise is
+ * available. The server answers per account (lib/voice/access.ts): for anyone
+ * outside the UAT list the answer is « none », and nothing is shown. It opens
+ * nothing by itself.
+ */
+export const VOICE_UAT_CLIENT_PROBE = process.env.NEXT_PUBLIC_VOICE_UAT === 'true'
+
+/** Whether the lesson page asks the server for a voice exercise at all. */
+export const VOICE_LESSON_PROBE = VOICE_PRACTICE_OPEN || VOICE_UAT_CLIENT_PROBE
+
 export const VOICE_CLOSED_MESSAGE = 'L’entraînement vocal n’est pas encore ouvert.'
 
 /**

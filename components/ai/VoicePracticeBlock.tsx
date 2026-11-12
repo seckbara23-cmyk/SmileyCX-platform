@@ -15,6 +15,7 @@ import CoachBriefing from './CoachBriefing'
 import CoachDebrief from './CoachDebrief'
 import VoiceConsentGate from './VoiceConsentGate'
 import VoiceFeedbackPanel from './VoiceFeedbackPanel'
+import VoiceDataControls from './VoiceDataControls'
 import { getVoiceConsentStatus } from '@/app/actions/voice-consent'
 import { AI_COACH_ENABLED } from '@/lib/ai/flags'
 
@@ -298,6 +299,9 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
           onRetry={handleRetry}
         />
       )}
+
+      {/* XP-F2-04: withdrawal and deletion, reachable wherever the exercise is. */}
+      {phase === 'intro' && !pilotMode && <VoiceDataControls />}
     </div>
   )
 }

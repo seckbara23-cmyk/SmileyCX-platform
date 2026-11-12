@@ -20,10 +20,10 @@
 --      nothing, and an abandoned one must never block a learner.
 --   5. ai_sessions.content_purged_at: when the transcript-bearing content of a
 --      session was deleted under the retention design (XP-F2-03, a proposal).
---   6. ai_sessions.erasure_requested_at: set when a learner asked for their voice
---      data to be deleted but the provider's copy could not be deleted yet. The
---      session's content is gone; the row is kept only so the deletion at the
---      provider is retried, then the row itself is deleted.
+--   6. public.voice_provider_erasures (XP-F2-04): the queue of conversations to
+--      delete at the voice provider when the session, or the learner's account,
+--      that pointed to them is already gone. It holds the provider's conversation
+--      id and NOTHING about the learner. Server only: no browser role can read it.
 --
 -- WHAT IT DOES NOT DO
 --   It changes NO existing row of any table: every existing session receives
@@ -69,8 +69,7 @@ alter table public.ai_sessions
 -- count as attempts. New voice sessions are written with mode 'voice'.
 
 alter table public.ai_sessions
-  add column if not exists content_purged_at timestamptz,
-  add column if not exists erasure_requested_at timestamptz;
+  add column if not exists content_purged_at timestamptz;
 
 create unique index if not exists ai_sessions_provider_conversation_unique
   on public.ai_sessions (provider_conversation_id)
@@ -99,7 +98,30 @@ revoke insert, update, delete, truncate, references, trigger
   on public.ai_sessions, public.ai_turns, public.ai_feedback, public.ai_scores, public.ai_recommendations
   from authenticated;
 
--- ══ 6. Assertions ═══════════════════════════════════════════════════════════
+-- ══ 6. Provider erasure queue (XP-F2-04) ════════════════════════════════════
+create table public.voice_provider_erasures (
+  provider_conversation_id text        primary key check (provider_conversation_id ~ '^[A-Za-z0-9_-]{8,128}$'),
+  reason                   text        not null check (reason in ('learner_request', 'account_deletion')),
+  requested_at             timestamptz not null default now(),
+  attempts                 integer     not null default 0 check (attempts >= 0),
+  last_attempt_at          timestamptz,
+  completed_at             timestamptz
+);
+
+comment on table public.voice_provider_erasures is
+  'XP-F2-04. Conversations still to delete at the voice provider. No learner identifier. Server only.';
+
+create index voice_provider_erasures_pending_idx
+  on public.voice_provider_erasures (requested_at)
+  where completed_at is null;
+
+-- Row security with no policy: the browser roles can do nothing, even if a
+-- privilege were granted by mistake later. Only the server (service role) works here.
+alter table public.voice_provider_erasures enable row level security;
+revoke all on public.voice_provider_erasures from public, anon, authenticated, service_role;
+grant select, insert, update on public.voice_provider_erasures to service_role;
+
+-- ══ 7. Assertions ═══════════════════════════════════════════════════════════
 do $check$
 begin
   if not (select relrowsecurity from pg_class where oid = 'public.voice_processing_consents'::regclass) then
@@ -110,6 +132,13 @@ begin
      or has_table_privilege('authenticated', 'public.voice_processing_consents', 'UPDATE')
      or has_table_privilege('service_role', 'public.voice_processing_consents', 'DELETE') then
     raise exception 'XP-F2-01 066: unexpected privilege on voice_processing_consents';
+  end if;
+  if not (select relrowsecurity from pg_class where oid = 'public.voice_provider_erasures'::regclass)
+     or has_table_privilege('anon', 'public.voice_provider_erasures', 'SELECT')
+     or has_table_privilege('authenticated', 'public.voice_provider_erasures', 'SELECT')
+     or has_table_privilege('service_role', 'public.voice_provider_erasures', 'DELETE')
+     or exists (select 1 from pg_policy where polrelid = 'public.voice_provider_erasures'::regclass) then
+    raise exception 'XP-F2-04 066: the provider erasure queue is not server-only';
   end if;
   if has_table_privilege('anon', 'public.ai_turns', 'SELECT')
      or has_table_privilege('authenticated', 'public.ai_sessions', 'TRUNCATE')
@@ -130,11 +159,13 @@ commit;
 -- drop index if exists public.ai_sessions_one_live_voice_per_user;
 -- drop index if exists public.ai_sessions_user_scenario_mode_started_idx;
 -- drop index if exists public.ai_sessions_provider_conversation_unique;
--- alter table public.ai_sessions drop column if exists erasure_requested_at;
 -- alter table public.ai_sessions drop column if exists content_purged_at;
 -- alter table public.ai_sessions drop column if exists provider_conversation_id;
 -- alter table public.ai_sessions drop column if exists mode;
 -- drop table if exists public.voice_processing_consents;
+-- Only when it is empty of pending rows: dropping the queue forgets the provider
+-- copies still to delete. Check `select count(*) ... where completed_at is null` first.
+-- drop table if exists public.voice_provider_erasures;
 -- The privilege revokes of section 5 are deliberately NOT reverted: they remove
 -- rights no code uses.
 -- commit;

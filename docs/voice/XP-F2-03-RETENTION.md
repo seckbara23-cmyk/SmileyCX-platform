@@ -1,5 +1,7 @@
 # XP-F2-03: transcript retention, a design to decide
 
+**XP-F2-04 update:** the mechanism described here is now `runVoiceRetention`, with a configurable period, a protected unscheduled route, an erasure queue and overdue alerts. See `XP-F2-04-UAT-AND-PRIVACY.md`, sections 2 and 3, which supersede sections 3 and 6 below where they differ.
+
 **Status: proposal. Not approved, not scheduled, not configured anywhere.** This change builds and tests the mechanism only. Nothing calls it. There is no cron, no production setting and no provider retention setting. The period below is a proposal for the owner to decide, with the privacy text that must announce it.
 
 ## 1. What is held, and where
@@ -33,7 +35,7 @@ After 30 days from the start of a session, everything that carries the learner's
 
 ## 3. The mechanism (built and tested, not scheduled)
 
-`lib/voice/retention.ts`, `purgeExpiredVoiceContent(db, { retentionDays })`. The caller must always pass the period; `PROPOSED_TRANSCRIPT_RETENTION_DAYS = 30` is used nowhere.
+`lib/voice/retention.ts`, `runVoiceRetention(db, { retentionDays })`. The period comes from configuration; `PROPOSED_TRANSCRIPT_RETENTION_DAYS = 30` is used nowhere.
 
 1. **Local content.** For every session started before the period, whatever its mode or status (a closed tab can leave one « active »): delete its `ai_turns`, `ai_feedback`, `ai_scores` and `ai_recommendations`, clear `engine_signals`, stamp `content_purged_at`.
 2. **Provider copy.** For every purged session that still has a provider conversation id: delete the conversation at ElevenLabs. On success the id is forgotten. On failure, or without an API key, it stays and is retried on the next run: nothing is ever forgotten before it is deleted.
@@ -70,8 +72,8 @@ The platform database has daily backups. The documented window on the Pro plan i
 | Flow | What it does |
 |---|---|
 | `withdrawVoiceConsent` | stops any new voice session. It deletes nothing: deletion is its own action. To decide: should withdrawal offer, or trigger, the deletion? |
-| `deleteMyVoiceData` | deletes each conversation at the provider, then the learner's sessions here (turns, feedback, scores, recommendations by cascade). **XP-F2-03 fix:** when the provider cannot delete now, the session's content is still deleted at once, and only a row without words is kept, marked `erasure_requested_at`, so the purge retries the provider deletion and then deletes the row. Before, the row was deleted with the only reference to the provider copy. |
-| Account deletion by an admin | deletes the sessions by cascade, but **not the provider conversations**. Open item before opening voice: run the voice erasure first. |
+| `deleteMyVoiceData` | deletes each conversation at the provider, then the learner's sessions here (turns, feedback, scores, recommendations by cascade). When the provider cannot delete now, the sessions are still deleted at once, and the conversation id alone goes to a queue that names no learner, retried until the provider confirms (XP-F2-04). |
+| Account deletion by an admin | runs the same erasure first (XP-F2-04): provider copies deleted or queued, and the account is not deleted if neither is possible. |
 | Attempts after an erasure | deleting the sessions also resets the five attempts per lesson. The action is limited to three per hour. To decide whether that is acceptable. |
 
 ## 7. If provider deletion cannot be guaranteed
@@ -87,6 +89,6 @@ Defence in depth, in this order:
 
 1. The owner decides the period and the alternative above.
 2. The privacy policy and the consent text announce it. Today the consent says the platform keeps the transcript and the analysis, without a period: a new consent version is needed. The legal pages are approved 1.0, so this needs its own authorization.
-3. Migration 066 is applied (it adds `content_purged_at` and `erasure_requested_at`).
+3. Migration 066 is applied (it adds `content_purged_at` and the erasure queue).
 4. The daily schedule and the alert are added in a reviewed change.
 5. ElevenLabs has answered the four questions, and the agents' `retention_days` is set at provisioning.

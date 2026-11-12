@@ -55,12 +55,17 @@ The server actions (`app/actions/ai-practice.ts`), the session component and the
 - **Self-assessment is not a voice session.** The one-live-session rule, the stale-session close and the attempt count apply to voice sessions only.
 - **Retention.** A tested, unscheduled purge and the design to decide: `docs/voice/XP-F2-03-RETENTION.md`. A learner's erasure no longer loses the provider reference when the provider cannot delete at once.
 
+## XP-F2-04: hardening and restricted UAT readiness
+
+Account deletion and learner erasure share one procedure with a retry queue; retention is configurable, alerting and unscheduled; a server-side list can open voice for named UAT accounts only. Details, and what a live UAT still needs: `docs/voice/XP-F2-04-UAT-AND-PRIVACY.md`. Proposed legal wording: `docs/voice/F2-04-TEXTES-JURIDIQUES-PROPOSES.md`.
+
 ## Migration 066
 
 **Not applied by this change.** It adds:
 - the consent table, with row security, own-row reads and server-only writes;
 - `ai_sessions.mode`, 'voice' or 'self'; every existing row becomes 'self';
-- `ai_sessions.provider_conversation_id`, `content_purged_at` and `erasure_requested_at`;
+- `ai_sessions.provider_conversation_id` and `content_purged_at`;
+- `voice_provider_erasures`, the server-only queue of provider conversations still to delete, with no learner identifier;
 - one live **voice** session per learner (XP-F2-03 revision: the first version covered every session, and would have failed on existing data);
 - the browser roles lose their write rights on the five learner-owned AI tables, and keep their reads.
 

@@ -6,10 +6,10 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { logAuditEvent } from '@/lib/audit/log'
 import { createLogger } from '@/lib/logger'
-import { VOICE_PRACTICE_OPEN, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
+import { VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
+import { voiceGateForCaller } from '@/lib/voice/access'
 import { hasVoiceConsent, VOICE_CONSENT_TEXT_FR, VOICE_CONSENT_VERSION } from '@/lib/voice/session-policy'
-import { deleteConversation } from '@/lib/voice/elevenlabs'
-import { purgeSessionContent } from '@/lib/voice/retention'
+import { eraseVoiceDataForUser } from '@/lib/voice/erasure'
 
 /**
  * XP-F2-01 — the learner's consent to the voice processing, and their rights.
@@ -39,7 +39,7 @@ async function signedInLearner() {
 }
 
 export async function getVoiceConsentStatus(): Promise<{ accepted: boolean; version: string; textFr: string } | null> {
-  if (!VOICE_PRACTICE_OPEN) return null
+  if ((await voiceGateForCaller()) === 'closed') return null
   const user = await signedInLearner()
   if (!user) return null
   const accepted = await hasVoiceConsent(createAdminClient(), user.id)
@@ -47,7 +47,7 @@ export async function getVoiceConsentStatus(): Promise<{ accepted: boolean; vers
 }
 
 export async function acceptVoiceConsent(input: { version: string; accepted: boolean }): Promise<{ ok?: true; error?: string }> {
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   const parsed = AcceptSchema.safeParse(input)
   if (!parsed.success) return { error: 'Cochez la case pour accepter le traitement de votre voix.' }
 
@@ -100,11 +100,10 @@ export async function withdrawVoiceConsent(): Promise<{ ok?: true; error?: strin
  * then their sessions here (turns, feedback and engine results go with them, by
  * cascade). The academic record of a completed lesson is kept.
  *
- * XP-F2-03: when the provider's copy cannot be deleted now, the session's
- * content is deleted all the same, and the row alone is kept, marked
- * `erasure_requested_at`, so that the provider deletion is retried
- * (lib/voice/retention.ts) and the row deleted once it succeeds. Deleting the row
- * at once would lose the only reference to the conversation still held there.
+ * XP-F2-04: a conversation the provider cannot delete now is queued, without any
+ * link to the learner, and retried until the provider confirms
+ * (lib/voice/erasure.ts). `providerNotDeleted` counts those: the learner is told
+ * the truth, never « deleted » for a copy that still exists.
  */
 export async function deleteMyVoiceData(): Promise<{ ok?: true; deletedSessions?: number; providerNotDeleted?: number; error?: string }> {
   const user = await signedInLearner()
@@ -112,46 +111,22 @@ export async function deleteMyVoiceData(): Promise<{ ok?: true; deletedSessions?
   const rl = await rateLimitDb(`voice_delete:${user.id}`, { limit: 3, windowMs: 60 * 60 * 1000 })
   if (!rl.success) return { error: 'Trop de demandes. Réessayez plus tard.' }
 
-  const admin = createAdminClient()
-  const { data: sessions, error: readError } = await admin
-    .from('ai_sessions')
-    .select('id, provider_conversation_id')
-    .eq('user_id', user.id)
-  if (readError) return { error: 'La suppression n’a pas pu être effectuée.' }
-
-  const rows = (sessions ?? []) as { id: string; provider_conversation_id: string | null }[]
-  const apiKey = process.env.ELEVENLABS_API_KEY
-  const pending: string[] = []
-  for (const r of rows) {
-    if (!r.provider_conversation_id) continue
-    const done = apiKey ? await deleteConversation(r.provider_conversation_id, apiKey) : false
-    if (!done) pending.push(r.id)
-  }
-
-  const removable = rows.map(r => r.id).filter(id => !pending.includes(id))
-  let failed = false
-  if (removable.length > 0) {
-    const { error } = await admin.from('ai_sessions').delete().eq('user_id', user.id).in('id', removable)
-    if (error) failed = true
-  }
-  const now = new Date().toISOString()
-  for (const id of pending) {
-    if (!(await purgeSessionContent(admin, id))) { failed = true; continue }
-    const { error } = await admin
-      .from('ai_sessions')
-      .update({ content_purged_at: now, engine_signals: null, erasure_requested_at: now })
-      .eq('id', id)
-      .eq('user_id', user.id)
-    if (error) failed = true
-  }
-  if (failed) {
-    log.error({ userId: user.id }, 'voice data not fully deleted')
+  const outcome = await eraseVoiceDataForUser(createAdminClient(), user.id, {
+    reason: 'learner_request',
+    apiKey: process.env.ELEVENLABS_API_KEY,
+  })
+  if (!outcome.ok) {
+    log.error({ userId: user.id, step: outcome.step }, 'voice data not deleted')
+    await logAuditEvent({
+      eventType: 'voice.data_deleted', actorType: 'self', actorId: user.id, subjectUserId: user.id,
+      method: 'voice_practice', outcome: 'failure', reason: `erasure_${outcome.step}`,
+    })
     return { error: 'La suppression n’a pas pu être effectuée.' }
   }
   await logAuditEvent({
     eventType: 'voice.data_deleted', actorType: 'self', actorId: user.id, subjectUserId: user.id,
     method: 'voice_practice', outcome: 'success',
-    metadata: { sessions: rows.length, providerNotDeleted: pending.length },
+    metadata: { sessions: outcome.sessions, providerDeleted: outcome.providerDeleted, providerNotDeleted: outcome.providerQueued },
   })
-  return { ok: true, deletedSessions: rows.length, providerNotDeleted: pending.length }
+  return { ok: true, deletedSessions: outcome.sessions, providerNotDeleted: outcome.providerQueued }
 }

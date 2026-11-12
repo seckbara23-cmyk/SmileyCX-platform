@@ -22,7 +22,8 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { withinInputBounds } from '@/lib/validation/input-bounds'
 import { createLogger } from '@/lib/logger'
-import { AI_COACH_ENABLED, VOICE_PRACTICE_OPEN, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
+import { AI_COACH_ENABLED, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
+import { voiceGateForCaller } from '@/lib/voice/access'
 import { personaBySlug, publicPersona, type PublicVoicePersona } from '@/lib/voice/personas'
 import { checkVoiceStart, START_REFUSAL_FR } from '@/lib/voice/session-policy'
 import { requestSignedUrl, fetchConversationAnalysis, ConversationId } from '@/lib/voice/elevenlabs'
@@ -195,7 +196,8 @@ async function authorizeSession(sessionId: string, anonId?: string) {
 
 export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenario | null> {
   // XP-F2-01: nothing to show while voice practice is closed, even on a direct call.
-  if (!VOICE_PRACTICE_OPEN) return null
+  const gate = await voiceGateForCaller()
+  if (gate === 'closed') return null
   if (!Uuid.safeParse(lessonId).success) return null
 
   try {
@@ -229,6 +231,8 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
     const access = courseId ? await resolveCourseAccessById(courseId) : { allowed: false }
     if (!access.allowed) return null
     const persona = personaBySlug(data.slug as string)
+    // XP-F2-04: a restricted UAT covers the five reviewed scenarios and nothing else.
+    if (gate === 'uat' && !persona) return null
 
     // XPA-5A: the view exposes `voice_configured` — a boolean derived in the
     // database from provider + agent_id — so the agent id itself never has to
@@ -269,7 +273,8 @@ export async function createAiSession(
   input: { scenarioId: string; anonId?: string }
 ): Promise<{ sessionId?: string; error?: string }> {
   // XP-LAUNCH-FINAL-18: no voice session while voice practice is closed.
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  const gate = await voiceGateForCaller()
+  if (gate === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   const parsed = CreateSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { scenarioId } = parsed.data
@@ -290,12 +295,14 @@ export async function createAiSession(
     // Scenario must exist and be published.
     const { data: scenario, error: scErr } = await admin
       .from('ai_scenarios')
-      .select('id, lesson_id, is_published')
+      .select('id, slug, lesson_id, is_published')
       .eq('id', scenarioId)
       .single()
     if (scErr || !scenario || !scenario.is_published) {
       return { error: 'Scénario indisponible.' }
     }
+    // XP-F2-04: a restricted UAT covers the five reviewed scenarios and nothing else.
+    if (gate === 'uat' && !personaBySlug(scenario.slug as string)) return { error: 'Scénario indisponible.' }
 
     // XP-F2-01: the self-assessment is course material too.
     const courseId = scenario.lesson_id ? await courseIdForLesson(admin, scenario.lesson_id as string) : null
@@ -347,7 +354,7 @@ export async function startVoiceSession(
   detail?: string
 }> {
   // XP-LAUNCH-FINAL-18: no voice session while voice practice is closed.
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE, detail: 'voice practice closed' }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE, detail: 'voice practice closed' }
   const parsed = CreateSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.', detail: devDetail('input validation failed') }
   const { scenarioId } = parsed.data
@@ -439,7 +446,7 @@ export async function startVoiceSession(
 export async function saveAiTurns(
   input: { sessionId: string; anonId?: string; turns: z.infer<typeof TurnSchema>[] }
 ): Promise<{ ok?: true; error?: string }> {
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   if (!withinInputBounds(input, SAVE_TURNS_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SaveTurnsSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
@@ -491,7 +498,7 @@ export async function saveAiTurns(
 export async function completeAiSession(
   input: { sessionId: string; anonId?: string; status?: 'completed' | 'abandoned'; durationSeconds?: number; providerConversationId?: string }
 ): Promise<{ ok?: true; error?: string }> {
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   const parsed = CompleteSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { sessionId, anonId, status, durationSeconds, providerConversationId } = parsed.data
@@ -738,7 +745,7 @@ async function runEngineForSession(sessionId: string, scenarioId: string): Promi
 export async function saveSelfAssessment(
   input: { sessionId: string; anonId?: string; answers: Record<string, number | string> }
 ): Promise<{ ok?: true; error?: string }> {
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   if (!withinInputBounds(input, SELF_ASSESSMENT_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SelfAssessmentSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
@@ -803,7 +810,7 @@ const GetCoachingSchema = z.object({
 export async function getSessionCoaching(
   input: { sessionId: string; anonId?: string }
 ): Promise<CoachingData | null> {
-  if (!VOICE_PRACTICE_OPEN || !AI_COACH_ENABLED) return null
+  if (!AI_COACH_ENABLED || (await voiceGateForCaller()) === 'closed') return null
   const parsed = GetCoachingSchema.safeParse(input)
   if (!parsed.success) return null
   const { sessionId, anonId } = parsed.data
@@ -868,7 +875,7 @@ const VOICE_CONTENT_PURGED_FR = 'Le détail de cet entraînement n’est plus co
 export async function getVoiceFeedback(
   input: { sessionId: string }
 ): Promise<{ feedback?: VoiceFeedback; pending?: true; error?: string }> {
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   const parsed = VoiceFeedbackSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
   const { sessionId } = parsed.data
