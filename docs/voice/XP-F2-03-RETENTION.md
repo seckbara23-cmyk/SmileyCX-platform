@@ -39,11 +39,11 @@ After 30 days from the start of a session, everything that carries the learner's
 
 `lib/voice/retention.ts`, `runVoiceRetention(db, { retentionDays })`. The period comes from configuration; `PROPOSED_TRANSCRIPT_RETENTION_DAYS = 30` is used nowhere.
 
-1. **Local content.** For every session started before the period, whatever its mode or status (a closed tab can leave one « active »): delete its `ai_turns`, `ai_feedback`, `ai_scores` and `ai_recommendations`, clear `engine_signals`, stamp `content_purged_at`.
+1. **Local content.** For every VOICE session (`mode = 'voice'`) started before the period, whatever its status (a closed tab can leave one « active »): delete its `ai_turns`, `ai_feedback`, `ai_scores` and `ai_recommendations`, clear `engine_signals`, stamp `content_purged_at`. Self-assessment sessions are never touched (XP-F2-READY-02).
 2. **Provider copy.** For every purged session that still has a provider conversation id: delete the conversation at ElevenLabs. On success the id is forgotten. On failure, or without an API key, it stays and is retried on the next run: nothing is ever forgotten before it is deleted.
 3. **Audit.** One `voice.retention_purged` record per run, with counts only: sessions purged, provider deletions done and pending, erasures completed, errors.
 
-It works in batches, is idempotent, and a second run finds nothing to do. Sessions created before migration 066, including transcripts already stored, are covered: the selection does not depend on the mode.
+It works in batches, is idempotent, and a second run finds nothing to do. Sessions created before migration 066 receive mode 'self' and are therefore NOT covered (XP-F2-READY-02): what to do with the transcripts they hold is a separate owner decision, see `XP-F2-READY-01-POLICY.md`.
 
 Scheduling, when decided: a daily route on the hosting platform's cron, protected by a secret, like the existing payment reconciliation route. A database-side job cannot do it, because the provider deletion needs the API key on the server. An alert is due when a run fails, or when provider deletions stay pending for more than a few days.
 

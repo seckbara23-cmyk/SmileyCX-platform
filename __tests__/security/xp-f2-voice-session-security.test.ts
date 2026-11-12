@@ -29,6 +29,8 @@ const state = {
   failWrite: new Set<string>(),
   /** Simulates a database before migration 066: the voice columns do not exist. */
   pre066: false,
+  /** Simulates a query layer that silently drops the mode filter (XP-F2-READY-02 defence in depth). */
+  dropModeFilter: false,
   /** `VOICE_PRACTICE_OPEN` as the mocked flags module reports it. */
   open: true,
   events: [] as string[],
@@ -79,7 +81,7 @@ function from(table: string) {
   }
   const q: Record<string, unknown> = {
     select: (c?: string, o?: { head?: boolean }) => { cols = c ?? ''; if (o?.head) head = true; return q },
-    eq: (c: string, v: unknown) => { filters.push(r => r[c] === v); return q },
+    eq: (c: string, v: unknown) => { if (!(c === 'mode' && state.dropModeFilter)) filters.push(r => r[c] === v); return q },
     in: (c: string, vs: unknown[]) => { filters.push(r => vs.includes(r[c])); return q },
     lt: (c: string, v: string) => { filters.push(r => String(r[c]) < v); return q },
     gte: (c: string, v: string) => { filters.push(r => String(r[c]) >= v); return q },
@@ -161,6 +163,7 @@ beforeEach(() => {
   state.failRead = new Set()
   state.failWrite = new Set()
   state.pre066 = false
+  state.dropModeFilter = false
   state.open = true
   state.events = []
   state.deleteUserError = null
@@ -603,7 +606,8 @@ describe('XP-F2-04: transcript retention, configurable, alerting, and scheduled 
   beforeEach(() => {
     state.db.ai_sessions.push(
       { id: 'OLD', user_id: 'U1', scenario_id: SCENARIO, status: 'completed', mode: 'voice', started_at: daysAgo(40), completed_at: daysAgo(40), provider_conversation_id: 'conv_old_1234', engine_signals: { hints: [{ quote: 'vieux mots' }] } },
-      { id: 'STUCK', user_id: 'U1', scenario_id: SCENARIO, status: 'active', mode: 'self', started_at: daysAgo(90) },
+      // A voice session a closed tab left « active » (XP-F2-READY-02: it was a self session, which the policy must not touch).
+      { id: 'STUCK', user_id: 'U1', scenario_id: SCENARIO, status: 'active', mode: 'voice', started_at: daysAgo(90) },
       { id: 'NEW', user_id: 'U1', scenario_id: SCENARIO, status: 'completed', mode: 'voice', started_at: daysAgo(5), completed_at: daysAgo(5), provider_conversation_id: 'conv_new_1234', engine_signals: { hints: [{ quote: 'mots récents' }] } },
     )
     state.db.ai_turns = [{ session_id: 'OLD', transcript: 'vieux mots' }, { session_id: 'NEW', transcript: 'mots récents' }]
@@ -1092,5 +1096,115 @@ describe('XP-F2-READY-01: the next consent version is prepared, not active', () 
     // A learner who accepted only voix-1.1 cannot start while 1.0 is the active version.
     state.db.voice_processing_consents = [{ user_id: 'U1', consent_version: 'voix-1.1', accepted_at: T(5), withdrawn_at: null }]
     expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('consent_required')
+  })
+})
+
+describe('XP-F2-READY-02: retention touches voice sessions only; self-assessment and legacy data are preserved', () => {
+  const NOW = new Date('2026-12-20T12:00:00Z')
+  const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOString()
+  const run = async (opts: Record<string, unknown> = {}) => {
+    const { runVoiceRetention } = await import('@/lib/voice/retention')
+    const { createAdminClient } = await import('@/lib/supabase/admin')
+    return runVoiceRetention(createAdminClient() as never, { retentionDays: 30, now: NOW, apiKey: 'test-key', ...opts })
+  }
+  const SELF_CONTENT = 'réponse d’auto-évaluation'
+  const LEGACY_WORDS = 'propos du pilote vocal'
+
+  beforeEach(() => {
+    state.db.ai_sessions.push(
+      // Eligible: expired voice sessions.
+      { id: 'V1', user_id: 'U1', scenario_id: SCENARIO, status: 'completed', mode: 'voice', started_at: daysAgo(45), provider_conversation_id: 'conv_v1_000001', engine_signals: { hints: [{ quote: 'voix 1' }] } },
+      { id: 'V2', user_id: 'U2', scenario_id: SCENARIO, status: 'active', mode: 'voice', started_at: daysAgo(31), provider_conversation_id: null },
+      // Not yet expired.
+      { id: 'V3', user_id: 'U1', scenario_id: SCENARIO, status: 'completed', mode: 'voice', started_at: daysAgo(10), provider_conversation_id: 'conv_v3_000003' },
+      // Expired self-assessment, created after 066.
+      { id: 'S1', user_id: 'U1', scenario_id: SCENARIO, status: 'completed', mode: 'self', started_at: daysAgo(200), engine_signals: { hints: [{ quote: SELF_CONTENT }] } },
+      // Legacy rows that existed before 066: 'self' by the column default, some carrying transcripts from the earlier voice pilot.
+      { id: 'L1', user_id: 'U2', scenario_id: SCENARIO, status: 'completed', mode: 'self', started_at: daysAgo(400), engine_signals: { hints: [{ quote: LEGACY_WORDS }] } },
+      { id: 'L2', user_id: null, anon_id: 'A1', scenario_id: SCENARIO, status: 'active', mode: 'self', started_at: daysAgo(380) },
+    )
+    state.db.ai_turns = [
+      { session_id: 'V1', transcript: 'voix 1' }, { session_id: 'V2', transcript: 'voix 2' }, { session_id: 'V3', transcript: 'voix 3' },
+      { session_id: 'L1', transcript: LEGACY_WORDS }, { session_id: 'L2', transcript: LEGACY_WORDS },
+    ]
+    state.db.ai_feedback = [{ session_id: 'V1', report: 'retour voix' }, { session_id: 'S1', answers: SELF_CONTENT }, { session_id: 'L1', report: 'coaching ancien' }]
+    state.db.ai_scores = [{ session_id: 'V1', evidence: 'voix 1' }, { session_id: 'S1', evidence: SELF_CONTENT }, { session_id: 'L1', evidence: LEGACY_WORDS }]
+    state.db.ai_recommendations = [{ session_id: 'S1', text: 'conseil auto-évaluation' }, { session_id: 'L1', text: 'conseil ancien' }]
+    state.db.voice_attempts = [{ user_id: 'U1', scenario_id: SCENARIO, started_at: daysAgo(45) }]
+    state.db.voice_provider_erasures = []
+  })
+
+  const snapshotNonVoice = () => JSON.stringify({
+    sessions: state.db.ai_sessions.filter(r => r.mode !== 'voice'),
+    turns: state.db.ai_turns.filter(r => ['S1', 'L1', 'L2'].includes(String(r.session_id))),
+    feedback: state.db.ai_feedback.filter(r => ['S1', 'L1'].includes(String(r.session_id))),
+    scores: state.db.ai_scores.filter(r => ['S1', 'L1'].includes(String(r.session_id))),
+    recommendations: state.db.ai_recommendations,
+  })
+
+  it('the dry run counts only eligible voice content', async () => {
+    const before = snapshotNonVoice()
+    const r = await run({ dryRun: true })
+    expect(r).toMatchObject({ dryRun: true, sessionsPurged: 2, providerPending: 1, providerDeleted: 0 })
+    expect(snapshotNonVoice()).toBe(before)
+    expect(state.db.ai_turns).toHaveLength(5)
+    expect(providerCalls()).toEqual([])
+  })
+
+  it('a real run purges the expired voice sessions and nothing else', async () => {
+    const before = snapshotNonVoice()
+    const r = await run()
+    expect(r).toMatchObject({ sessionsPurged: 2, providerDeleted: 1, providerPending: 0, errors: 0 })
+    // Voice: content gone, rows kept, provider copy deleted.
+    expect(state.db.ai_turns.map(t => t.session_id).sort()).toEqual(['L1', 'L2', 'V3'])
+    expect(state.db.ai_sessions.find(s => s.id === 'V1')).toMatchObject({ content_purged_at: NOW.toISOString(), engine_signals: null, provider_conversation_id: null })
+    expect(state.db.ai_sessions.find(s => s.id === 'V3')!.content_purged_at).toBeUndefined()
+    expect(state.fetches.filter(f => f.init?.method === 'DELETE').map(f => f.url)).toEqual(['https://api.elevenlabs.io/v1/convai/conversations/conv_v1_000001'])
+    // Self-assessment and legacy: byte for byte unchanged.
+    expect(snapshotNonVoice()).toBe(before)
+    for (const id of ['S1', 'L1', 'L2']) expect(state.db.ai_sessions.find(s => s.id === id)!.content_purged_at, id).toBeUndefined()
+    expect(state.db.ai_sessions.find(s => s.id === 'L1')!.engine_signals).toEqual({ hints: [{ quote: LEGACY_WORDS }] })
+    // The attempt ledger is never touched by retention.
+    expect(state.db.voice_attempts).toHaveLength(1)
+  })
+
+  it('even if the query layer dropped the mode filter, the loop still refuses non-voice sessions', async () => {
+    state.dropModeFilter = true
+    const before = snapshotNonVoice()
+    const r = await run()
+    expect(r.sessionsPurged).toBe(2)
+    expect(snapshotNonVoice()).toBe(before)
+  })
+
+  it('repeated runs stay idempotent and still never reach non-voice data', async () => {
+    const before = snapshotNonVoice()
+    await run()
+    expect(await run()).toMatchObject({ sessionsPurged: 0, providerDeleted: 0, providerPending: 0, errors: 0 })
+    expect(await run({ now: new Date(NOW.getTime() + 400 * 86_400_000) })).toMatchObject({ sessionsPurged: 1, errors: 0 })
+    expect(snapshotNonVoice()).toBe(before)
+  })
+
+  it('provider deletion and the erasure queue still work, and a failure is still retried', async () => {
+    state.db.voice_provider_erasures.push({ provider_conversation_id: 'conv_queued_001', reason: 'consent_withdrawal', requested_at: daysAgo(1), attempts: 0 })
+    expect(await run({ deleteConversation: async () => false })).toMatchObject({ sessionsPurged: 2, providerPending: 1, queuePending: 1 })
+    expect(state.db.ai_sessions.find(s => s.id === 'V1')!.provider_conversation_id).toBe('conv_v1_000001')
+    expect(await run({ deleteConversation: async () => true })).toMatchObject({ sessionsPurged: 0, providerDeleted: 1, queueCompleted: 1 })
+  })
+
+  it('the withdrawal erasure is unchanged: it still erases the learner\'s sessions and keeps the ledger', async () => {
+    const r = await (await consentActions()).withdrawVoiceConsent()
+    expect(r).toMatchObject({ ok: true })
+    expect(state.db.ai_sessions.some(s => s.user_id === 'U1')).toBe(false)
+    expect(state.db.ai_sessions.find(s => s.id === 'L1')).toBeTruthy()
+    expect(state.db.voice_attempts).toHaveLength(1)
+  })
+
+  it('the account deletion is unchanged: provider copies first, then the account and its sessions', async () => {
+    state.db.profiles = [{ id: 'U2', email: 'u2@example.test', full_name: 'Learner Two', platform_role: 'learner', created_at: daysAgo(500) }]
+    const f = new FormData(); f.set('userId', 'U2')
+    await (await import('@/app/(admin)/admin/users/[id]/actions')).deleteUser(f)
+    expect(state.events.indexOf('deleteUser:U2')).toBeGreaterThan(-1)
+    expect(state.db.ai_sessions.some(s => s.user_id === 'U2')).toBe(false)
+    expect(state.db.ai_sessions.find(s => s.id === 'S1')).toBeTruthy()
   })
 })

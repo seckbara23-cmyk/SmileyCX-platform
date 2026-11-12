@@ -16,6 +16,12 @@ import { ERASURE_QUEUE } from '@/lib/voice/erasure'
  * a longer or malformed value is refused as a misconfiguration and nothing is
  * purged until it is fixed — never silently a different period.
  *
+ * SCOPE (XP-F2-READY-02): VOICE SESSIONS ONLY — `ai_sessions.mode = 'voice'`.
+ * The approved policy is a voice-transcript retention. A self-assessment session
+ * (`mode = 'self'`), including every session that existed before migration 066
+ * and received 'self' by default, is never selected: its answers, feedback and
+ * coaching results are outside this policy and are left exactly as they are.
+ *
  * What the period covers, and when it runs (docs/voice/XP-F2-READY-01-POLICY.md):
  *   * starts: `ai_sessions.started_at`. A voice session is closed after 15
  *     minutes at most (lib/voice/session-policy.ts), so the start and the end of
@@ -126,19 +132,23 @@ export async function runVoiceRetention(
   let overdue = 0
   let errors = 0
 
-  // 1. Local content of sessions started before the period. A session lasts
-  //    minutes, so a start that old means the session is over, whatever status a
-  //    closed tab left it in.
+  // 1. Local content of VOICE sessions started before the period. A voice session
+  //    lasts minutes, so a start that old means it is over, whatever status a
+  //    closed tab left it in. Self-assessment sessions are never selected.
+  //    The restriction holds in the query AND in the loop, so a filter dropped
+  //    by a refactor still cannot purge a non-voice session.
   if (days !== null) {
     const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString()
     const { data: due, error: readError } = await db
       .from('ai_sessions')
-      .select('id, provider_conversation_id')
+      .select('id, mode, provider_conversation_id')
+      .eq('mode', 'voice')
       .is('content_purged_at', null)
       .lt('started_at', cutoff)
       .limit(limit)
     if (readError) errors++
-    for (const s of (due ?? []) as { id: string; provider_conversation_id: string | null }[]) {
+    for (const s of (due ?? []) as { id: string; mode: string; provider_conversation_id: string | null }[]) {
+      if (s.mode !== 'voice') continue
       if (dry) {
         sessionsPurged++
         if (s.provider_conversation_id) providerPending++
@@ -161,6 +171,7 @@ export async function runVoiceRetention(
   const { data: remote, error: remoteError } = await db
     .from('ai_sessions')
     .select('id, provider_conversation_id, content_purged_at')
+    .eq('mode', 'voice')
     .not('content_purged_at', 'is', null)
     .not('provider_conversation_id', 'is', null)
     .limit(limit)

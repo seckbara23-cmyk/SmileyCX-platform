@@ -12,6 +12,7 @@ They authorize engineering preparation only. Voice practice stays closed in prod
 | Item | Rule |
 |---|---|
 | Period | `APPROVED_TRANSCRIPT_RETENTION_DAYS = 30` in `lib/voice/retention.ts`. `VOICE_TRANSCRIPT_RETENTION_DAYS` may only shorten it (1 to 30); a longer or malformed value is a misconfiguration: the run refuses (`VOICE_RETENTION_MISCONFIGURED`, HTTP 500) and purges nothing |
+| Scope | **voice sessions only** (`ai_sessions.mode = 'voice'`). Self-assessment sessions, including every session created before migration 066 (they receive 'self' by default), are never selected (XP-F2-READY-02) |
 | Start | `ai_sessions.started_at`. A voice session is closed after 15 minutes at most, so start and end are minutes apart |
 | Expiry | start + 30 days; deleted by the next run after that |
 | Deleted on the platform | `ai_turns`, `ai_feedback`, `ai_scores`, `ai_recommendations` of the session, and `ai_sessions.engine_signals` (it quotes the learner); the session is stamped `content_purged_at` |
@@ -23,7 +24,9 @@ They authorize engineering preparation only. Voice practice stays closed in prod
 | Schedule | none. The route is behind the cron secret and is not in `vercel.json`; a test keeps it that way |
 | Alerts | a provider copy pending more than 3 days: `VOICE_ERASURE_OVERDUE`, failed audit record, HTTP 500; database errors: `VOICE_RETENTION_ERRORS` |
 
-**First run, to know in advance.** On 2026-11-12, all 30 sessions held in production were older than 30 days. They include 230 transcript turns and 11 engine results. Once 066 is applied and a run happens, the policy deletes all of that content at once. That is D1 applied as decided. Run the dry run first and read its counts.
+**First run (corrected by XP-F2-READY-02).** Every session that exists in production today becomes 'self' when 066 is applied, so the first run selects **none** of them: it purges nothing, and the dry run shows 0 sessions. Only voice sessions created after 066 are purged, 30 days after they start.
+
+**Historical transcripts outside the policy.** Production holds transcript turns attached to sessions created before 066, from the earlier voice pilot. Without a stored provider conversation id or a mode, the database cannot prove which were voice conversations, so they are not reclassified and the retention does not touch them. No provider conversation id was stored for them, so the platform cannot delete their provider copies either; those follow the provider agent's own retention setting. Deciding their fate (keep, delete, or reclassify after review) is a separate owner decision, outside D1.
 
 **Backups.** The platform's daily database backups roll over about 7 days. A purged row stays in them until they roll. After any restore, run the retention again at once and replay the erasures recorded since the backup (`voice.data_deleted` audit events). The provider's backups are the provider's: the platform claims nothing about them.
 
