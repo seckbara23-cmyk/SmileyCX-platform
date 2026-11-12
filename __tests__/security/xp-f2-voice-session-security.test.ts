@@ -374,7 +374,7 @@ describe('consent and the learner\'s rights', () => {
 
   it('erasure deletes the learner\'s own sessions and their provider conversations, and nobody else\'s', async () => {
     state.db.ai_sessions.push(
-      { id: 'A', user_id: 'U1', provider_conversation_id: 'conv_mine_123', status: 'completed' },
+      { id: 'A', user_id: 'U1', provider_conversation_id: 'conv_mine_123', status: 'completed', mode: 'voice' },
       { id: 'B', user_id: 'U2', provider_conversation_id: 'conv_theirs_12', status: 'completed' },
     )
     const r = await (await consentActions()).deleteMyVoiceData()
@@ -460,9 +460,9 @@ const providerDown = () => vi.stubGlobal('fetch', vi.fn(async (url: string, init
 describe('XP-F2-04: a learner\'s erasure when the provider cannot delete yet', () => {
   beforeEach(() => {
     state.db.ai_sessions.push(
-      { id: 'A', user_id: 'U1', provider_conversation_id: 'conv_fails_123', status: 'completed', engine_signals: { hints: [{ quote: 'mes propres mots' }] } },
-      { id: 'B', user_id: 'U1', provider_conversation_id: null, status: 'completed' },
-      { id: 'C', user_id: 'U2', provider_conversation_id: 'conv_theirs_12', status: 'completed' },
+      { id: 'A', user_id: 'U1', provider_conversation_id: 'conv_fails_123', status: 'completed', mode: 'voice', engine_signals: { hints: [{ quote: 'mes propres mots' }] } },
+      { id: 'B', user_id: 'U1', provider_conversation_id: null, status: 'completed', mode: 'self' },
+      { id: 'C', user_id: 'U2', provider_conversation_id: 'conv_theirs_12', status: 'completed', mode: 'voice' },
     )
     state.db.voice_provider_erasures = []
   })
@@ -470,14 +470,15 @@ describe('XP-F2-04: a learner\'s erasure when the provider cannot delete yet', (
   it('the sessions go at once; the provider reference is queued, with nothing about the learner; the learner is told', async () => {
     providerDown()
     const r = await (await consentActions()).deleteMyVoiceData()
-    expect(r).toMatchObject({ ok: true, deletedSessions: 2, providerNotDeleted: 1 })
-    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(r).toMatchObject({ ok: true, deletedSessions: 1, providerNotDeleted: 1 })
+    // XP-F2-READY-03: the self-assessment session B is not voice data and stays.
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['B', 'C'])
     expect(state.db.voice_provider_erasures).toHaveLength(1)
     const q = state.db.voice_provider_erasures[0]
     expect(q).toMatchObject({ provider_conversation_id: 'conv_fails_123', reason: 'learner_request' })
     expect(Object.keys(q).sort()).toEqual(['provider_conversation_id', 'reason', 'requested_at'])
     expect(JSON.stringify(q)).not.toContain('U1')
-    expect(state.audits.at(-1)).toMatchObject({ eventType: 'voice.data_deleted', outcome: 'success', metadata: { sessions: 2, providerDeleted: 0, providerNotDeleted: 1 } })
+    expect(state.audits.at(-1)).toMatchObject({ eventType: 'voice.data_deleted', outcome: 'success', metadata: { sessions: 1, providerDeleted: 0, providerNotDeleted: 1 } })
     expect(JSON.stringify(state.audits)).not.toContain('mes propres mots')
   })
 
@@ -494,7 +495,7 @@ describe('XP-F2-04: a learner\'s erasure when the provider cannot delete yet', (
   it('repeating the request is safe: one queue row, no error', async () => {
     providerDown()
     await (await consentActions()).deleteMyVoiceData()
-    state.db.ai_sessions.push({ id: 'A2', user_id: 'U1', provider_conversation_id: 'conv_fails_123', status: 'completed' })
+    state.db.ai_sessions.push({ id: 'A2', user_id: 'U1', provider_conversation_id: 'conv_fails_123', status: 'completed', mode: 'voice' })
     expect((await (await consentActions()).deleteMyVoiceData()).ok).toBe(true)
     expect(state.db.voice_provider_erasures).toHaveLength(1)
   })
@@ -983,10 +984,10 @@ describe('XP-F2-READY-01 D2: withdrawing the consent stops processing and erases
     const r = await (await consentActions()).withdrawVoiceConsent()
     expect(r).toMatchObject({ ok: true, erasure: 'complete', providerNotDeleted: 0 })
     expect(state.db.voice_processing_consents[0].withdrawn_at).toBeTruthy()
-    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['B', 'C'])
     expect(state.fetches.filter(f => f.init?.method === 'DELETE').map(f => f.url)).toEqual(['https://api.elevenlabs.io/v1/convai/conversations/conv_mine_1234'])
     expect(state.audits.map(a => a.eventType)).toEqual(['voice.consent_withdrawn', 'voice.data_deleted'])
-    expect(state.audits[1]).toMatchObject({ outcome: 'success', metadata: { trigger: 'consent_withdrawal', sessions: 2, providerDeleted: 1, providerNotDeleted: 0 } })
+    expect(state.audits[1]).toMatchObject({ outcome: 'success', metadata: { trigger: 'consent_withdrawal', sessions: 1, providerDeleted: 1, providerNotDeleted: 0 } })
     expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('consent_required')
   })
 
@@ -994,7 +995,7 @@ describe('XP-F2-READY-01 D2: withdrawing the consent stops processing and erases
     providerDown()
     const r = await (await consentActions()).withdrawVoiceConsent()
     expect(r).toMatchObject({ ok: true, erasure: 'pending_provider', providerNotDeleted: 1 })
-    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['B', 'C'])
     expect(state.db.voice_provider_erasures).toEqual([expect.objectContaining({ provider_conversation_id: 'conv_mine_1234', reason: 'consent_withdrawal' })])
   })
 
@@ -1018,7 +1019,7 @@ describe('XP-F2-READY-01 D2: withdrawing the consent stops processing and erases
     state.failWrite.clear()
     const again = await (await consentActions()).withdrawVoiceConsent()
     expect(again.ok).toBe(true)
-    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['B', 'C'])
     expect(state.db.voice_provider_erasures).toHaveLength(1)
     const third = await (await consentActions()).withdrawVoiceConsent()
     expect(third).toMatchObject({ ok: true, erasure: 'complete' })
@@ -1191,10 +1192,10 @@ describe('XP-F2-READY-02: retention touches voice sessions only; self-assessment
     expect(await run({ deleteConversation: async () => true })).toMatchObject({ sessionsPurged: 0, providerDeleted: 1, queueCompleted: 1 })
   })
 
-  it('the withdrawal erasure is unchanged: it still erases the learner\'s sessions and keeps the ledger', async () => {
+  it('the withdrawal erases the learner\'s voice sessions, keeps their self-assessment and the ledger', async () => {
     const r = await (await consentActions()).withdrawVoiceConsent()
     expect(r).toMatchObject({ ok: true })
-    expect(state.db.ai_sessions.some(s => s.user_id === 'U1')).toBe(false)
+    expect(state.db.ai_sessions.filter(s => s.user_id === 'U1').map(s => s.id)).toEqual(['S1'])
     expect(state.db.ai_sessions.find(s => s.id === 'L1')).toBeTruthy()
     expect(state.db.voice_attempts).toHaveLength(1)
   })
@@ -1206,5 +1207,72 @@ describe('XP-F2-READY-02: retention touches voice sessions only; self-assessment
     expect(state.events.indexOf('deleteUser:U2')).toBeGreaterThan(-1)
     expect(state.db.ai_sessions.some(s => s.user_id === 'U2')).toBe(false)
     expect(state.db.ai_sessions.find(s => s.id === 'S1')).toBeTruthy()
+  })
+})
+
+describe('XP-F2-READY-03: voice erasure never deletes self-assessment history; account deletion stays complete', () => {
+  const LEARNER = '00000000-0000-4000-8000-0000000000d1'
+  beforeEach(() => {
+    state.user = { id: LEARNER, email: 'd1@example.test' }
+    state.db.ai_sessions.push(
+      { id: 'VA', user_id: LEARNER, scenario_id: SCENARIO, status: 'completed', mode: 'voice', provider_conversation_id: 'conv_d1_voice01' },
+      { id: 'VB', user_id: LEARNER, scenario_id: SCENARIO, status: 'abandoned', mode: 'voice', provider_conversation_id: null },
+      { id: 'SA', user_id: LEARNER, scenario_id: SCENARIO, status: 'completed', mode: 'self' },
+      { id: 'LG', user_id: LEARNER, scenario_id: SCENARIO, status: 'active', mode: 'self' },
+      { id: 'OT', user_id: 'U2', scenario_id: SCENARIO, status: 'completed', mode: 'voice', provider_conversation_id: 'conv_other_0001' },
+    )
+    state.db.ai_feedback = [{ session_id: 'SA', answers: 'auto-évaluation' }]
+    state.db.voice_provider_erasures = []
+  })
+  const ids = () => state.db.ai_sessions.map(s => s.id).sort()
+
+  it('the learner\'s own erasure deletes voice sessions only', async () => {
+    const r = await (await consentActions()).deleteMyVoiceData()
+    expect(r).toMatchObject({ ok: true, deletedSessions: 2 })
+    expect(ids()).toEqual(['LG', 'OT', 'SA'])
+    expect(state.db.ai_feedback).toEqual([{ session_id: 'SA', answers: 'auto-évaluation' }])
+  })
+
+  it('withdrawal deletes voice sessions only', async () => {
+    await (await consentActions()).withdrawVoiceConsent()
+    expect(ids()).toEqual(['LG', 'OT', 'SA'])
+  })
+
+  it('an administrator\'s voice erasure deletes voice sessions only', async () => {
+    const f = new FormData(); f.set('userId', LEARNER)
+    await (await import('@/app/(admin)/admin/users/[id]/actions')).eraseUserVoiceData(f)
+    expect(ids()).toEqual(['LG', 'OT', 'SA'])
+  })
+
+  it('a query layer that drops the mode filter still cannot make it delete a self-assessment', async () => {
+    state.dropModeFilter = true
+    await (await consentActions()).deleteMyVoiceData()
+    expect(ids()).toEqual(['LG', 'OT', 'SA'])
+  })
+
+  it('before migration 066, a voice erasure deletes nothing: no session can be a voice session yet', async () => {
+    state.pre066 = true
+    const r = await (await consentActions()).deleteMyVoiceData()
+    expect(r).toMatchObject({ ok: true, deletedSessions: 0 })
+    expect(ids()).toEqual(['LG', 'OT', 'SA', 'VA', 'VB'])
+    expect(providerCalls()).toEqual([])
+  })
+
+  it('the account deletion remains the distinct, complete workflow: everything of the account goes', async () => {
+    state.db.profiles = [{ id: LEARNER, email: 'd1@example.test', full_name: 'Learner D', platform_role: 'learner', created_at: T(1000) }]
+    const f = new FormData(); f.set('userId', LEARNER)
+    await (await import('@/app/(admin)/admin/users/[id]/actions')).deleteUser(f)
+    expect(ids()).toEqual(['OT'])
+    expect(state.events).toContain(`deleteUser:${LEARNER}`)
+    expect(state.fetches.filter(x => x.init?.method === 'DELETE').map(x => x.url)).toEqual(['https://api.elevenlabs.io/v1/convai/conversations/conv_d1_voice01'])
+  })
+
+  it('only an administrator can run the account deletion or the admin erasure', async () => {
+    state.isAdmin = false
+    const f = new FormData(); f.set('userId', LEARNER)
+    const admin = await import('@/app/(admin)/admin/users/[id]/actions')
+    await expect(admin.deleteUser(f)).rejects.toThrow()
+    await expect(admin.eraseUserVoiceData(f)).rejects.toThrow()
+    expect(ids()).toEqual(['LG', 'OT', 'SA', 'VA', 'VB'])
   })
 })
