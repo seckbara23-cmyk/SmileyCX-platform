@@ -8,7 +8,7 @@ import { createLogger } from '@/lib/logger'
  * Voice retention and provider-erasure run — XP-F2-04.
  *
  * `GET /api/voice/retention`. NOT SCHEDULED: `vercel.json` lists no cron for
- * it, and a test keeps it that way until the retention policy is approved. It
+ * it, and a test keeps it that way until the owner authorizes a schedule. It
  * exists so the mechanism can be exercised deliberately, and scheduled later by
  * a one-line reviewed change.
  *
@@ -16,11 +16,13 @@ import { createLogger } from '@/lib/logger'
  * `CRON_SECRET` it refuses everything (503), and the comparison is constant
  * time over SHA-256 digests.
  *
- * What a run does (lib/voice/retention.ts): it retries the provider erasures
- * still pending, and — only when `VOICE_TRANSCRIPT_RETENTION_DAYS` is set —
- * purges the content of sessions older than that period. It answers with COUNTS
- * only: no conversation id, transcript or identity. 500 when something failed
- * or is overdue, so a scheduler's own failure alert fires.
+ * What a run does (lib/voice/retention.ts): it purges the content of sessions
+ * older than the approved period (30 days, decision D1; the environment may only
+ * shorten it), and retries the provider erasures still pending. `?dryRun=1`
+ * counts what a run would do and changes nothing. It answers with COUNTS only:
+ * no conversation id, transcript or identity. 500 when the period is
+ * misconfigured, or something failed or is overdue, so a scheduler's own
+ * failure alert fires.
  */
 
 export const runtime = 'nodejs'
@@ -47,9 +49,17 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
 
+  const retentionDays = configuredRetentionDays()
+  if (retentionDays === null) {
+    log.error({ code: 'VOICE_RETENTION_MISCONFIGURED' }, 'voice retention refused: the period setting is malformed or longer than the policy')
+    return NextResponse.json({ error: 'misconfigured' }, { status: 500 })
+  }
+  const dryRun = new URL(req.url).searchParams.get('dryRun') === '1'
+
   try {
     const result = await runVoiceRetention(createAdminClient(), {
-      retentionDays: configuredRetentionDays(),
+      retentionDays,
+      dryRun,
       apiKey: process.env.ELEVENLABS_API_KEY,
     })
     const healthy = result.errors === 0 && result.overdue === 0

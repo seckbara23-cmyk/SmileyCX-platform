@@ -2,6 +2,7 @@ import 'server-only'
 import { createHash } from 'node:crypto'
 import { VOICE_PERSONAS, type VoicePersona } from '@/lib/voice/personas'
 import { buildAgentConfig } from '@/lib/voice/prompt'
+import { APPROVED_TRANSCRIPT_RETENTION_DAYS } from '@/lib/voice/retention'
 
 /**
  * XP-F2-03 — the exact ElevenLabs agent payload for each persona, reproducibly.
@@ -16,12 +17,15 @@ import { buildAgentConfig } from '@/lib/voice/prompt'
  * authorization. `scripts/voice/compare-agents.mjs` compares this manifest with
  * live agents, read-only.
  *
- * Deliberately absent: privacy and retention settings
- * (`platform_settings.privacy`), voice choice and turn-taking settings. Retention
- * is a proposal (docs/voice/XP-F2-03-RETENTION.md), not an approved setting.
+ * Retention (decision D1): `platform_settings.privacy.retention_days` = 30, the
+ * same period as the platform, so the provider also deletes on its own even if
+ * a delete call failed. Whether to apply it to an existing agent's past
+ * conversations is a provisioning decision, taken in the dashboard.
+ * Deliberately absent: voice choice, turn-taking, audio saving and Zero
+ * Retention Mode, which wait for the provider's written answers.
  */
 
-export const AGENT_MANIFEST_VERSION = 'f2-agents-1'
+export const AGENT_MANIFEST_VERSION = 'f2-agents-2'
 
 export interface ElevenLabsAgentPayload {
   readonly name: string
@@ -33,6 +37,7 @@ export interface ElevenLabsAgentPayload {
     }
   }
   readonly platform_settings: {
+    readonly privacy: { readonly retention_days: number }
     readonly evaluation: {
       readonly criteria: readonly {
         readonly id: string
@@ -56,6 +61,7 @@ export function toAgentPayload(p: VoicePersona): ElevenLabsAgentPayload {
       },
     },
     platform_settings: {
+      privacy: { retention_days: APPROVED_TRANSCRIPT_RETENTION_DAYS },
       evaluation: {
         criteria: cfg.evaluationCriteria.map(c => ({
           id: c.id,

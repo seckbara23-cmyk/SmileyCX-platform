@@ -10,10 +10,24 @@ import { ERASURE_QUEUE } from '@/lib/voice/erasure'
  * mechanism. NOT SCHEDULED: the only caller is the route
  * `app/api/voice/retention`, which no cron lists.
  *
- * The retention period is CONFIGURATION, not a constant: the environment
- * variable `VOICE_TRANSCRIPT_RETENTION_DAYS`, unset by default. 30 days is the
- * proposal under review (docs/voice/XP-F2-03-RETENTION.md); it is not an
- * approved policy and is written nowhere as a default.
+ * POLICY (owner decision D1, 2026-11-12): voice content is kept 30 days.
+ * `APPROVED_TRANSCRIPT_RETENTION_DAYS` is that period. The environment variable
+ * `VOICE_TRANSCRIPT_RETENTION_DAYS` may only SHORTEN it (1 to 30), for a test;
+ * a longer or malformed value is refused as a misconfiguration and nothing is
+ * purged until it is fixed — never silently a different period.
+ *
+ * What the period covers, and when it runs (docs/voice/XP-F2-READY-01-POLICY.md):
+ *   * starts: `ai_sessions.started_at`. A voice session is closed after 15
+ *     minutes at most (lib/voice/session-policy.ts), so the start and the end of
+ *     a conversation are minutes apart;
+ *   * expires: start + 30 days; the next run after that deletes;
+ *   * here: transcript turns, self-assessment answers and coaching reports,
+ *     engine scores, recommendations and the engine result on the session
+ *     (it quotes the learner);
+ *   * at the provider: the conversation, through the delete endpoint. What that
+ *     endpoint removes, and its backups, are the provider's: never claimed here.
+ *   * NOT covered: the session row without words, the consent record, the
+ *     attempt ledger (decision D3), and the audit log, which hold no learner words.
  *
  * `runVoiceRetention` does three things, each safe to repeat:
  *   1. PURGE (only when a period is configured). For every session started
@@ -37,23 +51,30 @@ type Db = ReturnType<typeof createAdminClient>
 
 const log = createLogger('voice/retention')
 
-/** The period under review. Used by no default anywhere. */
-export const PROPOSED_TRANSCRIPT_RETENTION_DAYS = 30
+/** Decision D1: 30 days. */
+export const APPROVED_TRANSCRIPT_RETENTION_DAYS = 30
 export const RETENTION_ENV = 'VOICE_TRANSCRIPT_RETENTION_DAYS'
 export const DEFAULT_OVERDUE_AFTER_DAYS = 3
 
 /** Every table whose rows can carry the learner's words, keyed by session. */
 export const CONTENT_TABLES = ['ai_turns', 'ai_feedback', 'ai_scores', 'ai_recommendations'] as const
 
-/** The configured period: a whole number of days from 1 to 3650, or null (no purge). */
+/**
+ * The period to apply: the approved 30 days when unset; a shorter whole number
+ * of days when set (1 to 30); null when the setting is malformed or longer than
+ * the policy allows — a misconfiguration, on which nothing is purged.
+ */
 export function configuredRetentionDays(raw: string | undefined = process.env[RETENTION_ENV]): number | null {
   const v = (raw ?? '').trim()
-  if (!/^\d{1,4}$/.test(v)) return null
+  if (v === '') return APPROVED_TRANSCRIPT_RETENTION_DAYS
+  if (!/^\d{1,3}$/.test(v)) return null
   const n = Number(v)
-  return n >= 1 && n <= 3650 ? n : null
+  return n >= 1 && n <= APPROVED_TRANSCRIPT_RETENTION_DAYS ? n : null
 }
 
 export interface RetentionResult {
+  /** True when nothing was written or deleted: the counts say what a real run would do. */
+  readonly dryRun: boolean
   readonly retentionDays: number | null
   readonly sessionsPurged: number
   readonly providerDeleted: number
@@ -83,9 +104,12 @@ export async function runVoiceRetention(
     apiKey?: string
     batchSize?: number
     overdueAfterDays?: number
+    /** Count only: no delete, no update, no provider call. */
+    dryRun?: boolean
     deleteConversation?: (conversationId: string, apiKey: string) => Promise<boolean>
   },
 ): Promise<RetentionResult> {
+  const dry = opts.dryRun === true
   const days = opts.retentionDays
   if (days !== null && (!Number.isInteger(days) || days < 1)) {
     throw new Error('runVoiceRetention: retentionDays must be null or a whole number of days, at least 1')
@@ -109,12 +133,17 @@ export async function runVoiceRetention(
     const cutoff = new Date(now.getTime() - days * 86_400_000).toISOString()
     const { data: due, error: readError } = await db
       .from('ai_sessions')
-      .select('id')
+      .select('id, provider_conversation_id')
       .is('content_purged_at', null)
       .lt('started_at', cutoff)
       .limit(limit)
     if (readError) errors++
-    for (const s of (due ?? []) as { id: string }[]) {
+    for (const s of (due ?? []) as { id: string; provider_conversation_id: string | null }[]) {
+      if (dry) {
+        sessionsPurged++
+        if (s.provider_conversation_id) providerPending++
+        continue
+      }
       let ok = await purgeSessionContent(db, s.id)
       if (ok) {
         const { error } = await db
@@ -137,7 +166,7 @@ export async function runVoiceRetention(
     .limit(limit)
   if (remoteError) errors++
   for (const s of (remote ?? []) as { id: string; provider_conversation_id: string; content_purged_at: string }[]) {
-    const done = opts.apiKey ? await remove(s.provider_conversation_id, opts.apiKey) : false
+    const done = !dry && opts.apiKey ? await remove(s.provider_conversation_id, opts.apiKey) : false
     if (!done) {
       providerPending++
       if (s.content_purged_at < overdueBefore) overdue++
@@ -156,6 +185,11 @@ export async function runVoiceRetention(
     .limit(limit)
   if (queueError) errors++
   for (const q of (queued ?? []) as { provider_conversation_id: string; requested_at: string; attempts: number | null }[]) {
+    if (dry) {
+      queuePending++
+      if (q.requested_at < overdueBefore) overdue++
+      continue
+    }
     const done = opts.apiKey ? await remove(q.provider_conversation_id, opts.apiKey) : false
     const { error } = await db
       .from(ERASURE_QUEUE)
@@ -173,7 +207,12 @@ export async function runVoiceRetention(
     }
   }
 
-  const counts = { retentionDays: days, sessionsPurged, providerDeleted, providerPending, queueCompleted, queuePending, overdue, errors }
+  const counts = { dryRun: dry, retentionDays: days, sessionsPurged, providerDeleted, providerPending, queueCompleted, queuePending, overdue, errors }
+  if (dry) {
+    // A dry run changes nothing and alerts no one: it reports what a run would do.
+    log.info(counts, 'voice retention dry run')
+    return counts
+  }
   if (overdue > 0) log.error({ code: 'VOICE_ERASURE_OVERDUE', ...counts }, 'provider erasure overdue')
   if (errors > 0) log.error({ code: 'VOICE_RETENTION_ERRORS', ...counts }, 'voice retention run had errors')
 

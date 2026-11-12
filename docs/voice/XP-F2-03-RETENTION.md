@@ -1,5 +1,7 @@
 # XP-F2-03: transcript retention, a design to decide
 
+**XP-F2-READY-01 update:** 30 days is now the approved policy (decision D1). See `XP-F2-READY-01-POLICY.md`, which supersedes this document where they differ.
+
 **XP-F2-04 update:** the mechanism described here is now `runVoiceRetention`, with a configurable period, a protected unscheduled route, an erasure queue and overdue alerts. See `XP-F2-04-UAT-AND-PRIVACY.md`, sections 2 and 3, which supersede sections 3 and 6 below where they differ.
 
 **Status: proposal. Not approved, not scheduled, not configured anywhere.** This change builds and tests the mechanism only. Nothing calls it. There is no cron, no production setting and no provider retention setting. The period below is a proposal for the owner to decide, with the privacy text that must announce it.

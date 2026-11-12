@@ -233,6 +233,16 @@ describe('migration 066: consent and session mode, never applied by this change'
     expect(sql).not.toContain('erasure_requested_at')
   })
 
+  it('the attempt ledger holds no content, is server-only and append-only, and starts atomically (XP-F2-READY-01)', () => {
+    const table = sql.slice(sql.indexOf('create table public.voice_attempts'), sql.indexOf('comment on table public.voice_attempts'))
+    expect(table).toMatch(/user_id\s+uuid\s+not null references auth\.users\(id\) on delete cascade/)
+    expect(table).not.toMatch(/transcript|provider|session_id|audio|\btext\b/)
+    expect(sql).toContain('grant select, insert on public.voice_attempts to service_role')
+    expect(sql).toContain("perform pg_advisory_xact_lock(hashtextextended('voice_start_attempt:' || p_user_id::text, 0))")
+    expect(sql).toContain('revoke all on function public.voice_start_attempt(uuid, uuid, timestamptz, integer) from public, anon, authenticated')
+    expect(sql).toContain("raise exception 'XP-F2-READY-01 066: voice_start_attempt must be executable by the server only'")
+  })
+
   it('the provider erasure queue names no learner and is server-only (XP-F2-04)', () => {
     const table = sql.slice(sql.indexOf('create table public.voice_provider_erasures'), sql.indexOf('comment on table public.voice_provider_erasures'))
     expect(table).toContain('provider_conversation_id text        primary key')
@@ -245,7 +255,10 @@ describe('migration 066: consent and session mode, never applied by this change'
   })
 
   it('changes no existing row of any table: no UPDATE, no DELETE, no INSERT', () => {
-    const body = sql.split('-- ROLLBACK')[0].replace(/^\s*--.*$/gm, '')
+    // The start function's body runs when a learner starts, not when the migration is applied.
+    const fn = sql.slice(sql.indexOf('as $fn$'), sql.lastIndexOf('$fn$;'))
+    expect(fn.match(/insert into public\.(\w+)/g)).toEqual(['insert into public.ai_sessions', 'insert into public.voice_attempts'])
+    const body = sql.split('-- ROLLBACK')[0].replace(fn, '').replace(/^\s*--.*$/gm, '')
     expect(body).not.toMatch(/\bupdate\s+public\./i)
     expect(body).not.toMatch(/\bdelete\s+from\b/i)
     expect(body).not.toMatch(/\binsert\s+into\b/i)

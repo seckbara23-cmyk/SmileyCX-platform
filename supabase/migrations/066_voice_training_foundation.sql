@@ -10,8 +10,7 @@
 --   1. public.voice_processing_consents: one row per learner and consent
 --      version; the learner reads their own rows, only the server writes.
 --   2. ai_sessions.mode: 'voice' for a session started with the voice provider,
---      'self' for the self-assessment fallback. Started voice sessions are the
---      attempts counted per lesson.
+--      'self' for the self-assessment fallback.
 --   3. ai_sessions.provider_conversation_id: the provider's conversation id,
 --      kept so the post-call analysis can be fetched and the conversation
 --      deleted on request. Unique.
@@ -24,6 +23,15 @@
 --      delete at the voice provider when the session, or the learner's account,
 --      that pointed to them is already gone. It holds the provider's conversation
 --      id and NOTHING about the learner. Server only: no browser role can read it.
+--   7. public.voice_attempts (XP-F2-READY-01, decision D3): one row per started
+--      voice attempt — learner, scenario, time, nothing else. It is the count of
+--      the five attempts per lesson and access period, and it survives the
+--      learner's voluntary erasure of their voice data, so erasing does not give
+--      attempts back. It is personal data linked to the learner, not anonymous;
+--      it goes with the account (on delete cascade).
+--   8. public.voice_start_attempt(): starts a voice session and records the
+--      attempt in one transaction, under a per-learner lock, so two concurrent
+--      starts can never exceed the limit or open two live voice sessions.
 --
 -- WHAT IT DOES NOT DO
 --   It changes NO existing row of any table: every existing session receives
@@ -101,7 +109,7 @@ revoke insert, update, delete, truncate, references, trigger
 -- ══ 6. Provider erasure queue (XP-F2-04) ════════════════════════════════════
 create table public.voice_provider_erasures (
   provider_conversation_id text        primary key check (provider_conversation_id ~ '^[A-Za-z0-9_-]{8,128}$'),
-  reason                   text        not null check (reason in ('learner_request', 'account_deletion')),
+  reason                   text        not null check (reason in ('learner_request', 'consent_withdrawal', 'account_deletion', 'admin_request')),
   requested_at             timestamptz not null default now(),
   attempts                 integer     not null default 0 check (attempts >= 0),
   last_attempt_at          timestamptz,
@@ -121,7 +129,77 @@ alter table public.voice_provider_erasures enable row level security;
 revoke all on public.voice_provider_erasures from public, anon, authenticated, service_role;
 grant select, insert, update on public.voice_provider_erasures to service_role;
 
--- ══ 7. Assertions ═══════════════════════════════════════════════════════════
+-- ══ 7. Voice attempt ledger (XP-F2-READY-01, D3) ═══════════════════════════
+create table public.voice_attempts (
+  id           bigint      generated always as identity primary key,
+  user_id      uuid        not null references auth.users(id) on delete cascade,
+  scenario_id  uuid        not null references public.ai_scenarios(id) on delete cascade,
+  started_at   timestamptz not null default now()
+);
+
+comment on table public.voice_attempts is
+  'XP-F2-READY-01. One row per started voice attempt: learner, scenario, time. No content, no provider data. Kept after a voluntary voice-data erasure (decision D3); deleted with the account. Server only.';
+
+create index voice_attempts_user_scenario_started_idx
+  on public.voice_attempts (user_id, scenario_id, started_at);
+
+alter table public.voice_attempts enable row level security;
+revoke all on public.voice_attempts from public, anon, authenticated, service_role;
+grant select, insert on public.voice_attempts to service_role;
+
+-- ══ 8. Atomic start: one live voice session, five attempts per period ═══════
+-- Returns 'started' with the new session id, or 'attempts_exhausted', or
+-- 'session_in_progress', and the attempts used in the period after the call.
+-- The transaction-scoped advisory lock serialises every start of one learner:
+-- the count and the two inserts cannot interleave with another start.
+create or replace function public.voice_start_attempt(
+  p_user_id     uuid,
+  p_scenario_id uuid,
+  p_since       timestamptz,
+  p_limit       integer
+)
+returns table (outcome text, session_id uuid, attempts_used integer)
+language plpgsql
+security invoker
+set search_path = public, pg_temp
+as $fn$
+declare
+  v_used    integer;
+  v_session uuid;
+begin
+  if p_user_id is null or p_scenario_id is null or p_since is null or p_limit is null or p_limit < 1 then
+    raise exception 'voice_start_attempt: invalid arguments';
+  end if;
+  perform pg_advisory_xact_lock(hashtextextended('voice_start_attempt:' || p_user_id::text, 0));
+
+  select count(*) into v_used
+    from public.voice_attempts a
+   where a.user_id = p_user_id and a.scenario_id = p_scenario_id and a.started_at >= p_since;
+  if v_used >= p_limit then
+    return query select 'attempts_exhausted'::text, null::uuid, v_used;
+    return;
+  end if;
+
+  if exists (select 1 from public.ai_sessions s
+              where s.user_id = p_user_id and s.status = 'active' and s.mode = 'voice') then
+    return query select 'session_in_progress'::text, null::uuid, v_used;
+    return;
+  end if;
+
+  insert into public.ai_sessions (scenario_id, user_id, anon_id, status, mode)
+  values (p_scenario_id, p_user_id, null, 'active', 'voice')
+  returning id into v_session;
+  insert into public.voice_attempts (user_id, scenario_id) values (p_user_id, p_scenario_id);
+
+  return query select 'started'::text, v_session, v_used + 1;
+end
+$fn$;
+
+-- New functions are executable by everyone by default: the server only.
+revoke all on function public.voice_start_attempt(uuid, uuid, timestamptz, integer) from public, anon, authenticated;
+grant execute on function public.voice_start_attempt(uuid, uuid, timestamptz, integer) to service_role;
+
+-- ══ 9. Assertions ═══════════════════════════════════════════════════════════
 do $check$
 begin
   if not (select relrowsecurity from pg_class where oid = 'public.voice_processing_consents'::regclass) then
@@ -140,6 +218,19 @@ begin
      or exists (select 1 from pg_policy where polrelid = 'public.voice_provider_erasures'::regclass) then
     raise exception 'XP-F2-04 066: the provider erasure queue is not server-only';
   end if;
+  if not (select relrowsecurity from pg_class where oid = 'public.voice_attempts'::regclass)
+     or has_table_privilege('anon', 'public.voice_attempts', 'SELECT')
+     or has_table_privilege('authenticated', 'public.voice_attempts', 'SELECT')
+     or has_table_privilege('service_role', 'public.voice_attempts', 'UPDATE')
+     or has_table_privilege('service_role', 'public.voice_attempts', 'DELETE')
+     or exists (select 1 from pg_policy where polrelid = 'public.voice_attempts'::regclass) then
+    raise exception 'XP-F2-READY-01 066: the attempt ledger is not server-only and append-only';
+  end if;
+  if has_function_privilege('anon', 'public.voice_start_attempt(uuid, uuid, timestamptz, integer)', 'EXECUTE')
+     or has_function_privilege('authenticated', 'public.voice_start_attempt(uuid, uuid, timestamptz, integer)', 'EXECUTE')
+     or not has_function_privilege('service_role', 'public.voice_start_attempt(uuid, uuid, timestamptz, integer)', 'EXECUTE') then
+    raise exception 'XP-F2-READY-01 066: voice_start_attempt must be executable by the server only';
+  end if;
   if has_table_privilege('anon', 'public.ai_turns', 'SELECT')
      or has_table_privilege('authenticated', 'public.ai_sessions', 'TRUNCATE')
      or has_table_privilege('authenticated', 'public.ai_turns', 'INSERT')
@@ -156,6 +247,10 @@ commit;
 -- ROLLBACK — only while voice practice is still closed in code.
 -- ════════════════════════════════════════════════════════════════════════════
 -- begin;
+-- drop function if exists public.voice_start_attempt(uuid, uuid, timestamptz, integer);
+-- Dropping the ledger gives every learner their attempts back (decision D3):
+-- only while voice practice has never been open.
+-- drop table if exists public.voice_attempts;
 -- drop index if exists public.ai_sessions_one_live_voice_per_user;
 -- drop index if exists public.ai_sessions_user_scenario_mode_started_idx;
 -- drop index if exists public.ai_sessions_provider_conversation_unique;

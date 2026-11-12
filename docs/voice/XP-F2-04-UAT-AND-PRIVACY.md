@@ -29,7 +29,7 @@ Before migration 066 exists in a database, no conversation id was ever stored, s
 
 ## 3. Retention infrastructure
 
-- **Policy:** the environment variable `VOICE_TRANSCRIPT_RETENTION_DAYS`, a whole number from 1 to 3650. Unset, malformed or out of range means **no purge**. 30 days remains a proposal and is a default nowhere.
+- **Policy (superseded by XP-F2-READY-01):** 30 days, approved by the owner (decision D1). `VOICE_TRANSCRIPT_RETENTION_DAYS` may only shorten it. See `XP-F2-READY-01-POLICY.md`.
 - **Run:** `runVoiceRetention` in `lib/voice/retention.ts`.
   1. With a period: for sessions started before it, delete turns, feedback, scores and recommendations, clear the engine result (it quotes the learner), stamp the session. The session row stays, without words.
   2. Delete the provider conversation of each purged session; a failure is kept and retried.

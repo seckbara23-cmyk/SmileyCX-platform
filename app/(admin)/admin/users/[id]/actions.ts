@@ -23,6 +23,39 @@ import { eraseVoiceDataForUser } from '@/lib/voice/erasure'
  * reference can be neither deleted nor queued, the account is NOT deleted: the
  * administrator is told, and can retry. The audit record carries the counts.
  */
+const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * XP-F2-READY-01 — an administrator erases a learner's voice data (for a
+ * request received by email, for instance) without deleting the account. Same
+ * procedure as the learner's own request; the attempt ledger stays (D3).
+ */
+export async function eraseUserVoiceData(formData: FormData) {
+  const admin = await requirePlatformAdmin()
+  const userId = String(formData.get('userId') ?? '')
+  if (!USER_ID.test(userId)) throw new Error('Missing userId')
+
+  const outcome = await eraseVoiceDataForUser(createAdminClient(), userId, {
+    reason: 'admin_request',
+    apiKey: process.env.ELEVENLABS_API_KEY,
+  })
+  await logAuditEvent({
+    eventType:     'voice.data_deleted',
+    actorType:     'admin',
+    actorId:       admin.id,
+    actorEmail:    admin.email,
+    subjectUserId: userId,
+    method:        'admin_panel',
+    outcome:       outcome.ok ? 'success' : 'failure',
+    reason:        outcome.ok ? undefined : `erasure_${outcome.step}`,
+    metadata:      outcome.ok
+      ? { trigger: 'admin_request', sessions: outcome.sessions, providerDeleted: outcome.providerDeleted, providerNotDeleted: outcome.providerQueued }
+      : { trigger: 'admin_request' },
+  })
+  if (!outcome.ok) throw new Error('Voice data not erased: the provider erasure could not be completed or recorded. Nothing was deleted. Try again.')
+  redirect(`/admin/users/${userId}?voice_erased=${outcome.providerQueued > 0 ? 'pending_provider' : 'complete'}`)
+}
+
 export async function deleteUser(formData: FormData) {
   const admin = await requirePlatformAdmin()
 

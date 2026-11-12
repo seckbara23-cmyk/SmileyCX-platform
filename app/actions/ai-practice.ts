@@ -25,7 +25,7 @@ import { createLogger } from '@/lib/logger'
 import { AI_COACH_ENABLED, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
 import { voiceGateForCaller } from '@/lib/voice/access'
 import { personaBySlug, publicPersona, type PublicVoicePersona } from '@/lib/voice/personas'
-import { checkVoiceStart, START_REFUSAL_FR } from '@/lib/voice/session-policy'
+import { checkVoiceStart, startVoiceAttempt, START_REFUSAL_FR } from '@/lib/voice/session-policy'
 import { requestSignedUrl, fetchConversationAnalysis, ConversationId } from '@/lib/voice/elevenlabs'
 import { buildVoiceFeedback, type VoiceFeedback } from '@/lib/voice/feedback'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
@@ -423,18 +423,25 @@ export async function startVoiceSession(
       return { error: 'Connexion à la pratique vocale impossible.', detail: devDetail(`signed url: ${signed.status}`) }
     }
 
-    const { data: session, error: insErr } = await admin
-      .from('ai_sessions')
-      .insert({ scenario_id: scenarioId, user_id: user.id, anon_id: null, status: 'active', mode: 'voice' })
-      .select('id')
-      .single()
-    if (insErr || !session) {
-      // Migration 066's one-live-session index refuses a concurrent second start.
-      log.error({ scenarioId, error: insErr?.message }, 'startVoiceSession insert failed')
-      return { error: 'Impossible de démarrer la session.', detail: devDetail('ai_sessions insert failed') }
+    // XP-F2-READY-01: the session and its attempt are written together, under a
+    // per-learner lock (migration 066): concurrent starts cannot pass the limit.
+    const started = await startVoiceAttempt(admin, {
+      userId: user.id, scenarioId, since: check.since, limit: persona.attemptsPerLesson,
+    })
+    if (!started.ok) {
+      log.warn({ scenarioId, refusal: started.refusal }, 'startVoiceSession: attempt not started')
+      return {
+        error: START_REFUSAL_FR[started.refusal],
+        ...(started.refusal === 'unavailable' ? {} : { reason: started.refusal }),
+        detail: devDetail(`attempt refused: ${started.refusal}`),
+      }
     }
-    log.info({ scenarioId, sessionId: session.id, persona: persona.id }, 'startVoiceSession: session created')
-    return { sessionId: session.id, signedUrl: signed.signedUrl, attemptsRemaining: check.attemptsRemaining - 1 }
+    log.info({ scenarioId, sessionId: started.sessionId, persona: persona.id }, 'startVoiceSession: session created')
+    return {
+      sessionId: started.sessionId,
+      signedUrl: signed.signedUrl,
+      attemptsRemaining: Math.max(0, persona.attemptsPerLesson - started.attemptsUsed),
+    }
   } catch (e) {
     log.error({ error: (e as Error).message }, 'startVoiceSession failed')
     return { error: 'Service indisponible.', detail: devDetail('unhandled') }

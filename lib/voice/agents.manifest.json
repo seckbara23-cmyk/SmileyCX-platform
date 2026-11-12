@@ -1,10 +1,10 @@
 {
-  "version": "f2-agents-1",
+  "version": "f2-agents-2",
   "personas": [
     {
       "personaId": "amara",
       "scenarioSlug": "amara-forfait-incompris",
-      "fingerprint": "068dd93c05b0952ec8e5b0eae7848ab7edab4a9e9365880ea1d9df362b457eb9",
+      "fingerprint": "c022af6638718f15a2fcc914b367f4d59d3855fd17c1b53d710158937d3078f2",
       "promptSha256": "e89d4f7c3b70472f56bc68a35c8cb751c8eb2696ad7b25c80dbb164c25e89974",
       "payload": {
         "name": "XP Client Academy — F2 — Amara",
@@ -18,6 +18,9 @@
           }
         },
         "platform_settings": {
+          "privacy": {
+            "retention_days": 30
+          },
           "evaluation": {
             "criteria": [
               {
@@ -46,7 +49,7 @@
     {
       "personaId": "fatou",
       "scenarioSlug": "fatou-mobile-money-bloque",
-      "fingerprint": "7cdee563cf2cf371c01703f2cc320091c32c5109d48a45df77e99e05a2e97039",
+      "fingerprint": "a9536134e4c094043f503b6034a20480c62d14f8e10ddd75ee266d5551303d76",
       "promptSha256": "bf3670d9efb6b1936fb1347dd3dc691d72825de03558ac1fe0a67af2b6dd030c",
       "payload": {
         "name": "XP Client Academy — F2 — Fatou",
@@ -60,6 +63,9 @@
           }
         },
         "platform_settings": {
+          "privacy": {
+            "retention_days": 30
+          },
           "evaluation": {
             "criteria": [
               {
@@ -88,7 +94,7 @@
     {
       "personaId": "ibrahima",
       "scenarioSlug": "ibrahima-double-facturation",
-      "fingerprint": "2393ddff09fe3525dcbc61eb09dfb100909f634abc7dcb2055fef91314631e13",
+      "fingerprint": "cc4ae096f16a23cbe777a41b6d510dab5be9c5035466d9713dc3891ae07aeab8",
       "promptSha256": "fabb70f0df5462f6b3df27a6587e65b6d99e85d6268b9558a3d80281ccce4cf7",
       "payload": {
         "name": "XP Client Academy — F2 — Ibrahima",
@@ -102,6 +108,9 @@
           }
         },
         "platform_settings": {
+          "privacy": {
+            "retention_days": 30
+          },
           "evaluation": {
             "criteria": [
               {
@@ -130,7 +139,7 @@
     {
       "personaId": "kader",
       "scenarioSlug": "kader-remboursement-hors-contrat",
-      "fingerprint": "53caa729f2f7f53bfe7f010ea10e01884a181083187ef898b10cde9edb22eef9",
+      "fingerprint": "4236e38de717231af48d9d090e4b734f74c69189a3dbf685ded5e1d79690b96e",
       "promptSha256": "2f2bea48a84002cf12ffe401c476c34078044d1ced2099d308448ae2be0daad7",
       "payload": {
         "name": "XP Client Academy — F2 — Kader",
@@ -144,6 +153,9 @@
           }
         },
         "platform_settings": {
+          "privacy": {
+            "retention_days": 30
+          },
           "evaluation": {
             "criteria": [
               {
@@ -172,7 +184,7 @@
     {
       "personaId": "awa",
       "scenarioSlug": "awa-reclamation-consommation",
-      "fingerprint": "06ebe8a02b412a0f5e7f5f8a7b2aa39aa14b2e295491a4e49ec9482e55d4dc93",
+      "fingerprint": "e87897a6d69e41a1c70ea397faba9ec2a3184782c1a091cc1d0a207fa89ae12b",
       "promptSha256": "b55190b9066981b46156c105b76594f8061da0cc618745cf5421ad4ef1fad746",
       "payload": {
         "name": "XP Client Academy — F2 — Awa",
@@ -186,6 +198,9 @@
           }
         },
         "platform_settings": {
+          "privacy": {
+            "retention_days": 30
+          },
           "evaluation": {
             "criteria": [
               {

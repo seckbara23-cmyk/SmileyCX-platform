@@ -5,10 +5,12 @@ import { deleteConversation as deleteProviderConversation } from '@/lib/voice/el
 /**
  * XP-F2-04 — erasing a learner's voice data, here and at the provider.
  *
- * One procedure for the two ways a learner's voice data goes: their own request
- * (app/actions/voice-consent.ts) and the deletion of their account by an
- * administrator. In both, the sessions are deleted here, and each conversation
- * is deleted at the provider.
+ * One procedure for every way a learner's voice data goes: their own request and
+ * their withdrawal of consent (decision D2, app/actions/voice-consent.ts), an
+ * administrator's erasure request, and the deletion of their account. In all,
+ * the sessions are deleted here, and each conversation is deleted at the
+ * provider. The attempt ledger is NOT touched (decision D3): erasing voice data
+ * does not give attempts back. Only the account deletion removes it, by cascade.
  *
  * The provider can fail or be unreachable. A reference to a conversation it
  * still holds must then survive the deletion of the session, and of the account,
@@ -27,7 +29,7 @@ import { deleteConversation as deleteProviderConversation } from '@/lib/voice/el
 type Db = ReturnType<typeof createAdminClient>
 
 export const ERASURE_QUEUE = 'voice_provider_erasures'
-export type ErasureReason = 'learner_request' | 'account_deletion'
+export type ErasureReason = 'learner_request' | 'consent_withdrawal' | 'account_deletion' | 'admin_request'
 
 export type ErasureOutcome =
   | {

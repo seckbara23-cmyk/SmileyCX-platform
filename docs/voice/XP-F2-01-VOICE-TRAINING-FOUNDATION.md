@@ -59,6 +59,10 @@ The server actions (`app/actions/ai-practice.ts`), the session component and the
 
 Account deletion and learner erasure share one procedure with a retry queue; retention is configurable, alerting and unscheduled; a server-side list can open voice for named UAT accounts only. Details, and what a live UAT still needs: `docs/voice/XP-F2-04-UAT-AND-PRIVACY.md`. Proposed legal wording: `docs/voice/F2-04-TEXTES-JURIDIQUES-PROPOSES.md`.
 
+## XP-F2-READY-01: the approved policies
+
+30-day retention (D1), withdrawal that erases (D2), and an attempt ledger that a voluntary erasure does not reset (D3). See `docs/voice/XP-F2-READY-01-POLICY.md`.
+
 ## Migration 066
 
 **Not applied by this change.** It adds:
@@ -66,6 +70,7 @@ Account deletion and learner erasure share one procedure with a retry queue; ret
 - `ai_sessions.mode`, 'voice' or 'self'; every existing row becomes 'self';
 - `ai_sessions.provider_conversation_id` and `content_purged_at`;
 - `voice_provider_erasures`, the server-only queue of provider conversations still to delete, with no learner identifier;
+- `voice_attempts`, the server-only, append-only attempt ledger, and `voice_start_attempt()`, which starts a voice session and records its attempt atomically;
 - one live **voice** session per learner (XP-F2-03 revision: the first version covered every session, and would have failed on existing data);
 - the browser roles lose their write rights on the five learner-owned AI tables, and keep their reads.
 

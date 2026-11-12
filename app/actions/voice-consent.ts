@@ -73,13 +73,23 @@ export async function acceptVoiceConsent(input: { version: string; accepted: boo
   return { ok: true }
 }
 
-export async function withdrawVoiceConsent(): Promise<{ ok?: true; error?: string }> {
+export type ErasureStatus = 'complete' | 'pending_provider'
+
+/**
+ * Withdraws the consent (decision D2): no voice processing starts again without
+ * a new consent, and the learner's existing voice data is erased at once — here,
+ * and at the provider, where a copy that cannot be deleted now is queued and
+ * retried. `erasure` says which: 'pending_provider' is never reported as done.
+ * Safe to repeat. Always available, even while voice practice is closed.
+ */
+export async function withdrawVoiceConsent(): Promise<{ ok?: true; erasure?: ErasureStatus; providerNotDeleted?: number; withdrawn?: true; error?: string }> {
   const user = await signedInLearner()
   if (!user) return { error: 'Connectez-vous pour continuer.' }
   const rl = await rateLimitDb(`voice_consent:${user.id}`, LIMIT)
   if (!rl.success) return { error: 'Trop de tentatives. Réessayez dans quelques minutes.' }
 
-  const { error } = await createAdminClient()
+  const admin = createAdminClient()
+  const { error } = await admin
     .from('voice_processing_consents')
     .update({ withdrawn_at: new Date().toISOString() })
     .eq('user_id', user.id)
@@ -92,7 +102,41 @@ export async function withdrawVoiceConsent(): Promise<{ ok?: true; error?: strin
     eventType: 'voice.consent_withdrawn', actorType: 'self', actorId: user.id, subjectUserId: user.id,
     method: 'voice_practice', outcome: 'success',
   })
-  return { ok: true }
+
+  // From here no new voice session can start: the server refuses without a current consent.
+  const erased = await eraseAndRecord(admin, user.id, 'consent_withdrawal')
+  if (!erased.ok) {
+    return { withdrawn: true, error: 'Votre accord est retiré, mais la suppression de vos données vocales n’a pas pu être effectuée. Réessayez.' }
+  }
+  return { ok: true, erasure: erased.erasure, providerNotDeleted: erased.providerNotDeleted }
+}
+
+/** Runs the erasure for the signed-in learner and records the outcome (counts only). */
+async function eraseAndRecord(
+  admin: ReturnType<typeof createAdminClient>,
+  userId: string,
+  reason: 'learner_request' | 'consent_withdrawal',
+): Promise<{ ok: true; erasure: ErasureStatus; sessions: number; providerNotDeleted: number } | { ok: false }> {
+  const outcome = await eraseVoiceDataForUser(admin, userId, { reason, apiKey: process.env.ELEVENLABS_API_KEY })
+  if (!outcome.ok) {
+    log.error({ userId, step: outcome.step, reason }, 'voice data not deleted')
+    await logAuditEvent({
+      eventType: 'voice.data_deleted', actorType: 'self', actorId: userId, subjectUserId: userId,
+      method: 'voice_practice', outcome: 'failure', reason: `erasure_${outcome.step}`, metadata: { trigger: reason },
+    })
+    return { ok: false }
+  }
+  await logAuditEvent({
+    eventType: 'voice.data_deleted', actorType: 'self', actorId: userId, subjectUserId: userId,
+    method: 'voice_practice', outcome: 'success',
+    metadata: { trigger: reason, sessions: outcome.sessions, providerDeleted: outcome.providerDeleted, providerNotDeleted: outcome.providerQueued },
+  })
+  return {
+    ok: true,
+    erasure: outcome.providerQueued > 0 ? 'pending_provider' : 'complete',
+    sessions: outcome.sessions,
+    providerNotDeleted: outcome.providerQueued,
+  }
 }
 
 /**
@@ -105,28 +149,13 @@ export async function withdrawVoiceConsent(): Promise<{ ok?: true; error?: strin
  * (lib/voice/erasure.ts). `providerNotDeleted` counts those: the learner is told
  * the truth, never « deleted » for a copy that still exists.
  */
-export async function deleteMyVoiceData(): Promise<{ ok?: true; deletedSessions?: number; providerNotDeleted?: number; error?: string }> {
+export async function deleteMyVoiceData(): Promise<{ ok?: true; erasure?: ErasureStatus; deletedSessions?: number; providerNotDeleted?: number; error?: string }> {
   const user = await signedInLearner()
   if (!user) return { error: 'Connectez-vous pour continuer.' }
   const rl = await rateLimitDb(`voice_delete:${user.id}`, { limit: 3, windowMs: 60 * 60 * 1000 })
   if (!rl.success) return { error: 'Trop de demandes. Réessayez plus tard.' }
 
-  const outcome = await eraseVoiceDataForUser(createAdminClient(), user.id, {
-    reason: 'learner_request',
-    apiKey: process.env.ELEVENLABS_API_KEY,
-  })
-  if (!outcome.ok) {
-    log.error({ userId: user.id, step: outcome.step }, 'voice data not deleted')
-    await logAuditEvent({
-      eventType: 'voice.data_deleted', actorType: 'self', actorId: user.id, subjectUserId: user.id,
-      method: 'voice_practice', outcome: 'failure', reason: `erasure_${outcome.step}`,
-    })
-    return { error: 'La suppression n’a pas pu être effectuée.' }
-  }
-  await logAuditEvent({
-    eventType: 'voice.data_deleted', actorType: 'self', actorId: user.id, subjectUserId: user.id,
-    method: 'voice_practice', outcome: 'success',
-    metadata: { sessions: outcome.sessions, providerDeleted: outcome.providerDeleted, providerNotDeleted: outcome.providerQueued },
-  })
-  return { ok: true, deletedSessions: outcome.sessions, providerNotDeleted: outcome.providerQueued }
+  const erased = await eraseAndRecord(createAdminClient(), user.id, 'learner_request')
+  if (!erased.ok) return { error: 'La suppression n’a pas pu être effectuée.' }
+  return { ok: true, erasure: erased.erasure, deletedSessions: erased.sessions, providerNotDeleted: erased.providerNotDeleted }
 }

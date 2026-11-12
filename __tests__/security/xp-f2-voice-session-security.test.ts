@@ -5,6 +5,8 @@
  * these tests open it in-process to prove what the server enforces once it is
  * opened: signed-in learner, course access, consent, one live session, attempts
  * per lesson, ownership, no provider call on any refusal, no token in the logs.
+ * XP-F2-READY-01 adds the attempt ledger and its atomic start (D3), withdrawal
+ * that erases (D2), the administrator's erasure, and the 30-day policy (D1).
  * XP-F2-04 adds the erasure queue, the admin account deletion, the retention
  * route and the restricted-UAT gate. XP-F2-03 adds: self-assessment is never constrained by the voice policy, the
  * reviewed brief reaches the learner, the transcript guards in the feedback,
@@ -31,6 +33,8 @@ const state = {
   open: true,
   events: [] as string[],
   deleteUserError: null as string | null,
+  failRpc: false,
+  isAdmin: true,
   audits: [] as Row[],
   logs: [] as string[],
   fetches: [] as { url: string; init?: RequestInit }[],
@@ -103,6 +107,22 @@ vi.mock('@/lib/ai/flags', () => ({
 vi.mock('@/lib/supabase/admin', () => ({
   createAdminClient: () => ({
     from,
+    // Mirrors migration 066's voice_start_attempt: limit, one live voice session, session and attempt together.
+    rpc: async (name: string, a: Record<string, unknown>) => {
+      if (state.failRpc || name !== 'voice_start_attempt') return { data: null, error: { message: 'rpc unavailable' } }
+      const ledger = (state.db.voice_attempts ??= [])
+      const used = ledger.filter(r => r.user_id === a.p_user_id && r.scenario_id === a.p_scenario_id && String(r.started_at) >= String(a.p_since)).length
+      if (used >= Number(a.p_limit)) return { data: [{ outcome: 'attempts_exhausted', session_id: null, attempts_used: used }], error: null }
+      const sessions = (state.db.ai_sessions ??= [])
+      if (sessions.some(r => r.user_id === a.p_user_id && r.status === 'active' && r.mode === 'voice')) {
+        return { data: [{ outcome: 'session_in_progress', session_id: null, attempts_used: used }], error: null }
+      }
+      const id = crypto.randomUUID()
+      const now = new Date().toISOString()
+      sessions.push({ id, scenario_id: a.p_scenario_id, user_id: a.p_user_id, anon_id: null, status: 'active', mode: 'voice', started_at: now })
+      ledger.push({ user_id: a.p_user_id, scenario_id: a.p_scenario_id, started_at: now })
+      return { data: [{ outcome: 'started', session_id: id, attempts_used: used + 1 }], error: null }
+    },
     auth: { admin: { deleteUser: async (id: string) => {
       state.events.push(`deleteUser:${id}`)
       if (state.deleteUserError) return { error: { message: state.deleteUserError } }
@@ -112,7 +132,12 @@ vi.mock('@/lib/supabase/admin', () => ({
     } } },
   }),
 }))
-vi.mock('@/lib/auth/session', () => ({ requirePlatformAdmin: async () => ({ id: 'ADMIN', email: 'admin@example.test' }) }))
+vi.mock('@/lib/auth/session', () => ({
+  requirePlatformAdmin: async () => {
+    if (!state.isAdmin) throw new Error('NEXT_REDIRECT /login')
+    return { id: 'ADMIN', email: 'admin@example.test' }
+  },
+}))
 vi.mock('next/navigation', () => ({ redirect: (to: string) => { state.events.push(`redirect:${to}`) } }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => ({ auth: { getUser: async () => ({ data: { user: state.user } }) }, from }) }))
 vi.mock('@/lib/auth/course-access', () => ({
@@ -139,6 +164,8 @@ beforeEach(() => {
   state.open = true
   state.events = []
   state.deleteUserError = null
+  state.failRpc = false
+  state.isAdmin = true
   vi.unstubAllEnvs()
   state.audits = []
   state.logs = []
@@ -245,7 +272,7 @@ describe('starting a voice session', () => {
   })
 
   it('five attempts per lesson within the access period; earlier periods do not count', async () => {
-    for (let i = 0; i < 5; i++) state.db.ai_sessions.push({ id: `S${i}`, user_id: 'U1', scenario_id: SCENARIO, status: 'completed', mode: 'voice', started_at: T(30 + i) })
+    state.db.voice_attempts = Array.from({ length: 5 }, (_, i) => ({ user_id: 'U1', scenario_id: SCENARIO, started_at: T(30 + i) }))
     expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('attempts_exhausted')
     expect(providerCalls()).toEqual([])
     // A renewed access starts a new period: the same five attempts no longer count.
@@ -586,13 +613,15 @@ describe('XP-F2-04: transcript retention, configurable, alerting, and scheduled 
     state.db.voice_provider_erasures = []
   })
 
-  it('the period is configuration: unset, malformed or out of range means no purge', async () => {
-    const { configuredRetentionDays, PROPOSED_TRANSCRIPT_RETENTION_DAYS } = await import('@/lib/voice/retention')
-    expect(PROPOSED_TRANSCRIPT_RETENTION_DAYS).toBe(30)
-    for (const raw of [undefined, '', '0', '-5', '30.5', '30 jours', 'abc', '99999', '3651']) expect(configuredRetentionDays(raw), String(raw)).toBeNull()
+  it('the period is the approved 30 days; configuration may only shorten it, and a bad value purges nothing', async () => {
+    const { configuredRetentionDays, APPROVED_TRANSCRIPT_RETENTION_DAYS } = await import('@/lib/voice/retention')
+    expect(APPROVED_TRANSCRIPT_RETENTION_DAYS).toBe(30)
+    expect(configuredRetentionDays(undefined)).toBe(30)
+    expect(configuredRetentionDays('')).toBe(30)
+    expect(configuredRetentionDays()).toBe(30)
     expect(configuredRetentionDays('30')).toBe(30)
     expect(configuredRetentionDays(' 7 ')).toBe(7)
-    expect(configuredRetentionDays()).toBeNull()
+    for (const raw of ['0', '-5', '30.5', '30 jours', 'abc', '31', '90', '3650', '99999']) expect(configuredRetentionDays(raw), raw).toBeNull()
   })
 
   it('with no period, nothing is purged, however old', async () => {
@@ -682,17 +711,33 @@ describe('XP-F2-04: transcript retention, configurable, alerting, and scheduled 
       expect(providerCalls()).toEqual([])
     })
 
-    it('authorised but with no period configured: retries only, no purge', async () => {
+    it('a period longer than the policy, or malformed, is refused: nothing purged, 500 for the scheduler', async () => {
       vi.stubEnv('CRON_SECRET', SECRET)
-      const res = await call(`Bearer ${SECRET}`)
-      expect(res.status).toBe(200)
-      expect(await res.json()).toMatchObject({ ok: true, retentionDays: null, sessionsPurged: 0 })
+      for (const bad of ['45', 'trente']) {
+        vi.stubEnv('VOICE_TRANSCRIPT_RETENTION_DAYS', bad)
+        const res = await call(`Bearer ${SECRET}`)
+        expect(res.status).toBe(500)
+        expect(await res.json()).toEqual({ error: 'misconfigured' })
+      }
       expect(state.db.ai_turns).toHaveLength(2)
+      expect(state.logs.join('\n')).toContain('VOICE_RETENTION_MISCONFIGURED')
     })
 
-    it('authorised with a period: purges, and answers with counts only', async () => {
+    it('dryRun=1 says what a run would do and changes nothing, at the provider either', async () => {
       vi.stubEnv('CRON_SECRET', SECRET)
-      vi.stubEnv('VOICE_TRANSCRIPT_RETENTION_DAYS', '30')
+      for (const s of state.db.ai_sessions) if (s.id !== 'NEW') s.started_at = T(60 * 24 * 400)
+      const { GET } = await import('@/app/api/voice/retention/route')
+      const res = await GET(new Request('https://example.test/api/voice/retention?dryRun=1', { headers: { authorization: `Bearer ${SECRET}` } }))
+      expect(res.status).toBe(200)
+      expect(await res.json()).toMatchObject({ ok: true, dryRun: true, retentionDays: 30, sessionsPurged: 2, providerDeleted: 0, providerPending: 1 })
+      expect(state.db.ai_turns).toHaveLength(2)
+      expect(state.db.ai_sessions.find(s => s.id === 'OLD')).toMatchObject({ provider_conversation_id: 'conv_old_1234', engine_signals: { hints: [{ quote: 'vieux mots' }] } })
+      expect(providerCalls()).toEqual([])
+      expect(state.audits.filter(a => a.eventType === 'voice.retention_purged')).toEqual([])
+    })
+
+    it('authorised, with the approved period by default: purges, and answers with counts only', async () => {
+      vi.stubEnv('CRON_SECRET', SECRET)
       // « Now » is the real clock here: age the fixtures against it.
       for (const s of state.db.ai_sessions) if (s.id !== 'NEW') s.started_at = T(60 * 24 * 400)
       const res = await call(`Bearer ${SECRET}`)
@@ -726,9 +771,8 @@ describe('XP-F2-04: transcript retention, configurable, alerting, and scheduled 
     expect(hits.sort()).toEqual(['app/api/voice/retention/route.ts', 'lib/voice/retention.ts'])
     const crons = (JSON.parse(readFileSync(join(root, 'vercel.json'), 'utf8')).crons ?? []) as { path: string }[]
     expect(crons.map(c => c.path)).toEqual(['/api/payments/paytech/reconcile'])
-    // The proposal is a named constant only: no default period is wired anywhere.
-    const src = readFileSync(join(root, 'lib/voice/retention.ts'), 'utf8')
-    expect(src.match(/PROPOSED_TRANSCRIPT_RETENTION_DAYS/g)).toHaveLength(1)
+    // The approved period lives in one place.
+    expect(readFileSync(join(root, 'lib/voice/retention.ts'), 'utf8')).toContain('export const APPROVED_TRANSCRIPT_RETENTION_DAYS = 30')
   })
 })
 
@@ -826,5 +870,227 @@ describe('XP-F2-04: restricted UAT — voice closed for everyone except the list
     expect(access).not.toContain('NEXT_PUBLIC')
     const page = readFileSync(join(process.cwd(), 'app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx'), 'utf8')
     expect(page).not.toMatch(/VOICE_UAT_USER_IDS|voice\/access/)
+  })
+})
+
+describe('XP-F2-READY-01 D3: the five attempts survive a voluntary erasure', () => {
+  const start = async () => (await actions()).startVoiceSession({ scenarioId: SCENARIO })
+  const finishLive = () => { for (const s of state.db.ai_sessions) if (s.status === 'active') s.status = 'completed' }
+
+  it('each start records one attempt in the ledger: learner, scenario, time, nothing else', async () => {
+    expect((await start()).attemptsRemaining).toBe(4)
+    expect(state.db.voice_attempts).toHaveLength(1)
+    expect(Object.keys(state.db.voice_attempts[0]).sort()).toEqual(['scenario_id', 'started_at', 'user_id'])
+  })
+
+  it('erasing voice data deletes the sessions, never the attempts: no sixth attempt', async () => {
+    for (let i = 0; i < 5; i++) { expect((await start()).error, `attempt ${i + 1}`).toBeUndefined(); finishLive() }
+    expect((await start()).reason).toBe('attempts_exhausted')
+    expect((await (await consentActions()).deleteMyVoiceData()).ok).toBe(true)
+    expect(state.db.ai_sessions).toEqual([])
+    expect(state.db.voice_attempts).toHaveLength(5)
+    expect((await start()).reason).toBe('attempts_exhausted')
+  })
+
+  it('repeated erasures, a withdrawal, a new consent: still no attempt given back', async () => {
+    for (let i = 0; i < 3; i++) { await start(); finishLive() }
+    const c = await consentActions()
+    await c.deleteMyVoiceData()
+    await c.deleteMyVoiceData()
+    await c.withdrawVoiceConsent()
+    await c.acceptVoiceConsent({ version: 'voix-1.0', accepted: true })
+    expect(state.db.voice_attempts).toHaveLength(3)
+    expect((await start()).attemptsRemaining).toBe(1)
+  })
+
+  it('an administrator\'s erasure keeps the ledger too', async () => {
+    for (let i = 0; i < 2; i++) { await start(); finishLive() }
+    const f = new FormData(); f.set('userId', '00000000-0000-4000-8000-000000000001')
+    state.db.ai_sessions.forEach(s => { s.user_id = '00000000-0000-4000-8000-000000000001' })
+    state.db.voice_attempts.forEach(a => { a.user_id = '00000000-0000-4000-8000-000000000001' })
+    await (await import('@/app/(admin)/admin/users/[id]/actions')).eraseUserVoiceData(f)
+    expect(state.db.ai_sessions).toEqual([])
+    expect(state.db.voice_attempts).toHaveLength(2)
+  })
+
+  it('a renewed access opens a new period with five attempts; an expired one starts nothing', async () => {
+    state.db.voice_attempts = Array.from({ length: 5 }, () => ({ user_id: 'U1', scenario_id: SCENARIO, started_at: T(60) }))
+    expect((await start()).reason).toBe('attempts_exhausted')
+    state.db.entitlements = [{ user_id: 'U1', course_id: 'C2', status: 'ACTIVE', starts_at: T(10), expires_at: null, revoked_at: null, created_at: T(10) }]
+    expect((await start()).attemptsRemaining).toBe(4)
+    finishLive()
+    state.db.entitlements = [{ user_id: 'U1', course_id: 'C2', status: 'ACTIVE', starts_at: T(60 * 24 * 200), expires_at: T(60), revoked_at: null, created_at: T(60 * 24 * 200) }]
+    const r = await start()
+    expect(r.signedUrl).toBeUndefined()
+    expect(r.error).toBeTruthy()
+  })
+
+  it('the ledger is per learner and per lesson: another learner\'s attempts do not count, nor leak', async () => {
+    state.db.voice_attempts = Array.from({ length: 5 }, () => ({ user_id: 'U2', scenario_id: SCENARIO, started_at: T(5) }))
+    const r = await start()
+    expect(r.attemptsRemaining).toBe(4)
+    expect(JSON.stringify(r)).not.toContain('U2')
+  })
+
+  it('the database is the authority: when the atomic start refuses, nothing starts and no URL is returned', async () => {
+    // The early check sees 4 attempts; another start lands the 5th before ours.
+    state.db.voice_attempts = Array.from({ length: 4 }, () => ({ user_id: 'U1', scenario_id: SCENARIO, started_at: T(5) }))
+    const real = (await import('@/lib/supabase/admin')).createAdminClient() as unknown as { rpc: (n: string, a: Record<string, unknown>) => Promise<unknown> }
+    const rpc = real.rpc
+    let first = true
+    real.rpc = async (n, a) => {
+      if (first) { first = false; state.db.voice_attempts.push({ user_id: 'U1', scenario_id: SCENARIO, started_at: T(1) }) }
+      return rpc(n, a)
+    }
+    // The admin client is created per call in the action: race the ledger directly instead.
+    state.db.voice_attempts.push({ user_id: 'U1', scenario_id: SCENARIO, started_at: T(1) })
+    const r = await start()
+    expect(r.reason).toBe('attempts_exhausted')
+    expect(r.signedUrl).toBeUndefined()
+    expect(state.db.ai_sessions).toEqual([])
+  })
+
+  it('an unavailable database refuses the start: never a session without its attempt', async () => {
+    state.failRpc = true
+    const r = await start()
+    expect(r.error).toMatch(/indisponible/)
+    expect(r.signedUrl).toBeUndefined()
+    expect(state.db.ai_sessions).toEqual([])
+    expect(state.db.voice_attempts ?? []).toEqual([])
+  })
+
+  it('self-assessment never touches the ledger', async () => {
+    await (await actions()).createAiSession({ scenarioId: SCENARIO })
+    expect(state.db.voice_attempts ?? []).toEqual([])
+  })
+})
+
+describe('XP-F2-READY-01 D2: withdrawing the consent stops processing and erases', () => {
+  beforeEach(() => {
+    state.db.ai_sessions.push(
+      { id: 'A', user_id: 'U1', provider_conversation_id: 'conv_mine_1234', status: 'completed', mode: 'voice' },
+      { id: 'B', user_id: 'U1', provider_conversation_id: null, status: 'completed', mode: 'self' },
+      { id: 'C', user_id: 'U2', provider_conversation_id: 'conv_theirs_12', status: 'completed', mode: 'voice' },
+    )
+    state.db.voice_provider_erasures = []
+  })
+
+  it('provider reachable: consent withdrawn, sessions and provider copies deleted, reported complete', async () => {
+    const r = await (await consentActions()).withdrawVoiceConsent()
+    expect(r).toMatchObject({ ok: true, erasure: 'complete', providerNotDeleted: 0 })
+    expect(state.db.voice_processing_consents[0].withdrawn_at).toBeTruthy()
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.fetches.filter(f => f.init?.method === 'DELETE').map(f => f.url)).toEqual(['https://api.elevenlabs.io/v1/convai/conversations/conv_mine_1234'])
+    expect(state.audits.map(a => a.eventType)).toEqual(['voice.consent_withdrawn', 'voice.data_deleted'])
+    expect(state.audits[1]).toMatchObject({ outcome: 'success', metadata: { trigger: 'consent_withdrawal', sessions: 2, providerDeleted: 1, providerNotDeleted: 0 } })
+    expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('consent_required')
+  })
+
+  it('provider down: still withdrawn and erased here; the provider copy is queued and reported pending', async () => {
+    providerDown()
+    const r = await (await consentActions()).withdrawVoiceConsent()
+    expect(r).toMatchObject({ ok: true, erasure: 'pending_provider', providerNotDeleted: 1 })
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.db.voice_provider_erasures).toEqual([expect.objectContaining({ provider_conversation_id: 'conv_mine_1234', reason: 'consent_withdrawal' })])
+  })
+
+  it('queue unavailable: the withdrawal holds, nothing is deleted, and the learner is told to retry', async () => {
+    providerDown()
+    state.failWrite.add('voice_provider_erasures')
+    const r = await (await consentActions()).withdrawVoiceConsent()
+    expect(r.ok).toBeUndefined()
+    expect(r.withdrawn).toBe(true)
+    expect(r.error).toMatch(/accord est retiré, mais la suppression/)
+    expect(state.db.voice_processing_consents[0].withdrawn_at).toBeTruthy()
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['A', 'B', 'C'])
+    expect(state.audits.at(-1)).toMatchObject({ eventType: 'voice.data_deleted', outcome: 'failure', reason: 'erasure_queue' })
+    expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('consent_required')
+  })
+
+  it('repeating the withdrawal is safe and finishes a pending erasure', async () => {
+    providerDown()
+    state.failWrite.add('voice_provider_erasures')
+    await (await consentActions()).withdrawVoiceConsent()
+    state.failWrite.clear()
+    const again = await (await consentActions()).withdrawVoiceConsent()
+    expect(again.ok).toBe(true)
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.db.voice_provider_erasures).toHaveLength(1)
+    const third = await (await consentActions()).withdrawVoiceConsent()
+    expect(third).toMatchObject({ ok: true, erasure: 'complete' })
+    expect(state.db.voice_provider_erasures).toHaveLength(1)
+  })
+
+  it('a signed-out caller can neither withdraw nor erase anyone', async () => {
+    state.user = null
+    const c = await consentActions()
+    expect((await c.withdrawVoiceConsent()).error).toBeTruthy()
+    expect((await c.deleteMyVoiceData()).error).toBeTruthy()
+    expect(state.db.ai_sessions).toHaveLength(3)
+  })
+
+  it('no transcript or quote reaches the logs or the audit', async () => {
+    state.db.ai_turns = [{ session_id: 'A', transcript: 'phrase privée du conseiller' }]
+    await (await consentActions()).withdrawVoiceConsent()
+    expect(state.logs.join('\n') + JSON.stringify(state.audits)).not.toContain('phrase privée')
+  })
+})
+
+describe('XP-F2-READY-01: an administrator erases a learner\'s voice data', () => {
+  const LEARNER = '00000000-0000-4000-8000-0000000000b1'
+  const erase = async (id: string) => {
+    const f = new FormData(); f.set('userId', id)
+    return (await import('@/app/(admin)/admin/users/[id]/actions')).eraseUserVoiceData(f)
+  }
+  beforeEach(() => {
+    state.db.ai_sessions.push(
+      { id: 'A', user_id: LEARNER, provider_conversation_id: 'conv_admin_123', status: 'completed', mode: 'voice' },
+      { id: 'C', user_id: 'U2', provider_conversation_id: null, status: 'completed', mode: 'voice' },
+    )
+    state.db.voice_provider_erasures = []
+  })
+
+  it('only a platform administrator can do it', async () => {
+    state.isAdmin = false
+    await expect(erase(LEARNER)).rejects.toThrow()
+    expect(state.db.ai_sessions).toHaveLength(2)
+    expect(providerCalls()).toEqual([])
+  })
+
+  it('a malformed id is refused before anything is read', async () => {
+    await expect(erase('U1; drop table')).rejects.toThrow(/Missing userId/)
+    expect(state.db.ai_sessions).toHaveLength(2)
+  })
+
+  it('erases that learner only, keeps the account, audits the counts, and says when the provider is pending', async () => {
+    providerDown()
+    await erase(LEARNER)
+    expect(state.db.ai_sessions.map(s => s.id)).toEqual(['C'])
+    expect(state.events).toContain(`redirect:/admin/users/${LEARNER}?voice_erased=pending_provider`)
+    expect(state.events.some(e => e.startsWith('deleteUser'))).toBe(false)
+    expect(state.audits.at(-1)).toMatchObject({ eventType: 'voice.data_deleted', actorType: 'admin', subjectUserId: LEARNER, outcome: 'success', metadata: { trigger: 'admin_request', providerNotDeleted: 1 } })
+    expect(state.db.voice_provider_erasures).toEqual([expect.objectContaining({ reason: 'admin_request' })])
+  })
+
+  it('fails loudly, deleting nothing, when a reference cannot be kept', async () => {
+    providerDown()
+    state.failWrite.add('voice_provider_erasures')
+    await expect(erase(LEARNER)).rejects.toThrow(/Voice data not erased/)
+    expect(state.db.ai_sessions).toHaveLength(2)
+    expect(state.audits.at(-1)).toMatchObject({ outcome: 'failure', reason: 'erasure_queue' })
+  })
+})
+
+describe('XP-F2-READY-01: the next consent version is prepared, not active', () => {
+  it('voix-1.0 stays the version the server requires; voix-1.1 states the approved policies', async () => {
+    const policy = await import('@/lib/voice/session-policy')
+    expect(policy.VOICE_CONSENT_VERSION).toBe('voix-1.0')
+    expect(policy.VOICE_CONSENT_NEXT.version).toBe('voix-1.1')
+    expect(policy.VOICE_CONSENT_NEXT.textFr).toContain('conservés 30 jours')
+    expect(policy.VOICE_CONSENT_NEXT.textFr).toContain('mes entraînements vocaux sont supprimés')
+    expect(policy.VOICE_CONSENT_NEXT.textFr).toContain('reste décompté')
+    // A learner who accepted only voix-1.1 cannot start while 1.0 is the active version.
+    state.db.voice_processing_consents = [{ user_id: 'U1', consent_version: 'voix-1.1', accepted_at: T(5), withdrawn_at: null }]
+    expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('consent_required')
   })
 })
