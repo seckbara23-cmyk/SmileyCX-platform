@@ -35,6 +35,18 @@ A legacy session is proposed for reclassification as voice only when ALL hold:
 
 A session meeting 1–4 but not 5 (an earlier agent opening) is **ambiguous**. It is excluded from automatic reclassification and listed for the owner's review.
 
+### Outcome of the review (XP-F2-READY-04)
+
+The sessions excluded on criterion 5 were reviewed. Their first agent turn is a generic assistant greeting, and none of their agent turns mentions the persona's story. They ran on a voice agent not yet configured with the persona.
+
+They are nonetheless voice sessions. Before migration 066, the only code that ever wrote transcript turns was `saveAiTurns`, and its only caller was the live voice-session component. The self-assessment never wrote a turn. Their turns also follow exactly the same pattern as the confirmed sessions: the agent speaks first, then each exchange is saved progressively over the length of the call.
+
+Criterion 5 identifies the persona, not the mode, so it is dropped for the reclassification. A session is reclassified as voice when criteria 1 to 4 hold. After this review, no legacy session with transcript turns remains unresolved.
+
+What the owner confirmed: no known legal dispute or preservation requirement concerns these sessions.
+
+A read-only verifier, generated with the allowlist, checks that every session is still exactly what the inventory saw. It also counts what the 30-day retention would purge after the reclassification, and what stays untouched outside the allowlist. It runs before migration 066 and writes nothing.
+
 ### Mechanism (prepared, not executed; kept outside this repository)
 
 A generator turns an exact allowlist of session ids into three SQL files, so they cannot drift apart:
