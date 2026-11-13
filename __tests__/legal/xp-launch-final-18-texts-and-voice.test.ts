@@ -101,15 +101,24 @@ describe('voice practice is closed in code, whatever the environment says', () =
 
   it('the lesson page consults only the closed switch', () => {
     const page = read('app/(learn)/learn/[courseSlug]/[moduleId]/[lessonId]/page.tsx')
-    expect(page).toContain('VOICE_PRACTICE_OPEN')
+    // XP-F2-04: the page asks the server only when voice is open, or on a build made for a restricted UAT.
+    expect(page).toContain('VOICE_LESSON_PROBE')
     expect(page).not.toMatch(/\bAI_VOICE_ENABLED\b/)
+    expect(read('lib/ai/flags.ts')).toContain('export const VOICE_LESSON_PROBE = VOICE_PRACTICE_OPEN || VOICE_UAT_CLIENT_PROBE')
+  })
+
+  it('without the UAT build flag, the page does not even ask', async () => {
+    vi.stubEnv('NEXT_PUBLIC_AI_VOICE_ENABLED', 'true')
+    vi.stubEnv('NEXT_PUBLIC_VOICE_UAT', '')
+    vi.resetModules()
+    expect((await import('@/lib/ai/flags')).VOICE_LESSON_PROBE).toBe(false)
   })
 
   it('both actions that open a voice session refuse first, before any identity or provider call', () => {
     const src = read('app/actions/ai-practice.ts')
     for (const fn of ['createAiSession', 'startVoiceSession']) {
       const body = src.slice(src.indexOf(`export async function ${fn}(`))
-      const guard = body.indexOf('if (!VOICE_PRACTICE_OPEN) return')
+      const guard = body.indexOf("=== 'closed') return")
       expect(guard, fn).toBeGreaterThan(-1)
       expect(guard, fn).toBeLessThan(body.indexOf('createClient()'))
       expect(guard, fn).toBeLessThan(body.indexOf('safeParse('))

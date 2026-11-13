@@ -7,7 +7,7 @@ import {
   ExternalLink,
 } from 'lucide-react'
 import { notFound } from 'next/navigation'
-import { deleteUser } from './actions'
+import { deleteUser, eraseUserVoiceData } from './actions'
 import type { Metadata } from 'next'
 import { PUBLIC_SITE_URL } from '@/lib/brand'
 
@@ -537,6 +537,17 @@ export default async function AdminUserDetailPage({ params: paramsPromise }: { p
           Supprimer cet utilisateur supprime son compte Supabase Auth, son profil et toutes ses données.
           Cette action est irréversible.
         </p>
+        <form action={eraseUserVoiceData} className="mb-4">
+          <input type="hidden" name="userId" value={userRaw.id} />
+          <p className="text-xs text-gray-400 mb-2">
+            Supprimer seulement les données vocales (transcriptions, retours, conversations chez le prestataire).
+            Le compte et le compteur d’essais sont conservés.
+          </p>
+          <button type="submit"
+            className="px-4 py-2 rounded-xl border border-red-200 text-red-700 text-sm font-semibold hover:bg-red-50 transition-colors">
+            Supprimer les données vocales
+          </button>
+        </form>
         <form action={deleteUser}>
           <input type="hidden" name="userId" value={userRaw.id} />
           <button type="submit"

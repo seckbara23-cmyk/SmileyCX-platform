@@ -421,10 +421,11 @@ describe('DATABASE GUARD — the structure that keeps every payment write behind
 describe('vercel.json — this branch does not create a preview deployment', () => {
   // Delete this block together with the two vercel.json keys, in a commit on
   // main AFTER the merge. Removing them on the branch would itself deploy it.
-  // XP-LAUNCH-FINAL-18: PR #66 is merged, so its branch's opt-out is gone and
-  // the UAT release branch is the one this file now keeps off Vercel.
-  const BRANCH = 'feat/xp-launch-final-18-uat-release'
-  const MERGED = 'feat/xp-launch-final-08-commercial-offers'
+  // XP-F2-01: PR #68 is merged, so its branch's opt-out is gone and the voice
+  // training branch is the one this file now keeps off Vercel: no preview may
+  // run voice sessions.
+  const BRANCH = 'feat/xp-f2-voice-training-foundation'
+  const MERGED = 'feat/xp-launch-final-18-uat-release'
   // The superseded legal-checkout branch (draft PR #67) stays opted out until it is deleted.
   const STACKED = 'feat/xp-launch-final-11-legal-checkout'
   const config = JSON.parse(read('vercel.json')) as {
@@ -546,10 +547,10 @@ describe('XP-PAYTECH-05 — the exception workflow cannot complete, grant or ref
   it('vercel.json keeps both protections for this branch', () => {
     const config = JSON.parse(read('vercel.json')) as { git: { deploymentEnabled: Record<string, boolean> }; ignoreCommand: string }
     expect(config.git.deploymentEnabled).toEqual({
-      'feat/xp-launch-final-18-uat-release': false,        // XP-LAUNCH-FINAL-18, after PR #66's merge
+      'feat/xp-f2-voice-training-foundation': false,        // XP-F2-01, after PR #68's merge
       'feat/xp-launch-final-11-legal-checkout': false,     // superseded draft PR #67
     })
-    expect(config.ignoreCommand).toContain('feat/xp-launch-final-18-uat-release')
+    expect(config.ignoreCommand).toContain('feat/xp-f2-voice-training-foundation')
   })
 })
 

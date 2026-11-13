@@ -122,9 +122,9 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
                 '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql',
                 '063_payment_state_machine.sql', '064_payment_exceptions.sql',
-                '065_commercial_offers.sql'])
+                '065_commercial_offers.sql', '066_voice_training_foundation.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(65)
+    expect(Math.max(...nums)).toBe(66)  // XP-F2-01 authored 066 (voice-training consent, session mode).
 
     const strip = (p: string) => read(p).replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     const m059 = strip('supabase/migrations/059_payment_column_select_security.sql')

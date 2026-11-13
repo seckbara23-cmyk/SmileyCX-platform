@@ -109,7 +109,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     expect(f.filter(x => parseInt(x, 10) > 58))
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
                 '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql',
-                '065_commercial_offers.sql'])
+                '065_commercial_offers.sql', '066_voice_training_foundation.sql'])  // XP-F2-01 authored 066 (voice-training consent, session mode); it is admitted by name.
     const m059 = read('supabase/migrations/059_payment_column_select_security.sql')
       .replace(/--[^\n]*/g, '').replace(/'(?:[^']|'')*'/g, "''").replace(/"[^"]*"/g, '""')
     expect(m059, '059 must not alter the table 058 shaped').not.toMatch(/alter\s+table/i)
@@ -142,7 +142,7 @@ describe('PAY-1 — 058 exists, alone, as one transaction that writes nothing', 
     expect(f.filter(x => x.startsWith('046')), '046 stays withdrawn').toEqual([])
     expect(f.filter(x => x.startsWith('051')), '051 stays reserved').toEqual([])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(65)  // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access)
+    expect(Math.max(...nums)).toBe(66)  // XP-F2-01 authored 066 (voice-training consent, session mode); it is admitted by name.
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 
