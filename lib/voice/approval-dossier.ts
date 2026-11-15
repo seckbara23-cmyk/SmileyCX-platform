@@ -3,6 +3,7 @@ import { COMMON_BOUNDARIES_FR, VOICE_PERSONAS, type VoicePersona, type VoicePers
 import { COMMON_AGENT_RULES, MAX_REPROMPTS } from '@/lib/voice/agent-rules'
 import { DROPPED_RATIONALE_FR, NO_EVIDENCE_FR, RESULT_LABEL_FR, feedbackSummaryFr } from '@/lib/voice/feedback'
 import { GUARD_RATIONALE_FR } from '@/lib/voice/dialogue-guards'
+import { personaSelfAssessment, SELF_ASSESSMENT_SCALE_FR } from '@/lib/voice/self-assessment'
 
 /**
  * XP-F2-03 — the pedagogical approval dossier, in French, generated from the
@@ -164,6 +165,12 @@ function exerciseSection(p: VoicePersona): string {
     lines.push('')
     lines.push(`**Limite propre à ${p.customer.name}** : ${specificBoundaries.join(' ')}`)
   }
+  lines.push('')
+  lines.push('**Auto-évaluation après l’échange (proposée, à valider)**')
+  lines.push('')
+  lines.push(`Échelle : ${SELF_ASSESSMENT_SCALE_FR.join(' · ')}. Dernière question en texte libre.`)
+  lines.push('')
+  personaSelfAssessment(p).forEach((q, i) => lines.push(`${i + 1}. ${q.question}`))
   lines.push('')
   lines.push('### Points à confirmer')
   lines.push('')

@@ -25,7 +25,8 @@ import { createLogger } from '@/lib/logger'
 import { AI_COACH_ENABLED, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
 import { voiceGateForCaller } from '@/lib/voice/access'
 import { personaBySlug, publicPersona, type PublicVoicePersona } from '@/lib/voice/personas'
-import { checkVoiceStart, startVoiceAttempt, START_REFUSAL_FR } from '@/lib/voice/session-policy'
+import { checkVoiceStart, startVoiceAttempt, voiceAttemptStatus, START_REFUSAL_FR } from '@/lib/voice/session-policy'
+import { personaSelfAssessment } from '@/lib/voice/self-assessment'
 import { requestSignedUrl, fetchConversationAnalysis, ConversationId } from '@/lib/voice/elevenlabs'
 import { buildVoiceFeedback, type VoiceFeedback } from '@/lib/voice/feedback'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
@@ -116,6 +117,20 @@ export interface VoiceScenario {
    * starts a voice session.
    */
   persona: PublicVoicePersona | null
+  /**
+   * XP-VOICE-FIX-01: where the signed-in learner stands for this lesson's voice
+   * attempts, so the page says it before the learner starts. Null when voice is
+   * not available here or the server could not tell (the start still decides).
+   */
+  attempts: VoiceAttemptsView | null
+}
+
+export interface VoiceAttemptsView {
+  state:     'available' | 'attempts_exhausted' | 'no_access_period'
+  remaining: number
+  limit:     number
+  /** French explanation when no attempt can start; absent when one can. */
+  messageFr?: string
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -240,6 +255,27 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
     // here because the database cannot see it.
     const voiceAvailable = data.voice_configured === true && !!process.env.ELEVENLABS_API_KEY && !!persona
 
+    // XP-VOICE-FIX-01: the attempt counter, read before the learner starts. Read-only;
+    // the start re-checks it atomically. Any failure here only hides the counter.
+    let attempts: VoiceAttemptsView | null = null
+    if (voiceAvailable && persona && courseId) {
+      const { data: { user } } = await supabase.auth.getUser()
+      const status = user
+        ? await voiceAttemptStatus(createAdminClient(), {
+            userId: user.id, scenarioId: data.id as string, courseId, attemptsPerLesson: persona.attemptsPerLesson,
+          }).catch(() => null)
+        : null
+      if (status) {
+        attempts = {
+          state: status.state,
+          remaining: status.remaining,
+          limit: status.limit,
+          ...(status.state === 'available' ? {} : { messageFr: START_REFUSAL_FR[status.state] }),
+        }
+      }
+    }
+
+
     return {
       id:             data.id,
       slug:           data.slug,
@@ -251,10 +287,12 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
       objectives:     persona
         ? persona.observationCriteria.map(c => c.labelFr)
         : (Array.isArray(data.objectives) ? (data.objectives as string[]) : []),
-      selfAssessment: Array.isArray(data.self_assessment)
-        ? (data.self_assessment as SelfAssessmentQuestion[])
-        : [],
+      // XP-VOICE-FIX-01: like the brief, the reviewed persona's questions win over the database's.
+      selfAssessment: persona
+        ? personaSelfAssessment(persona)
+        : (Array.isArray(data.self_assessment) ? (data.self_assessment as SelfAssessmentQuestion[]) : []),
       voiceAvailable,
+      attempts,
       briefing:
         AI_COACH_ENABLED && data.briefing && typeof data.briefing === 'object'
           ? (data.briefing as VoiceBriefing)
@@ -349,7 +387,7 @@ export async function startVoiceSession(
   /** Voice attempts left for this lesson in the current access period, after this one. */
   attemptsRemaining?: number
   error?: string
-  reason?: 'not_configured' | 'consent_required' | 'session_in_progress' | 'attempts_exhausted'
+  reason?: 'not_configured' | 'consent_required' | 'session_in_progress' | 'attempts_exhausted' | 'no_access_period'
   /** Development only (see devDetail): never a provider body, key or token. */
   detail?: string
 }> {

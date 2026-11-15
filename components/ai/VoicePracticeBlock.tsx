@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useTransition } from 'react'
-import { Mic, Target, Loader2, Info } from 'lucide-react'
+import { Mic, Target, Loader2, Info, AlertCircle } from 'lucide-react'
 import {
   createAiSession,
   completeAiSession,
@@ -37,6 +37,27 @@ function getAnonId(): string | undefined {
 
 type Phase = 'intro' | 'consent' | 'voice' | 'feedback' | 'coached' | 'assessment' | 'summary'
 
+/**
+ * XP-VOICE-FIX-01 — the attempt counter, shown before the learner starts, so a
+ * learner with no attempt left is told so instead of being asked for the
+ * microphone and refused afterwards. The server re-checks at the start.
+ */
+function AttemptNotice({ attempts }: { attempts: NonNullable<VoiceScenario['attempts']> }) {
+  if (attempts.state === 'available') {
+    return (
+      <p id="voice-attempts" className="text-xs text-white/55">
+        Essais vocaux restants pour cette leçon : {attempts.remaining} sur {attempts.limit}.
+      </p>
+    )
+  }
+  return (
+    <div id="voice-attempts" role="status" className="flex items-start gap-2.5 px-4 py-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+      <AlertCircle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5" />
+      <p className="text-xs text-amber-200/90 leading-relaxed">{attempts.messageFr}</p>
+    </div>
+  )
+}
+
 interface Props {
   scenario:  VoiceScenario
   pilotMode: boolean
@@ -51,6 +72,8 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
   const [isPending, startTransition] = useTransition()
   const [anonId,    setAnonId]    = useState<string | undefined>(undefined)
   const [consent,   setConsent]   = useState<{ version: string; textFr: string } | null>(null)
+  const attempts     = scenario.voiceAvailable ? scenario.attempts : null
+  const voiceBlocked = !!attempts && attempts.state !== 'available'
 
   useEffect(() => {
     if (pilotMode) setAnonId(getAnonId())
@@ -169,10 +192,11 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
               </p>
             </div>
           )}
+          {attempts && <AttemptNotice attempts={attempts} />}
           <CoachBriefing
             briefing={scenario.briefing}
             pending={isPending}
-            disabled={pilotMode && !anonId}
+            disabled={(pilotMode && !anonId) || (scenario.voiceAvailable && voiceBlocked)}
             startLabel={scenario.voiceAvailable ? 'Commencer la conversation' : "Commencer l'auto-évaluation"}
             onStart={scenario.voiceAvailable ? handleStartVoice : handleStartSelfAssessment}
           />
@@ -206,11 +230,13 @@ export default function VoicePracticeBlock({ scenario, pilotMode }: Props) {
                   quand vous avez fini.
                 </p>
               </div>
+              {attempts && <AttemptNotice attempts={attempts} />}
               <div>
                 <button
                   type="button"
                   onClick={handleStartVoice}
-                  disabled={pilotMode && !anonId}
+                  disabled={isPending || voiceBlocked || (pilotMode && !anonId)}
+                  aria-describedby={attempts ? 'voice-attempts' : undefined}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-white text-sm font-semibold hover:bg-primary/90 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
                 >
                   <Mic className="w-4 h-4" /> Commencer la conversation

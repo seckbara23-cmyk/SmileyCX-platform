@@ -90,12 +90,12 @@ describe('identity: XP CLIENT SUARL is the entity, XP Client Consulting its bran
 describe('voice practice is closed in code, whatever the environment says', () => {
   afterEach(() => { vi.unstubAllEnvs(); vi.resetModules() })
 
-  it('the legal conditions are not built, so the switch is off even with the env flag on', async () => {
+  it('XP-VOICE-FIX-01: the env flag alone opens nothing; the published legal texts version is required too', async () => {
     vi.stubEnv('NEXT_PUBLIC_AI_VOICE_ENABLED', 'true')
     vi.resetModules()
     const flags = await import('@/lib/ai/flags')
     expect(flags.AI_VOICE_ENABLED).toBe(true)
-    expect(flags.VOICE_LEGAL_CONDITIONS_BUILT).toBe(false)
+    expect(flags.VOICE_LEGAL_TEXTS_PUBLISHED).toBe(false)
     expect(flags.VOICE_PRACTICE_OPEN).toBe(false)
   })
 

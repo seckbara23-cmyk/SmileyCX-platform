@@ -5,7 +5,8 @@ import { createClient } from '@/lib/supabase/server'
 /**
  * XP-F2-04 — who voice practice is open for.
  *
- * Normal production: `VOICE_PRACTICE_OPEN` is false, the list below is empty,
+ * Normal production: `VOICE_PRACTICE_OPEN` is false (`lib/ai/flags.ts`: the
+ * feature switch AND the published legal texts' version), the list below is empty,
  * and every voice action answers « closed » before doing anything, exactly as
  * before this file existed.
  *
@@ -14,8 +15,10 @@ import { createClient } from '@/lib/supabase/server'
  * else, the voice actions run — still behind sign-in, course access, consent,
  * the attempt and session limits, and only for the five reviewed F2 scenarios.
  * Everyone else keeps getting « closed ». The list is read on the server at
- * each call and never reaches the browser: emptying it closes the UAT at once,
- * without a deployment of code.
+ * each call and never reaches the browser: emptying it closes the UAT without
+ * a code change. Vercel applies an environment change to NEW deployments only,
+ * so the change takes effect at the next deployment (a redeploy of the same
+ * commit, about two minutes).
  *
  * Fails closed: a malformed id is ignored, and a list longer than the maximum
  * is treated as empty — a wide list is not a restricted UAT.

@@ -1276,3 +1276,119 @@ describe('XP-F2-READY-03: voice erasure never deletes self-assessment history; a
     expect(ids()).toEqual(['LG', 'OT', 'SA', 'VA', 'VB'])
   })
 })
+
+describe('XP-VOICE-FIX-01: what the learner sees before starting, and the refusals that consume nothing', () => {
+  const LESSON = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+  const view = (over: Row = {}) => ({
+    id: SCENARIO, slug: 'amara-forfait-incompris', lesson_id: LESSON, title: 'Client confus', persona_name: 'Amara',
+    situation: 'Texte de la base.', objectives: [], self_assessment: [], voice_configured: true, order_index: 0, ...over,
+  })
+  beforeEach(() => {
+    state.db.lessons.push({ id: LESSON, module_id: 'M1' })
+    state.db.ai_scenarios[0].lesson_id = LESSON
+    state.db.public_voice_scenarios = [view()]
+  })
+  const policy = () => import('@/lib/voice/session-policy')
+
+  it('an entitled learner sees the exercise with five attempts, then a French message once they are used', async () => {
+    const a = await actions()
+    expect((await a.fetchVoiceScenario(LESSON))?.attempts).toEqual({ state: 'available', remaining: 5, limit: 5 })
+    for (let i = 0; i < 5; i++) state.db.voice_attempts = [...(state.db.voice_attempts ?? []), { user_id: 'U1', scenario_id: SCENARIO, started_at: new Date().toISOString() }]
+    const after = await a.fetchVoiceScenario(LESSON)
+    expect(after?.attempts).toEqual({
+      state: 'attempts_exhausted', remaining: 0, limit: 5,
+      messageFr: (await policy()).START_REFUSAL_FR.attempts_exhausted,
+    })
+    expect(providerCalls()).toHaveLength(0)
+  })
+
+  it('an administrator without an inscription is told why, and the start is refused before the provider', async () => {
+    state.db.entitlements = []
+    const a = await actions()
+    const message = (await policy()).START_REFUSAL_FR.no_access_period
+    expect(message).toMatch(/inscription active/)
+    expect((await a.fetchVoiceScenario(LESSON))?.attempts).toEqual({ state: 'no_access_period', remaining: 0, limit: 5, messageFr: message })
+    const res = await a.startVoiceSession({ scenarioId: SCENARIO })
+    expect(res).toMatchObject({ reason: 'no_access_period', error: message })
+    expect(res.signedUrl).toBeUndefined()
+    expect(providerCalls()).toHaveLength(0)
+    expect(state.db.voice_attempts ?? []).toHaveLength(0)
+  })
+
+  it('a consent given for another version does not count: consent_required, nothing started', async () => {
+    state.db.voice_processing_consents = [{ user_id: 'U1', consent_version: 'voix-0.9', accepted_at: T(60), withdrawn_at: null }]
+    const res = await (await actions()).startVoiceSession({ scenarioId: SCENARIO })
+    expect(res.reason).toBe('consent_required')
+    expect(providerCalls()).toHaveLength(0)
+    expect(state.db.voice_attempts ?? []).toHaveLength(0)
+  })
+
+  it('the provider refuses, fails or times out: a French error, no session, no attempt consumed, no body logged', async () => {
+    for (const failure of [
+      async () => new Response('{"detail":"quota SECRET-BODY"}', { status: 500 }),
+      async () => { throw new TypeError('fetch failed') },
+      async () => new Response(JSON.stringify({ signed_url: 'http://not-a-websocket' }), { status: 200 }),
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(failure))
+      const res = await (await actions()).startVoiceSession({ scenarioId: SCENARIO })
+      expect(res.error).toBe('Connexion à la pratique vocale impossible.')
+      expect(res.sessionId).toBeUndefined()
+      expect(state.db.voice_attempts ?? []).toHaveLength(0)
+      expect(state.db.ai_sessions.filter(r => r.mode === 'voice')).toHaveLength(0)
+    }
+    expect(state.logs.join('\n')).not.toContain('SECRET-BODY')
+  })
+
+  it('no API key on the server: the page offers no conversation, and a direct start says it is not configured', async () => {
+    vi.stubEnv('ELEVENLABS_API_KEY', '')
+    const a = await actions()
+    const v = await a.fetchVoiceScenario(LESSON)
+    expect(v?.voiceAvailable).toBe(false)
+    expect(v?.attempts).toBeNull()
+    expect((await a.startVoiceSession({ scenarioId: SCENARIO })).reason).toBe('not_configured')
+    expect(providerCalls()).toHaveLength(0)
+  })
+
+  it('unpublished scenarios stay hidden, and a direct start on one is refused', async () => {
+    state.db.public_voice_scenarios = []
+    state.db.ai_scenarios[0].is_published = false
+    const a = await actions()
+    expect(await a.fetchVoiceScenario(LESSON)).toBeNull()
+    expect((await a.startVoiceSession({ scenarioId: SCENARIO })).error).toBe('Scénario indisponible.')
+    expect(providerCalls()).toHaveLength(0)
+  })
+
+  it('a learner without access to the course sees nothing and cannot start', async () => {
+    state.access = { allowed: false, reason: 'not_entitled' }
+    const a = await actions()
+    expect(await a.fetchVoiceScenario(LESSON)).toBeNull()
+    expect((await a.startVoiceSession({ scenarioId: SCENARIO })).error).toBe('refused:not_entitled')
+    expect(providerCalls()).toHaveLength(0)
+  })
+
+  it('every reviewed scenario gets the reviewed self-assessment; older database questions are replaced', async () => {
+    const { personaSelfAssessment } = await import('@/lib/voice/self-assessment')
+    const a = await actions()
+    expect((await a.fetchVoiceScenario(LESSON))?.selfAssessment).toEqual(personaSelfAssessment(personaById('amara')))
+    state.db.public_voice_scenarios = [view({ slug: 'ibrahima-double-facturation', self_assessment: [{ id: 'old', type: 'scale', question: 'Ancienne question' }] })]
+    const ibrahima = await a.fetchVoiceScenario(LESSON)
+    expect(ibrahima?.selfAssessment).toEqual(personaSelfAssessment(personaById('ibrahima')))
+    expect(JSON.stringify(ibrahima)).not.toContain('Ancienne question')
+  })
+
+  it('a scenario outside the five keeps its own questions and never offers a conversation', async () => {
+    state.db.public_voice_scenarios = [view({ id: OTHER, slug: 'not-a-reviewed-persona', self_assessment: [{ id: 'q1', type: 'scale', question: 'Question propre' }] })]
+    const v = await (await actions()).fetchVoiceScenario(LESSON)
+    expect(v?.selfAssessment).toEqual([{ id: 'q1', type: 'scale', question: 'Question propre' }])
+    expect(v?.voiceAvailable).toBe(false)
+    expect(v?.attempts).toBeNull()
+  })
+
+  it('the counter cannot be read: the exercise still shows, without a counter; the start decides', async () => {
+    state.failRead.add('voice_attempts')
+    const v = await (await actions()).fetchVoiceScenario(LESSON)
+    expect(v?.voiceAvailable).toBe(true)
+    expect(v?.attempts).toBeNull()
+    expect((await (await actions()).startVoiceSession({ scenarioId: SCENARIO })).error).toBe((await policy()).START_REFUSAL_FR.unavailable)
+  })
+})
