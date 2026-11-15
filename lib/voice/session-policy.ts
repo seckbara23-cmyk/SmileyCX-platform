@@ -1,6 +1,7 @@
 import 'server-only'
 import type { createAdminClient } from '@/lib/supabase/admin'
 import { isEntitlementAccessible, type EntitlementLike } from '@/lib/entitlements'
+import { VOICE_CONSENT_VERSION } from './consent-version'
 
 /**
  * XP-F2-01/02 — what must hold before a learner's voice session may start.
@@ -24,13 +25,14 @@ import { isEntitlementAccessible, type EntitlementLike } from '@/lib/entitlement
  * renewal is a new entitlement, so a new period with five new attempts; an
  * expired access has no period, and nothing starts.
  *
- * Requires migration 066 (consents table, `ai_sessions.mode`). Voice practice is
- * closed in code (`VOICE_PRACTICE_OPEN`), so nothing here runs in production.
+ * Requires migration 066 (consents table, `ai_sessions.mode`). Nothing here runs
+ * while voice practice is closed (`lib/voice/access.ts`).
  */
 
 type Db = ReturnType<typeof createAdminClient>
 
-export const VOICE_CONSENT_VERSION = 'voix-1.0'
+// Defined in a client-safe module: the public opening switch compares the legal texts' version with it.
+export { VOICE_CONSENT_VERSION }
 export const ACTIVE_SESSION_TIMEOUT_MS = 15 * 60 * 1000
 
 export const VOICE_CONSENT_TEXT_FR =
@@ -41,8 +43,8 @@ export const VOICE_CONSENT_TEXT_FR =
 /**
  * XP-F2-READY-01 — the NEXT consent version, PREPARED, NOT ACTIVE. It states
  * decisions D1 (30 days), D2 (withdrawal erases) and D3 (attempts stay counted).
- * Activating it means setting VOICE_CONSENT_VERSION and VOICE_CONSENT_TEXT_FR
- * to these values, in the same reviewed change that publishes the new legal
+ * Activating it means setting VOICE_CONSENT_VERSION (lib/voice/consent-version.ts)
+ * and VOICE_CONSENT_TEXT_FR to these values, in the same reviewed change that publishes the new legal
  * pages (docs/voice/F2-04-TEXTES-JURIDIQUES-PROPOSES.md). Every learner then
  * accepts again before their next voice session, because consent is per version.
  */
@@ -55,12 +57,16 @@ export const VOICE_CONSENT_NEXT = {
     'Le nombre d’essais déjà utilisés reste décompté.',
 } as const
 
-export type StartRefusal = 'consent_required' | 'session_in_progress' | 'attempts_exhausted' | 'unavailable'
+export type StartRefusal = 'consent_required' | 'session_in_progress' | 'attempts_exhausted' | 'no_access_period' | 'unavailable'
 
 export const START_REFUSAL_FR: Record<StartRefusal, string> = {
   consent_required:    'Pour utiliser l’entraînement vocal, acceptez d’abord le traitement de votre voix.',
   session_in_progress: 'Un entraînement vocal est déjà en cours. Terminez-le avant d’en commencer un autre.',
   attempts_exhausted:  'Vous avez utilisé tous les essais prévus pour cette leçon pendant votre période d’accès.',
+  // XP-VOICE-FIX-01: the attempts belong to an access period, and only an active
+  // inscription to the course opens one. An administrator reaches the lesson
+  // without an inscription, and used to be told « momentanément indisponible ».
+  no_access_period:    'L’entraînement vocal est lié à une inscription active à ce cours. Contactez l’équipe XP CLIENT si vous pensez qu’il s’agit d’une erreur.',
   unavailable:         'L’entraînement vocal est momentanément indisponible.',
 }
 
@@ -106,8 +112,13 @@ export async function countLiveSessions(db: Db, userId: string): Promise<number 
   return error ? null : (count ?? 0)
 }
 
-/** Start of the learner's current access to the course: the latest accessible entitlement's start. */
-export async function accessPeriodStart(db: Db, userId: string, courseId: string, now: Date): Promise<string | null> {
+/**
+ * Start of the learner's current access to the course: the latest accessible
+ * entitlement's start. `'none'` when no entitlement is accessible (an
+ * administrator reaches every course without one); null when the database
+ * cannot answer.
+ */
+export async function accessPeriodStart(db: Db, userId: string, courseId: string, now: Date): Promise<string | 'none' | null> {
   const { data, error } = await db
     .from('entitlements')
     .select('status, starts_at, expires_at, revoked_at, created_at')
@@ -115,8 +126,8 @@ export async function accessPeriodStart(db: Db, userId: string, courseId: string
     .eq('course_id', courseId)
   if (error || !data) return null
   const open = (data as (EntitlementLike & { created_at: string })[]).filter(e => isEntitlementAccessible(e, now))
-  if (open.length === 0) return null
-  return open.map(e => e.starts_at ?? e.created_at).sort().pop() ?? null
+  if (open.length === 0) return 'none'
+  return open.map(e => e.starts_at ?? e.created_at).sort().pop() ?? 'none'
 }
 
 /** Attempts recorded in the ledger for this lesson's scenario since the period started. */
@@ -172,11 +183,36 @@ export async function checkVoiceStart(
   if (live === null) return { ok: false, refusal: 'unavailable' }
   if (live > 0) return { ok: false, refusal: 'session_in_progress' }
 
-  const since = await accessPeriodStart(db, input.userId, input.courseId, now)
-  if (!since) return { ok: false, refusal: 'unavailable' }
-  const used = await countVoiceAttempts(db, input.userId, input.scenarioId, since)
-  if (used === null) return { ok: false, refusal: 'unavailable' }
-  if (used >= input.attemptsPerLesson) return { ok: false, refusal: 'attempts_exhausted' }
+  const attempts = await voiceAttemptStatus(db, { ...input, now })
+  if (!attempts) return { ok: false, refusal: 'unavailable' }
+  if (attempts.state !== 'available') return { ok: false, refusal: attempts.state }
 
-  return { ok: true, attemptsUsed: used, attemptsRemaining: input.attemptsPerLesson - used, since }
+  return { ok: true, attemptsUsed: attempts.used, attemptsRemaining: attempts.remaining, since: attempts.since }
+}
+
+export type AttemptStatus =
+  | { state: 'available'; used: number; remaining: number; limit: number; since: string }
+  | { state: 'attempts_exhausted'; used: number; remaining: 0; limit: number; since: string }
+  | { state: 'no_access_period'; used: 0; remaining: 0; limit: number }
+
+/**
+ * XP-VOICE-FIX-01 — where the learner stands for this lesson, read-only, so the
+ * page can say it BEFORE the learner starts (and is asked for the microphone).
+ * When an attempt is consumed: when the server has the signed URL and records
+ * the session with its attempt (`voice_start_attempt`), before the browser
+ * connects. A refusal, a denied microphone or a provider error before that
+ * point consumes nothing. Null when the database cannot answer.
+ */
+export async function voiceAttemptStatus(
+  db: Db,
+  input: { userId: string; scenarioId: string; courseId: string; attemptsPerLesson: number; now?: Date },
+): Promise<AttemptStatus | null> {
+  const limit = input.attemptsPerLesson
+  const since = await accessPeriodStart(db, input.userId, input.courseId, input.now ?? new Date())
+  if (since === null) return null
+  if (since === 'none') return { state: 'no_access_period', used: 0, remaining: 0, limit }
+  const used = await countVoiceAttempts(db, input.userId, input.scenarioId, since)
+  if (used === null) return null
+  if (used >= limit) return { state: 'attempts_exhausted', used, remaining: 0, limit, since }
+  return { state: 'available', used, remaining: limit - used, limit, since }
 }

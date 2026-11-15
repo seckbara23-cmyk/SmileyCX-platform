@@ -291,9 +291,9 @@ describe('voice practice stays closed, whatever the configuration', () => {
     expect((await consent.acceptVoiceConsent({ version: 'voix-1.0', accepted: true })).error).toMatch(/pas encore ouvert/)
   })
 
-  it('the legal conditions are still marked unbuilt', async () => {
+  it('XP-VOICE-FIX-01: no published legal texts version, so voice practice stays closed', async () => {
     const flags = await import('@/lib/ai/flags')
-    expect(flags.VOICE_LEGAL_CONDITIONS_BUILT).toBe(false)
+    expect(flags.VOICE_LEGAL_TEXTS_PUBLISHED).toBe(false)
     expect(flags.VOICE_PRACTICE_OPEN).toBe(false)
   })
 })

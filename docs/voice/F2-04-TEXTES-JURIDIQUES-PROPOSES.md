@@ -56,7 +56,7 @@ La case reste décochée par défaut, et le lien vers l'article 6 reste affiché
 ## 4. Autres pages à mettre à jour dans la même version
 
 - **CGU, article 7** : remplacer « n'est pas encore ouvert » par le fonctionnement réel, avec renvoi à l'article 6 de la politique de confidentialité.
-- **CGV, article 8** : cinq essais par leçon pendant la période d'accès ; un nouvel accès ouvre une nouvelle période ; supprimer ses données vocales ne redonne pas d'essais.
+- **CGV, article 8** : cinq essais par leçon pendant la période d'accès ; un nouvel accès ouvre une nouvelle période ; supprimer ses données vocales ne redonne pas d'essais. Ajouté par XP-VOICE-FIX-01 : « Un essai est décompté au lancement de la conversation, même si elle est interrompue ensuite. Un refus d'accès au micro, ou une erreur survenue avant le lancement, ne consomme pas d'essai. »
 - **Politique de confidentialité, tableau des données** : « Transcription et retour de l'entraînement vocal », conservés 30 jours ; « Décompte des essais », conservé jusqu'à la suppression du compte.
 - **Tableau des prestataires** : ElevenLabs, conservation réglée à 30 jours.
 
@@ -73,6 +73,14 @@ Aucune approbation juridique n'a eu lieu. Ces points sont des questions, pas des
 7. **Sauvegardes de 7 jours et copies chez le prestataire** : la manière de les présenter.
 8. **Durée de 30 jours** : sa proportionnalité au regard de la finalité.
 
-## 6. Recette restreinte avant publication
+## 6. Conditions techniques avant publication (XP-VOICE-FIX-01)
+
+Deux phrases ci-dessus ne sont vraies que si la tâche de conservation tourne régulièrement :
+- « supprimés 30 jours après l'entraînement » (section 1, durée de conservation) ;
+- « relancée automatiquement jusqu'à son terme » (section 1 et messages de l'écran).
+
+Cette tâche existe (`/api/voice/retention`) mais rien ne la planifie encore. Avant de publier ces textes, il faut soit la planifier, soit retirer ces deux promesses. Sans planification, la conservation de 30 jours réglée chez ElevenLabs reste la seule limite automatique pour les copies du prestataire.
+
+## 7. Recette restreinte avant publication
 
 Une recette avec un compte nommé peut précéder la publication. Il faut que la personne qui teste accepte l'écran actuel (voix-1.0) en connaissance de cause, et qu'elle supprime ses données à la fin. C'est une décision du propriétaire.

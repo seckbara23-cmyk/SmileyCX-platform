@@ -130,6 +130,15 @@ Leçon : formation F2 · Module 2 « Communicating well with the client » · Le
 
 **Limite propre à Amara** : Amara ne connaît pas le détail de son nouveau forfait : il ne l’invente pas.
 
+**Auto-évaluation après l’échange (proposée, à valider)**
+
+Échelle : Pas du tout · Un peu · Plutôt oui · Tout à fait. Dernière question en texte libre.
+
+1. Pendant l’échange, avez-vous su reformuler avant de répondre ?
+2. Pendant l’échange, avez-vous su utiliser un langage simple ?
+3. Pendant l’échange, avez-vous su faire en sorte que le client se sente compris ?
+4. Que feriez-vous différemment lors de votre prochain essai ?
+
 ### Points à confirmer
 
 - [ ] La confirmation d’Amara quand la reformulation est présente : « Oui, c’est ça. » (le document donne « Yes, that’s right »).
@@ -220,6 +229,15 @@ Leçon : formation F2 · Module 2 « Communicating well with the client » · Le
 
 **Limite propre à Fatou** : Fatou ne connaît pas la cause du blocage : elle ne l’invente pas.
 
+**Auto-évaluation après l’échange (proposée, à valider)**
+
+Échelle : Pas du tout · Un peu · Plutôt oui · Tout à fait. Dernière question en texte libre.
+
+1. Pendant l’échange, avez-vous su éviter les formulations négatives ?
+2. Pendant l’échange, avez-vous su reconnaître la frustration avant de proposer une solution ?
+3. Pendant l’échange, avez-vous su garder un ton calme et bienveillant ?
+4. Que feriez-vous différemment lors de votre prochain essai ?
+
 ### Points à confirmer
 
 - [ ] La traduction française des quatre phrases à éviter.
@@ -294,6 +312,15 @@ Leçon : formation F2 · Module 3 « Handling difficult customers » · Leçon 2
 - Objectif non atteint après 2 relances : Ibrahima raccroche en disant qu’il va voir la concurrence. Par exemple : « Laissez tomber, je vais voir la concurrence. »
 
 **Limite propre à Ibrahima** : Ibrahima ne demande à parler au responsable que dans sa première phrase : il n’exige pas un transfert pendant tout l’échange.
+
+**Auto-évaluation après l’échange (proposée, à valider)**
+
+Échelle : Pas du tout · Un peu · Plutôt oui · Tout à fait. Dernière question en texte libre.
+
+1. Pendant l’échange, avez-vous su garder un ton calme ?
+2. Pendant l’échange, avez-vous su laisser le client s’exprimer ?
+3. Pendant l’échange, avez-vous su reconnaître l’émotion avant de répondre ?
+4. Que feriez-vous différemment lors de votre prochain essai ?
 
 ### Points à confirmer
 
@@ -379,6 +406,15 @@ Leçon : formation F2 · Module 3 « Handling difficult customers » · Leçon 4
 
 **Limite propre à Kader** : Kader n’insiste pas plus de deux fois après le premier refus.
 
+**Auto-évaluation après l’échange (proposée, à valider)**
+
+Échelle : Pas du tout · Un peu · Plutôt oui · Tout à fait. Dernière question en texte libre.
+
+1. Pendant l’échange, avez-vous su dire non clairement ?
+2. Pendant l’échange, avez-vous su expliquer la raison sans blâmer le client ?
+3. Pendant l’échange, avez-vous su proposer une alternative ou une compensation ?
+4. Que feriez-vous différemment lors de votre prochain essai ?
+
 ### Points à confirmer
 
 - [ ] L’objectif est décidé par « Dire non clairement » et « Expliquer la raison sans blâmer ». L’alternative est observée sans bloquer, puisque le document dit « offering an alternative if possible ».
@@ -457,6 +493,15 @@ Leçon : formation F2 · Module 4 « Handling a request or complaint » · Leço
 - Objectif non atteint après 2 relances : Awa conclut, déçue, qu’elle attendra encore un rappel. Par exemple : « Bon… j’attendrai encore qu’on me rappelle, comme la dernière fois. »
 
 **Limite propre à Awa** : Awa appelle le conseiller par le prénom qu’il donne ; elle ne connaît pas le détail technique de sa consommation.
+
+**Auto-évaluation après l’échange (proposée, à valider)**
+
+Échelle : Pas du tout · Un peu · Plutôt oui · Tout à fait. Dernière question en texte libre.
+
+1. Pendant l’échange, avez-vous su accueillir la cliente sans se justifier ?
+2. Pendant l’échange, avez-vous su montrer une empathie sincère, pas seulement formelle ?
+3. Pendant l’échange, avez-vous su prendre un engagement précis ?
+4. Que feriez-vous différemment lors de votre prochain essai ?
 
 ### Points à confirmer
 

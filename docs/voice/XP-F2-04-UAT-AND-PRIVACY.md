@@ -72,7 +72,7 @@ The mechanism is built and tested: a versioned consent (`voix-1.0`), an unticked
 | Five scenarios only | under UAT, a scenario without a reviewed persona is refused |
 | Consent and limits | the same consent step, one live voice session, five attempts per lesson |
 | No public exposure | the lesson page asks the server for a voice exercise only on a build made with `NEXT_PUBLIC_VOICE_UAT=true`. The server answers « none » to anyone outside the list, so nothing is shown |
-| Rollback | empty `VOICE_UAT_USER_IDS`: closed at the next request, no code deployment. The tester can still withdraw and delete |
+| Rollback | empty `VOICE_UAT_USER_IDS` and redeploy: closed once that deployment is live, no code change (Vercel applies environment changes to new deployments only). The tester can still withdraw and delete |
 | Clean termination | a voice session left open is closed after 15 minutes; « Mes données vocales » deletes the tester's sessions, here and at the provider |
 
 `VOICE_PRACTICE_OPEN` is untouched and still false. The UAT list is a second, narrower door; it does not open the first.
