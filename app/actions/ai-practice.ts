@@ -22,7 +22,12 @@ import { createAdminClient } from '@/lib/supabase/admin'
 import { rateLimitDb } from '@/lib/rate-limit'
 import { withinInputBounds } from '@/lib/validation/input-bounds'
 import { createLogger } from '@/lib/logger'
-import { AI_COACH_ENABLED, VOICE_PRACTICE_OPEN, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
+import { AI_COACH_ENABLED, VOICE_CLOSED_MESSAGE } from '@/lib/ai/flags'
+import { voiceGateForCaller } from '@/lib/voice/access'
+import { personaBySlug, publicPersona, type PublicVoicePersona } from '@/lib/voice/personas'
+import { checkVoiceStart, startVoiceAttempt, START_REFUSAL_FR } from '@/lib/voice/session-policy'
+import { requestSignedUrl, fetchConversationAnalysis, ConversationId } from '@/lib/voice/elevenlabs'
+import { buildVoiceFeedback, type VoiceFeedback } from '@/lib/voice/feedback'
 import { resolveCourseAccessById, denialMessage } from '@/lib/auth/course-access'
 import { recordLessonCompletion } from '@/lib/learn/completion'
 import {
@@ -33,6 +38,9 @@ import {
 } from '@/lib/ai/competency-engine'
 
 const log = createLogger('actions/ai-practice')
+
+/** Diagnostic detail for the browser console in development only: never a provider body, key or token. */
+const devDetail = (d: string): string | undefined => (process.env.NODE_ENV === 'production' ? undefined : d)
 
 /**
  * Resolve scenario → lesson → module → course with the service client.
@@ -101,6 +109,13 @@ export interface VoiceScenario {
    * the Phase 1 intro).
    */
   briefing: VoiceBriefing | null
+  /**
+   * XP-F2-01: the reviewed persona configuration this scenario runs, as the
+   * learner may see it (objective, criteria labels, attempts). Null when the
+   * scenario has no persona in lib/voice/personas.ts: such a scenario never
+   * starts a voice session.
+   */
+  persona: PublicVoicePersona | null
 }
 
 // ── Validation ────────────────────────────────────────────────────────────────
@@ -117,6 +132,8 @@ const CompleteSessionSchema = z.object({
   anonId:          Uuid.optional(),
   status:          z.enum(['completed', 'abandoned']).default('completed'),
   durationSeconds: z.number().int().nonnegative().max(60 * 60).optional(),
+  /** XP-F2-01: the provider's conversation id, kept to fetch the post-call analysis. */
+  providerConversationId: ConversationId.optional(),
 })
 
 const TurnSchema = z.object({
@@ -178,6 +195,9 @@ async function authorizeSession(sessionId: string, anonId?: string) {
 // Returns null on any error so the caller renders nothing.
 
 export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenario | null> {
+  // XP-F2-01: nothing to show while voice practice is closed, even on a direct call.
+  const gate = await voiceGateForCaller()
+  if (gate === 'closed') return null
   if (!Uuid.safeParse(lessonId).success) return null
 
   try {
@@ -206,19 +226,31 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
     }
     if (!data) return null
 
+    // XP-F2-01: the exercise is course material — no access, no scenario.
+    const courseId = await courseIdForLesson(createAdminClient(), lessonId)
+    const access = courseId ? await resolveCourseAccessById(courseId) : { allowed: false }
+    if (!access.allowed) return null
+    const persona = personaBySlug(data.slug as string)
+    // XP-F2-04: a restricted UAT covers the five reviewed scenarios and nothing else.
+    if (gate === 'uat' && !persona) return null
+
     // XPA-5A: the view exposes `voice_configured` — a boolean derived in the
     // database from provider + agent_id — so the agent id itself never has to
     // travel, not even inside this server process. The API-key check stays
     // here because the database cannot see it.
-    const voiceAvailable = data.voice_configured === true && !!process.env.ELEVENLABS_API_KEY
+    const voiceAvailable = data.voice_configured === true && !!process.env.ELEVENLABS_API_KEY && !!persona
 
     return {
       id:             data.id,
       slug:           data.slug,
       title:          data.title,
       personaName:    data.persona_name,
-      situation:      data.situation,
-      objectives:     Array.isArray(data.objectives) ? (data.objectives as string[]) : [],
+      // XP-F2-03: the reviewed persona's brief wins over the older database text
+      // (Ibrahima's row predates the approved document); the database is untouched.
+      situation:      persona ? persona.customer.situationFr : data.situation,
+      objectives:     persona
+        ? persona.observationCriteria.map(c => c.labelFr)
+        : (Array.isArray(data.objectives) ? (data.objectives as string[]) : []),
       selfAssessment: Array.isArray(data.self_assessment)
         ? (data.self_assessment as SelfAssessmentQuestion[])
         : [],
@@ -227,6 +259,7 @@ export async function fetchVoiceScenario(lessonId: string): Promise<VoiceScenari
         AI_COACH_ENABLED && data.briefing && typeof data.briefing === 'object'
           ? (data.briefing as VoiceBriefing)
           : null,
+      persona: persona ? publicPersona(persona) : null,
     }
   } catch (e) {
     log.error({ lessonId, error: (e as Error).message }, 'fetchVoiceScenario failed')
@@ -240,21 +273,21 @@ export async function createAiSession(
   input: { scenarioId: string; anonId?: string }
 ): Promise<{ sessionId?: string; error?: string }> {
   // XP-LAUNCH-FINAL-18: no voice session while voice practice is closed.
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE }
+  const gate = await voiceGateForCaller()
+  if (gate === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   const parsed = CreateSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
-  const { scenarioId, anonId } = parsed.data
+  const { scenarioId } = parsed.data
 
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
-    // Identity: authenticated user OR pilot anon id (never both).
-    if (!user && !anonId) return { error: 'Session non identifiée.' }
+    // XP-F2-01: a session belongs to a signed-in learner; the pilot's anonymous path is closed.
+    if (!user) return { error: 'Session non identifiée.' }
 
-    // Throttle session creation per identity (fails open on infra errors).
-    const rlKey = `ai_session:${user?.id ?? anonId}`
-    const rl = await rateLimitDb(rlKey, { limit: 20, windowMs: 10 * 60 * 1000 })
+    // Throttle session creation per learner (fails open on infra errors).
+    const rl = await rateLimitDb(`ai_session:${user.id}`, { limit: 20, windowMs: 10 * 60 * 1000 })
     if (!rl.success) return { error: 'Trop de tentatives. Réessayez dans quelques minutes.' }
 
     const admin = createAdminClient()
@@ -262,20 +295,31 @@ export async function createAiSession(
     // Scenario must exist and be published.
     const { data: scenario, error: scErr } = await admin
       .from('ai_scenarios')
-      .select('id, is_published')
+      .select('id, slug, lesson_id, is_published')
       .eq('id', scenarioId)
       .single()
     if (scErr || !scenario || !scenario.is_published) {
       return { error: 'Scénario indisponible.' }
     }
+    // XP-F2-04: a restricted UAT covers the five reviewed scenarios and nothing else.
+    if (gate === 'uat' && !personaBySlug(scenario.slug as string)) return { error: 'Scénario indisponible.' }
+
+    // XP-F2-01: the self-assessment is course material too.
+    const courseId = scenario.lesson_id ? await courseIdForLesson(admin, scenario.lesson_id as string) : null
+    const access = courseId ? await resolveCourseAccessById(courseId) : { allowed: false, reason: 'course_not_found' as const }
+    if (!access.allowed) return { error: denialMessage(access.reason ?? 'not_entitled').body }
+
+    // XP-F2-03: the self-assessment fallback is not a voice session: no live-session
+    // limit and no stale-session close apply to it (migration 066 is voice-only).
 
     const { data: session, error: insErr } = await admin
       .from('ai_sessions')
       .insert({
         scenario_id: scenarioId,
-        user_id:     user ? user.id : null,
-        anon_id:     user ? null : anonId,
+        user_id:     user.id,
+        anon_id:     null,
         status:      'active',
+        mode:        'self',
       })
       .select('id')
       .single()
@@ -297,181 +341,110 @@ export async function createAiSession(
 // The agent id and API key never reach the browser. `reason: 'not_configured'`
 // lets the UI show a French setup notice instead of an error.
 
-const SIGNED_URL_ENDPOINT =
-  'https://api.elevenlabs.io/v1/convai/conversation/get-signed-url'
-
 export async function startVoiceSession(
   input: { scenarioId: string; anonId?: string }
 ): Promise<{
   sessionId?: string
   signedUrl?: string
+  /** Voice attempts left for this lesson in the current access period, after this one. */
+  attemptsRemaining?: number
   error?: string
-  reason?: 'not_configured'
-  /**
-   * Diagnostic detail for the exact failing step (HTTP status, provider
-   * response body, exception message). Never contains the API key. Logged
-   * to the browser console by the client; rendered in the UI in dev only.
-   */
+  reason?: 'not_configured' | 'consent_required' | 'session_in_progress' | 'attempts_exhausted'
+  /** Development only (see devDetail): never a provider body, key or token. */
   detail?: string
 }> {
   // XP-LAUNCH-FINAL-18: no voice session while voice practice is closed.
-  if (!VOICE_PRACTICE_OPEN) return { error: VOICE_CLOSED_MESSAGE, detail: 'voice practice closed' }
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE, detail: 'voice practice closed' }
   const parsed = CreateSessionSchema.safeParse(input)
-  if (!parsed.success) return { error: 'Données invalides.', detail: 'input validation failed' }
-  const { scenarioId, anonId } = parsed.data
+  if (!parsed.success) return { error: 'Données invalides.', detail: devDetail('input validation failed') }
+  const { scenarioId } = parsed.data
 
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user && !anonId) return { error: 'Session non identifiée.', detail: 'no user and no anonId' }
+    // XP-F2-01: a voice session belongs to a signed-in learner; the pilot's anonymous path is closed.
+    if (!user) return { error: 'Session non identifiée.', detail: devDetail('no user') }
 
-    // Throttle voice sessions per identity (voice is costly) — fails open.
-    const rlKey = `ai_voice:${user?.id ?? anonId}`
-    const rl = await rateLimitDb(rlKey, { limit: 10, windowMs: 10 * 60 * 1000 })
-    if (!rl.success) return { error: 'Trop de sessions. Réessayez dans quelques minutes.', detail: 'rate limited' }
+    // Throttle voice sessions per learner (voice is costly) — fails open; the policy below does not.
+    const rl = await rateLimitDb(`ai_voice:${user.id}`, { limit: 10, windowMs: 10 * 60 * 1000 })
+    if (!rl.success) return { error: 'Trop de sessions. Réessayez dans quelques minutes.', detail: devDetail('rate limited') }
 
     const apiKey = process.env.ELEVENLABS_API_KEY
-    log.info(
-      { scenarioId, hasApiKey: !!apiKey, apiKeyLength: apiKey?.length ?? 0 },
-      'startVoiceSession: begin'
-    )
     if (!apiKey) {
-      return {
-        reason: 'not_configured',
-        error:  'Pratique vocale indisponible.',
-        detail: 'ELEVENLABS_API_KEY is not set in this environment',
-      }
+      return { reason: 'not_configured', error: 'Pratique vocale indisponible.', detail: devDetail('ELEVENLABS_API_KEY is not set') }
     }
 
     const admin = createAdminClient()
     const { data: scenario, error: scErr } = await admin
       .from('ai_scenarios')
-      .select('id, lesson_id, is_published, provider, agent_id')
+      .select('id, slug, lesson_id, is_published, provider, agent_id')
       .eq('id', scenarioId)
       .single()
+    if (scErr || !scenario || !scenario.is_published) {
+      return { error: 'Scénario indisponible.', detail: devDetail('scenario not found or not published') }
+    }
 
     // ── XPA-6A: Voice Practice is course material ────────────────────────
-    // Starting a session mints a signed ElevenLabs URL — the expensive,
-    // protected action. Registration alone must not reach it. Resolved from
-    // the SCENARIO, never from client input, so the caller cannot nominate a
-    // course they happen to be enrolled in.
-    //
-    // This closes the pilot's anonymous voice path. The 11 existing pilot
-    // sessions and 36 turns are untouched historical records.
-    if (scenario?.lesson_id) {
-      const courseId = await courseIdForLesson(admin, scenario.lesson_id as string)
-      const access = courseId
-        ? await resolveCourseAccessById(courseId)
-        : { allowed: false, reason: 'course_not_found' as const }
-
-      if (!access.allowed) {
-        log.warn(
-          { scenarioId, reason: access.reason },
-          'startVoiceSession: refused — no course access',
-        )
-        return {
-          error:  denialMessage(access.reason ?? 'not_entitled').body,
-          detail: `course access denied: ${access.reason}`,
-        }
-      }
+    // Resolved from the SCENARIO, never from client input, so the caller cannot
+    // nominate a course they happen to be enrolled in.
+    const courseId = scenario.lesson_id ? await courseIdForLesson(admin, scenario.lesson_id as string) : null
+    const access = courseId
+      ? await resolveCourseAccessById(courseId)
+      : { allowed: false, reason: 'course_not_found' as const }
+    if (!courseId || !access.allowed) {
+      log.warn({ scenarioId, reason: access.reason }, 'startVoiceSession: refused — no course access')
+      return { error: denialMessage(access.reason ?? 'not_entitled').body, detail: devDetail(`course access denied: ${access.reason}`) }
     }
 
-    if (scErr || !scenario || !scenario.is_published) {
-      log.error({ scenarioId, dbError: scErr?.message, found: !!scenario }, 'startVoiceSession: scenario unavailable')
+    // XP-F2-01: only a reviewed persona runs (lib/voice/personas.ts).
+    const persona = personaBySlug(scenario.slug as string)
+    if (!persona || scenario.provider !== 'elevenlabs' || !scenario.agent_id) {
+      return { reason: 'not_configured', error: 'Pratique vocale indisponible.', detail: devDetail('persona or agent not configured') }
+    }
+
+    // XP-F2-01: consent, stale sessions, one live session, attempts per lesson.
+    const check = await checkVoiceStart(admin, {
+      userId: user.id, scenarioId, courseId, attemptsPerLesson: persona.attemptsPerLesson,
+    })
+    if (!check.ok) {
       return {
-        error:  'Scénario indisponible.',
-        detail: `scenario lookup: ${scErr?.message ?? (scenario ? 'not published' : 'not found')}`,
+        error: START_REFUSAL_FR[check.refusal],
+        ...(check.refusal === 'unavailable' ? {} : { reason: check.refusal }),
+        detail: devDetail(`start refused: ${check.refusal}`),
       }
     }
-    if (scenario.provider !== 'elevenlabs' || !scenario.agent_id) {
+
+    // The signed URL is the agent's own configuration: no prompt override is
+    // requested, so the browser cannot rewrite the persona.
+    const signed = await requestSignedUrl(scenario.agent_id as string, apiKey)
+    if (!signed.ok) {
+      // Status only: a provider body can carry a token.
+      log.error({ scenarioId, status: signed.status }, 'startVoiceSession: signed URL refused')
+      return { error: 'Connexion à la pratique vocale impossible.', detail: devDetail(`signed url: ${signed.status}`) }
+    }
+
+    // XP-F2-READY-01: the session and its attempt are written together, under a
+    // per-learner lock (migration 066): concurrent starts cannot pass the limit.
+    const started = await startVoiceAttempt(admin, {
+      userId: user.id, scenarioId, since: check.since, limit: persona.attemptsPerLesson,
+    })
+    if (!started.ok) {
+      log.warn({ scenarioId, refusal: started.refusal }, 'startVoiceSession: attempt not started')
       return {
-        reason: 'not_configured',
-        error:  'Pratique vocale indisponible.',
-        detail: `provider=${scenario.provider}, agent_id ${scenario.agent_id ? 'set' : 'missing'}`,
+        error: START_REFUSAL_FR[started.refusal],
+        ...(started.refusal === 'unavailable' ? {} : { reason: started.refusal }),
+        detail: devDetail(`attempt refused: ${started.refusal}`),
       }
     }
-    log.info({ scenarioId, agentId: scenario.agent_id }, 'startVoiceSession: requesting signed URL')
-
-    // Exchange the API key for a signed URL (server-only).
-    let signedUrl: string
-    try {
-      const res = await fetch(
-        `${SIGNED_URL_ENDPOINT}?agent_id=${encodeURIComponent(scenario.agent_id)}`,
-        { headers: { 'xi-api-key': apiKey }, cache: 'no-store' }
-      )
-      // Read the body as text first so error bodies are always captured.
-      const bodyText = await res.text()
-      log.info(
-        { scenarioId, status: res.status, ok: res.ok, bodyPreview: bodyText.slice(0, 500) },
-        'startVoiceSession: ElevenLabs signed-url response'
-      )
-      if (!res.ok) {
-        log.error(
-          { scenarioId, agentId: scenario.agent_id, status: res.status, body: bodyText.slice(0, 1000) },
-          'ElevenLabs signed-url request failed'
-        )
-        return {
-          error:  'Connexion à la pratique vocale impossible.',
-          detail: `ElevenLabs get-signed-url HTTP ${res.status} — ${bodyText.slice(0, 300)}`,
-        }
-      }
-      let body: { signed_url?: string }
-      try {
-        body = JSON.parse(bodyText) as { signed_url?: string }
-      } catch {
-        log.error({ scenarioId, body: bodyText.slice(0, 500) }, 'ElevenLabs signed-url: non-JSON 200 response')
-        return {
-          error:  'Connexion à la pratique vocale impossible.',
-          detail: `ElevenLabs returned 200 but non-JSON body — ${bodyText.slice(0, 200)}`,
-        }
-      }
-      if (!body.signed_url) {
-        log.error({ scenarioId, body: bodyText.slice(0, 500) }, 'ElevenLabs signed-url: missing signed_url field')
-        return {
-          error:  'Connexion à la pratique vocale impossible.',
-          detail: `ElevenLabs 200 but no signed_url field — ${bodyText.slice(0, 200)}`,
-        }
-      }
-      signedUrl = body.signed_url
-      // Log destination without the query string (the token lives there).
-      try {
-        const u = new URL(signedUrl)
-        log.info({ scenarioId, wsHost: u.host, wsPath: u.pathname }, 'startVoiceSession: signed URL obtained')
-      } catch { /* diagnostic only */ }
-    } catch (e) {
-      const err = e as Error
-      log.error(
-        { scenarioId, error: err.message, stack: err.stack?.slice(0, 800) },
-        'ElevenLabs signed-url fetch threw'
-      )
-      return {
-        error:  'Connexion à la pratique vocale impossible.',
-        detail: `fetch to ElevenLabs threw: ${err.message}`,
-      }
+    log.info({ scenarioId, sessionId: started.sessionId, persona: persona.id }, 'startVoiceSession: session created')
+    return {
+      sessionId: started.sessionId,
+      signedUrl: signed.signedUrl,
+      attemptsRemaining: Math.max(0, persona.attemptsPerLesson - started.attemptsUsed),
     }
-
-    // Signed URL obtained → create the session row.
-    const { data: session, error: insErr } = await admin
-      .from('ai_sessions')
-      .insert({
-        scenario_id: scenarioId,
-        user_id:     user ? user.id : null,
-        anon_id:     user ? null : anonId,
-        status:      'active',
-      })
-      .select('id')
-      .single()
-
-    if (insErr || !session) {
-      log.error({ scenarioId, error: insErr?.message }, 'startVoiceSession insert failed')
-      return { error: 'Impossible de démarrer la session.', detail: `ai_sessions insert: ${insErr?.message}` }
-    }
-    log.info({ scenarioId, sessionId: session.id }, 'startVoiceSession: session created')
-    return { sessionId: session.id, signedUrl }
   } catch (e) {
-    const err = e as Error
-    log.error({ error: err.message, stack: err.stack?.slice(0, 800) }, 'startVoiceSession failed')
-    return { error: 'Service indisponible.', detail: `unhandled: ${err.message}` }
+    log.error({ error: (e as Error).message }, 'startVoiceSession failed')
+    return { error: 'Service indisponible.', detail: devDetail('unhandled') }
   }
 }
 
@@ -480,6 +453,7 @@ export async function startVoiceSession(
 export async function saveAiTurns(
   input: { sessionId: string; anonId?: string; turns: z.infer<typeof TurnSchema>[] }
 ): Promise<{ ok?: true; error?: string }> {
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   if (!withinInputBounds(input, SAVE_TURNS_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SaveTurnsSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
@@ -488,10 +462,26 @@ export async function saveAiTurns(
   try {
     const session = await authorizeSession(sessionId, anonId)
     if (!session) return { error: 'Session introuvable.' }
+    // XP-F2-01: turns belong to a live session only.
+    if (session.status !== 'active') return { error: 'Session terminée.' }
+
+    const rl = await rateLimitDb(`ai_turns:${sessionId}`, { limit: 200, windowMs: 10 * 60 * 1000 })
+    if (!rl.success) return { error: 'Trop de messages. Réessayez dans un instant.' }
 
     const admin = createAdminClient()
+    // A replayed batch must not duplicate turns: keep the indexes not stored yet, once each.
+    const indexes = turns.map(t => t.turnIndex)
+    const { data: stored } = await admin
+      .from('ai_turns')
+      .select('turn_index')
+      .eq('session_id', sessionId)
+      .in('turn_index', indexes)
+    const seen = new Set(((stored ?? []) as { turn_index: number }[]).map(r => r.turn_index))
+    const fresh = turns.filter((t, i) => !seen.has(t.turnIndex) && indexes.indexOf(t.turnIndex) === i)
+    if (fresh.length === 0) return { ok: true }
+
     const { error } = await admin.from('ai_turns').insert(
-      turns.map(t => ({
+      fresh.map(t => ({
         session_id: sessionId,
         speaker:    t.speaker,
         transcript: t.transcript,
@@ -513,11 +503,12 @@ export async function saveAiTurns(
 // ── Complete (or abandon) a session ───────────────────────────────────────────
 
 export async function completeAiSession(
-  input: { sessionId: string; anonId?: string; status?: 'completed' | 'abandoned'; durationSeconds?: number }
+  input: { sessionId: string; anonId?: string; status?: 'completed' | 'abandoned'; durationSeconds?: number; providerConversationId?: string }
 ): Promise<{ ok?: true; error?: string }> {
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   const parsed = CompleteSessionSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
-  const { sessionId, anonId, status, durationSeconds } = parsed.data
+  const { sessionId, anonId, status, durationSeconds, providerConversationId } = parsed.data
 
   try {
     const session = await authorizeSession(sessionId, anonId)
@@ -556,6 +547,7 @@ export async function completeAiSession(
         status,
         completed_at:     new Date().toISOString(),
         duration_seconds: durationSeconds ?? null,
+        ...(providerConversationId ? { provider_conversation_id: providerConversationId } : {}),
       })
       .eq('id', sessionId)
       .eq('status', 'active')
@@ -760,6 +752,7 @@ async function runEngineForSession(sessionId: string, scenarioId: string): Promi
 export async function saveSelfAssessment(
   input: { sessionId: string; anonId?: string; answers: Record<string, number | string> }
 ): Promise<{ ok?: true; error?: string }> {
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
   if (!withinInputBounds(input, SELF_ASSESSMENT_BOUNDS)) return { error: 'Données invalides.' }
   const parsed = SelfAssessmentSchema.safeParse(input)
   if (!parsed.success) return { error: 'Données invalides.' }
@@ -824,7 +817,7 @@ const GetCoachingSchema = z.object({
 export async function getSessionCoaching(
   input: { sessionId: string; anonId?: string }
 ): Promise<CoachingData | null> {
-  if (!AI_COACH_ENABLED) return null
+  if (!AI_COACH_ENABLED || (await voiceGateForCaller()) === 'closed') return null
   const parsed = GetCoachingSchema.safeParse(input)
   if (!parsed.success) return null
   const { sessionId, anonId } = parsed.data
@@ -871,5 +864,82 @@ export async function getSessionCoaching(
   } catch (e) {
     log.error({ error: (e as Error).message }, 'getSessionCoaching failed')
     return null
+  }
+}
+
+
+// ── XP-F2-01: qualitative feedback from the agent's post-call analysis ────────
+
+const VoiceFeedbackSchema = z.object({ sessionId: Uuid })
+const VOICE_CONTENT_PURGED_FR = 'Le détail de cet entraînement n’est plus conservé.'
+
+/**
+ * The learner's feedback for one finished voice session: per observation
+ * criterion, réussi / à retravailler / pas assez d'éléments, with a rationale
+ * that never invents their words, and no score. Only the learner who held the
+ * session can read it. `pending` while the provider is still analysing.
+ */
+export async function getVoiceFeedback(
+  input: { sessionId: string }
+): Promise<{ feedback?: VoiceFeedback; pending?: true; error?: string }> {
+  if ((await voiceGateForCaller()) === 'closed') return { error: VOICE_CLOSED_MESSAGE }
+  const parsed = VoiceFeedbackSchema.safeParse(input)
+  if (!parsed.success) return { error: 'Données invalides.' }
+  const { sessionId } = parsed.data
+
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { error: 'Session introuvable.' }
+
+    const rl = await rateLimitDb(`ai_feedback:${user.id}`, { limit: 30, windowMs: 10 * 60 * 1000 })
+    if (!rl.success) return { error: 'Trop de demandes. Réessayez dans quelques minutes.' }
+
+    const admin = createAdminClient()
+    const { data: session } = await admin
+      .from('ai_sessions')
+      .select('id, user_id, status, mode, scenario_id, provider_conversation_id, content_purged_at')
+      .eq('id', sessionId)
+      .maybeSingle()
+    // Ownership: the learner who held the session, and no one else.
+    if (!session || session.user_id !== user.id) return { error: 'Session introuvable.' }
+    if (session.status === 'active') return { pending: true }
+    // XP-F2-03: once the content is deleted (retention or erasure), no feedback is
+    // rebuilt from an empty transcript and the provider is not asked again.
+    if (session.content_purged_at) return { error: VOICE_CONTENT_PURGED_FR }
+    if (session.mode !== 'voice' || !session.provider_conversation_id) {
+      return { error: 'Aucun retour n’est disponible pour cette session.' }
+    }
+
+    const { data: scenario } = await admin
+      .from('ai_scenarios')
+      .select('slug, agent_id')
+      .eq('id', session.scenario_id)
+      .maybeSingle()
+    const persona = personaBySlug(scenario?.slug as string | undefined)
+    const apiKey = process.env.ELEVENLABS_API_KEY
+    if (!persona || !scenario?.agent_id || !apiKey) return { error: 'Retour indisponible.' }
+
+    const analysis = await fetchConversationAnalysis(
+      session.provider_conversation_id as string, scenario.agent_id as string, apiKey,
+    )
+    if (!analysis.ok) {
+      log.warn({ sessionId, reason: analysis.reason }, 'getVoiceFeedback: analysis unavailable')
+      return { error: 'Le retour n’est pas disponible pour le moment.' }
+    }
+    if (!analysis.ready) return { pending: true }
+
+    const { data: turns } = await admin
+      .from('ai_turns')
+      .select('speaker, transcript')
+      .eq('session_id', sessionId)
+      .order('turn_index', { ascending: true })
+    const transcript = ((turns ?? []) as { speaker: 'learner' | 'agent'; transcript: string }[])
+      .map(t => ({ speaker: t.speaker, text: t.transcript }))
+
+    return { feedback: buildVoiceFeedback(persona, analysis.evaluations, transcript) }
+  } catch (e) {
+    log.error({ error: (e as Error).message }, 'getVoiceFeedback failed')
+    return { error: 'Service indisponible.' }
   }
 }

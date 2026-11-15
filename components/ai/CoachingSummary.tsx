@@ -15,10 +15,11 @@ function scoreColor(score: number): string {
   return 'text-red-300'
 }
 
-function scoreBar(score: number): string {
-  if (score >= 7) return 'bg-success'
-  if (score >= 5) return 'bg-amber-400'
-  return 'bg-red-400'
+/** XP-F2-01: the F2 document forbids scoring the learner; a level word, never a number. */
+function levelFr(score: number): string {
+  if (score >= 7) return 'Bien installé'
+  if (score >= 5) return 'En progrès'
+  return 'À travailler'
 }
 
 /**
@@ -29,13 +30,10 @@ export default function CoachingSummary({ data, onRetry, onContinue }: Props) {
   return (
     <div className="flex flex-col gap-6">
 
-      {/* Overall */}
-      <div className="flex items-center gap-4 px-4 py-3.5 rounded-xl bg-white/[0.03] border border-white/10">
-        <span className={`text-3xl font-extrabold tabular-nums ${scoreColor(data.overallScore)}`}>
-          {data.overallScore}<span className="text-base text-white/40 font-semibold">/10</span>
-        </span>
+      {/* Overall: no score (XP-F2-01) */}
+      <div className="px-4 py-3.5 rounded-xl bg-white/[0.03] border border-white/10">
         <p className="text-xs text-white/55 leading-relaxed">
-          Score indicatif calculé automatiquement à partir de votre conversation.
+          Repères tirés automatiquement de votre conversation, sans note.
           Utilisez la relecture ci-dessous pour comprendre chaque moment clé.
         </p>
       </div>
@@ -49,14 +47,8 @@ export default function CoachingSummary({ data, onRetry, onContinue }: Props) {
           {data.scores.map(s => (
             <div key={s.key} className="flex items-center gap-3">
               <span className="w-44 shrink-0 text-[13px] text-white/75 truncate">{s.labelFr}</span>
-              <div className="flex-1 h-2 bg-white/[0.08] rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full ${scoreBar(s.score)}`}
-                  style={{ width: `${s.score * 10}%` }}
-                />
-              </div>
-              <span className={`w-8 text-right text-[13px] font-bold tabular-nums ${scoreColor(s.score)}`}>
-                {s.score}
+              <span className={`text-[13px] font-semibold ${scoreColor(s.score)}`}>
+                {levelFr(s.score)}
               </span>
             </div>
           ))}

@@ -89,6 +89,11 @@ export type AuditEventType =
   // A sweep that stops cannot report itself, so each finished run leaves this row, and
   // the admin page warns when the last one is too old. Counts only.
   | 'payment.reconciliation_sweep_finished'
+  // XP-F2-01 — the learner's voice-processing consent and data rights.
+  | 'voice.consent_accepted'
+  | 'voice.consent_withdrawn'
+  | 'voice.data_deleted'
+  | 'voice.retention_purged'
 
 export type AuditActorType = 'admin' | 'self' | 'system' | 'anonymous'
 export type AuditOutcome   = 'success' | 'failure'

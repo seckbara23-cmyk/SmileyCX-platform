@@ -65,7 +65,7 @@ describe('AUDIT-SEC-01 — 061 exists, alone, as one transaction', () => {
     // PAY-2C later authored 062. The rule is not "nothing above 061" but
     // "nothing above 061 reopens the audit_log grant layer".
     const above = f.filter(x => parseInt(x, 10) > 61)
-    expect(above).toEqual(['062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql'])
+    expect(above).toEqual(['062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql', '066_voice_training_foundation.sql'])
     const m062 = read('supabase/migrations/062_atomic_payment_completion.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     for (const stmt of m062.match(/^\s*(grant|revoke)\s[\s\S]*?;/gim) ?? []) {
@@ -79,7 +79,7 @@ describe('AUDIT-SEC-01 — 061 exists, alone, as one transaction', () => {
     expect(m062).toMatch(/insert into public\.audit_log/)
     expect(m062).toMatch(/security invoker/)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(65)  // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access)
+    expect(Math.max(...nums)).toBe(66)  // XP-F2-01 authored 066 (voice-training consent, session mode).
     expect(new Set(nums).size, 'two migrations share a number').toBe(nums.length)
   })
 

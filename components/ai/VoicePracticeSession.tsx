@@ -55,17 +55,21 @@ interface Props {
   pilotMode:   boolean
   anonId?:     string
   onComplete:  (_sessionId: string) => void
+  /** XP-F2-01: the server needs the learner's voice consent first. */
+  onConsentRequired?: () => void
   onCancel:    () => void
 }
 
 export default function VoicePracticeSession({
-  scenarioId, personaName, pilotMode, anonId, onComplete, onCancel,
+  scenarioId, personaName, pilotMode, anonId, onComplete, onCancel, onConsentRequired,
 }: Props) {
   const [state,      setState]      = useState<VoiceState>('micro')
   const [error,      setError]      = useState('')
   const [lines,      setLines]      = useState<TranscriptLine[]>([])
 
   const conversationRef = useRef<Conversation | null>(null)
+  /** XP-F2-01: the visible attempt counter (decision D9). */
+  const [attemptsRemaining, setAttemptsRemaining] = useState<number | null>(null)
   const sessionIdRef    = useRef<string | null>(null)
   const startedAtRef    = useRef(0)
   const bufferRef       = useRef<BufferedTurn[]>([])
@@ -129,7 +133,10 @@ export default function VoicePracticeSession({
     try {
       await flushTurns()
       if (sid) {
-        const res = await completeAiSession({ sessionId: sid, anonId: anon, status, durationSeconds })
+        // XP-F2-01: the provider's conversation id, so the post-call analysis can be read.
+        let providerConversationId: string | undefined
+        try { providerConversationId = (conversationRef.current as unknown as { getId?: () => string } | null)?.getId?.() } catch { /* not connected */ }
+        const res = await completeAiSession({ sessionId: sid, anonId: anon, status, durationSeconds, providerConversationId })
         // Claim finalisation ONLY on a confirmed terminal state. On failure the
         // flag stays false so a later path (unmount, disconnect) can retry.
         if (!res?.error) finalizedRef.current = true
@@ -178,6 +185,12 @@ export default function VoicePracticeSession({
     // 2. Server: create session + signed URL (API key never leaves the server).
     vlog('2/4 startVoiceSession: calling server action', { scenarioId })
     const res = await startVoiceSession({ scenarioId, anonId: anon })
+    // XP-F2-01: no consent yet — the parent shows the consent step.
+    if (res.reason === 'consent_required' && onConsentRequired) {
+      onConsentRequired()
+      return
+    }
+    if (typeof res.attemptsRemaining === 'number') setAttemptsRemaining(res.attemptsRemaining)
     if (res.error || !res.sessionId || !res.signedUrl) {
       verror('startVoiceSession (server)', {
         error:  res.error,
@@ -309,6 +322,13 @@ export default function VoicePracticeSession({
 
   return (
     <div className="flex flex-col gap-4">
+      {attemptsRemaining !== null && (
+        <p className="text-xs text-white/55">
+          {attemptsRemaining > 0
+            ? `Essais restants pour cette leçon après celui-ci : ${attemptsRemaining}`
+            : 'C’est votre dernier essai pour cette leçon pendant votre période d’accès.'}
+        </p>
+      )}
       {/* Status bar */}
       <div className="flex items-center justify-between gap-3 px-4 py-3 rounded-xl bg-white/[0.03] border border-white/10">
         <span className="flex items-center gap-2.5 text-sm font-semibold text-white/85">

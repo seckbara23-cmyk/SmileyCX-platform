@@ -25,6 +25,12 @@ const chain = (): unknown => new Proxy(function () { /* callable */ }, {
 })
 
 vi.mock('server-only', () => ({}))
+// XP-F2-01: these tests check the size limits of an OPEN voice practice; closed, every
+// voice action answers « pas encore ouvert » before any parsing (pinned elsewhere).
+vi.mock('@/lib/ai/flags', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/ai/flags')>()),
+  VOICE_PRACTICE_OPEN: true,
+}))
 vi.mock('next/headers', () => ({ headers: async () => new Headers(), cookies: async () => ({ get: () => undefined, set: () => undefined }) }))
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }))
 vi.mock('@/lib/supabase/admin', () => ({
