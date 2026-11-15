@@ -17,6 +17,11 @@ import { APPROVED_TRANSCRIPT_RETENTION_DAYS } from '@/lib/voice/retention'
  * authorization. `scripts/voice/compare-agents.mjs` compares this manifest with
  * live agents, read-only.
  *
+ * Authentication (XP-F2-UAT-01): `platform_settings.auth.enable_auth` = true, so
+ * an agent only accepts conversations opened through a signed URL, which only
+ * the server can request with the API key. Without it, anyone holding an agent
+ * id could talk to the agent and spend the account's credits.
+ *
  * Retention (decision D1): `platform_settings.privacy.retention_days` = 30, the
  * same period as the platform, so the provider also deletes on its own even if
  * a delete call failed. Whether to apply it to an existing agent's past
@@ -25,7 +30,7 @@ import { APPROVED_TRANSCRIPT_RETENTION_DAYS } from '@/lib/voice/retention'
  * Retention Mode, which wait for the provider's written answers.
  */
 
-export const AGENT_MANIFEST_VERSION = 'f2-agents-2'
+export const AGENT_MANIFEST_VERSION = 'f2-agents-3'
 
 export interface ElevenLabsAgentPayload {
   readonly name: string
@@ -37,6 +42,7 @@ export interface ElevenLabsAgentPayload {
     }
   }
   readonly platform_settings: {
+    readonly auth: { readonly enable_auth: true }
     readonly privacy: { readonly retention_days: number }
     readonly evaluation: {
       readonly criteria: readonly {
@@ -61,6 +67,7 @@ export function toAgentPayload(p: VoicePersona): ElevenLabsAgentPayload {
       },
     },
     platform_settings: {
+      auth: { enable_auth: true },
       privacy: { retention_days: APPROVED_TRANSCRIPT_RETENTION_DAYS },
       evaluation: {
         criteria: cfg.evaluationCriteria.map(c => ({

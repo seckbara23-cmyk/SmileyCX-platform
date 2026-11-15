@@ -410,10 +410,12 @@ describe('agent manifest: deterministic, reviewable, never sent anywhere by the 
     expect(payloadFingerprint(toAgentPayload(edited))).not.toBe(payloadFingerprint(toAgentPayload(p)))
   })
 
-  it('the approved 30-day retention rides along; no other privacy, voice or override setting does', () => {
+  it('signed URLs only, and the approved 30-day retention; no other privacy, voice or override setting', () => {
     for (const e of manifest.personas) {
       expect(Object.keys(e.payload).sort()).toEqual(['conversation_config', 'name', 'platform_settings'])
-      expect(Object.keys(e.payload.platform_settings).sort()).toEqual(['evaluation', 'privacy'])
+      expect(Object.keys(e.payload.platform_settings).sort()).toEqual(['auth', 'evaluation', 'privacy'])
+      // XP-F2-UAT-01: an agent without authentication answers anyone who knows its id.
+      expect(e.payload.platform_settings.auth).toEqual({ enable_auth: true })
       expect(e.payload.platform_settings.privacy).toEqual({ retention_days: 30 })
       expect(JSON.stringify(e.payload)).not.toMatch(/zero_retention|record_voice|"overrides"|"voice_id"/)
     }
@@ -449,7 +451,7 @@ describe('compare-agents: a read-only diff that prints hashes, never text', () =
   it('identical agent: every field matches', async () => {
     const { compareAgent } = await load()
     const rows = compareAgent(entry.payload, structuredClone(entry.payload))
-    expect(rows.length).toBe(4 + 3)
+    expect(rows.length).toBe(5 + 3)
     expect(rows.every((r: { match: boolean }) => r.match)).toBe(true)
   })
 
@@ -464,6 +466,7 @@ describe('compare-agents: a read-only diff that prints hashes, never text', () =
     const rows = compareAgent(entry.payload, live) as { field: string; expected: string; live: string; match: boolean }[]
     expect(rows.find(r => r.field === 'prompt')!.match).toBe(false)
     expect(rows.find(r => r.field === 'retention_days')!.match).toBe(true)
+    expect(rows.find(r => r.field === 'enable_auth')!.match).toBe(true)
     expect(rows.find(r => r.field === 'criterion ibrahima_ton_calme')!.live).toBe('absent')
     expect(rows.find(r => r.field === 'criterion old_criterion')!.live).toBe('extra')
     const printed = JSON.stringify(rows)

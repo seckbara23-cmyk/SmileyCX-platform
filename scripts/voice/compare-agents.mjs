@@ -26,6 +26,7 @@ export function compareAgent(expected, live) {
     { field: 'first_message', expected: sha(ea.first_message), live: sha(la.first_message) },
     { field: 'language', expected: ea.language ?? '', live: la.language ?? '' },
     { field: 'prompt', expected: sha(ea.prompt?.prompt), live: sha(la.prompt?.prompt) },
+    { field: 'enable_auth', expected: String(expected?.platform_settings?.auth?.enable_auth ?? ''), live: String(live?.platform_settings?.auth?.enable_auth ?? '') },
     { field: 'retention_days', expected: String(expected?.platform_settings?.privacy?.retention_days ?? ''), live: String(live?.platform_settings?.privacy?.retention_days ?? '') },
   ]
   const ec = expected?.platform_settings?.evaluation?.criteria ?? []
