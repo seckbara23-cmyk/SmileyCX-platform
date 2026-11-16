@@ -3,7 +3,7 @@ import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import PackCheckoutPanel from '@/components/payment/PackCheckoutPanel'
 import { formatPrice } from '@/lib/utils/cn'
-import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailabilityFor } from '@/lib/payments/providers'
 import { inflightPaytechPackAttempt } from '@/lib/payments/paytech-resume'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 import { getPublishedPack, individualTotal, packCodeFrom, packHref } from '@/lib/commerce/packs'
@@ -39,7 +39,8 @@ export default async function PackCheckout({ packParam }: { packParam: string })
   const total = individualTotal(pack)
   const saving = total - pack.price
 
-  if (!paytechCheckoutAvailability().available) {
+  // XP-PAYTECH-P2: for THIS signed-in user, as for a course.
+  if (!paytechCheckoutAvailabilityFor(user.id).available) {
     return (
       <div className="cx-section">
         <div className="cx-container max-w-2xl text-center py-16">

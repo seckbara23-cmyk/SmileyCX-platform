@@ -71,6 +71,7 @@ describe('PAY-2D-0 · 1. the obsolete stub is gone, and nothing reached for it',
     // provider selection.
     const files = readdirSync(join(ROOT, 'lib/payments')).sort()
     expect(files).toEqual([
+      'checkout-audience.ts',   // XP-PAYTECH-P2: who may open a checkout (pilot or public)
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',
@@ -425,7 +426,8 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
     expect(page, 'checkout redirects into /learn again').not.toContain('redirect(`/learn/')
     // XP-PAYTECH-04 is that checkout rework. The gate is server-side and the
     // only control redirects to PayTech; the card-collecting selector is gone.
-    expect(page).toMatch(/if \(!paytechCheckoutAvailability\(\)\.available\)/)
+    // XP-PAYTECH-P2: asked for the session user, so a pilot audience applies here too.
+    expect(page).toMatch(/if \(!paytechCheckoutAvailabilityFor\(user\.id\)\.available\)/)
     const pageCode = page.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
     expect(pageCode, 'the NEXT_PUBLIC flag is read again').not.toMatch(/PAYMENTS_ENABLED/)
     expect(existsSync(join(ROOT, 'components/payment/PaymentMethodSelector.tsx'))).toBe(false)

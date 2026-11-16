@@ -235,6 +235,7 @@ beforeEach(() => {
   }))
 
   vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', 'true')
+  vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', 'public')  // XP-PAYTECH-P2: no audience = nobody may buy
   vi.stubEnv('PAYTECH_MODE', 'test')
   vi.stubEnv('PAYTECH_TEST_API_KEY', API_KEY)
   vi.stubEnv('PAYTECH_TEST_API_SECRET', API_SECRET)

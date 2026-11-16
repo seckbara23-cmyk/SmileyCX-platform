@@ -64,7 +64,7 @@ import {
   isValidPaytechRedirectUrl,
 } from '@/lib/payments/paytech-client'
 import { resolvePaytechConfig } from '@/lib/payments/paytech-config'
-import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailability, paytechCheckoutAvailabilityFor } from '@/lib/payments/providers'
 import { paymentDatabaseAuthority } from '@/lib/payments/payment-database-guard'
 import { mintReference, paytechCallbackUrls } from '@/lib/payments/paytech-callbacks'
 import { purchaseBlocker } from '@/lib/payments/purchase-eligibility'
@@ -159,6 +159,9 @@ export async function startPaytechCheckout(input: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: MSG.signIn }
+
+  // ── 2a. may THIS user buy? (XP-PAYTECH-P2) — the session's id, never the request ──
+  if (!audienceAllows(user.id, 'course')) return { error: MSG.unavailable }
 
   // Nothing below may write unless this deployment may act on this database.
   if (!(await paymentDatabaseAuthority()).allowed) return { error: MSG.unavailable }
@@ -291,6 +294,8 @@ export async function startPaytechPackCheckout(input: {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: MSG.signIn }
+  // ── 2a. may THIS user buy? (XP-PAYTECH-P2) — the same policy as a course ──
+  if (!audienceAllows(user.id, 'pack')) return { error: MSG.unavailable }
   if (!(await paymentDatabaseAuthority()).allowed) return { error: MSG.unavailable }
 
   const code = packCodeFrom(input?.packCode)
@@ -579,6 +584,18 @@ function consentRefused(raw: unknown): string | null {
   const check = checkCheckoutConsent(raw)
   if (check === 'accepted') return null
   return check === 'stale' ? MSG.consentStale : MSG.consent
+}
+
+/**
+ * XP-PAYTECH-P2 — the audience policy for the SESSION user, before anything is
+ * read, written or asked of PayTech. An unlisted pilot user is told checkout is
+ * unavailable, exactly as when it is closed: the list is never revealed.
+ */
+function audienceAllows(userId: string, product: 'course' | 'pack'): boolean {
+  const policy = paytechCheckoutAvailabilityFor(userId)
+  if (policy.available) return true
+  log.warn({ product, blockedBy: policy.blockedBy }, 'PayTech checkout refused: not admitted by the checkout audience')
+  return false
 }
 
 async function openAttempt(args: {

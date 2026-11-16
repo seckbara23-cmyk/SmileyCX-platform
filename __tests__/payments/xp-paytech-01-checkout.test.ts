@@ -130,6 +130,7 @@ beforeEach(() => {
   state.updateFails = false
 
   vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', 'true')
+  vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', 'public')  // XP-PAYTECH-P2: no audience = nobody may buy
   vi.stubEnv('PAYTECH_MODE', 'test')
   vi.stubEnv('PAYTECH_TEST_API_KEY', API_KEY)
   vi.stubEnv('PAYTECH_TEST_API_SECRET', API_SECRET)
@@ -206,11 +207,11 @@ describe('XP-PAYTECH-01 · configuration boundary', () => {
 
 describe('XP-PAYTECH-01 · provider selection (Phase F, split by XP-PAYTECH-04)', () => {
   const full = {
-    PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'test',
+    PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_CHECKOUT_AUDIENCE: 'public', PAYTECH_MODE: 'test',
     PAYTECH_TEST_API_KEY: API_KEY, PAYTECH_TEST_API_SECRET: API_SECRET,
   }
   const prod = {
-    PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'prod', VERCEL_ENV: 'production',
+    PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_CHECKOUT_AUDIENCE: 'public', PAYTECH_MODE: 'prod', VERCEL_ENV: 'production',
     PAYTECH_PROD_API_KEY: API_KEY, PAYTECH_PROD_API_SECRET: API_SECRET,
   }
 

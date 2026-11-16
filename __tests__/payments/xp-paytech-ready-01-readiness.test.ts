@@ -84,10 +84,11 @@ describe('READY-C1 FIXED — PayTech is the checkout journey', () => {
   })
 
   it('the page and the course CTA are gated by the SAME server-side availability', () => {
+    // XP-PAYTECH-P2: the same per-user policy, asked with the session's id.
     expect(stripComments(read('app/(platform)/checkout/page.tsx')))
-      .toMatch(/if \(!paytechCheckoutAvailability\(\)\.available\)/)
+      .toMatch(/if \(!paytechCheckoutAvailabilityFor\(user\.id\)\.available\)/)
     expect(stripComments(read('app/(public)/courses/[slug]/page.tsx')))
-      .toMatch(/paidPurchaseAvailable = paytechCheckoutAvailability\(\)\.available && !isFree/)
+      .toMatch(/paidPurchaseAvailable = paytechCheckoutAvailabilityFor\(user\?\.id \?\? null\)\.available && !isFree/)
   })
 
   it('the legacy dead end is gone: the confirm page redirects, the legacy action refuses', () => {
@@ -156,7 +157,7 @@ describe('READY-E1 FIXED — test and live belong to different environments', ()
 
   it('production in live mode needs the second approval for NEW sales — but not to process existing ones', async () => {
     const { paytechCheckoutAvailability, paytechProcessingAvailability } = await import('@/lib/payments/providers')
-    const env = { ...L, VERCEL_ENV: 'production', PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_MODE: 'prod' }
+    const env = { ...L, VERCEL_ENV: 'production', PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_CHECKOUT_AUDIENCE: 'public', PAYTECH_MODE: 'prod' }
     expect(paytechCheckoutAvailability(env).available).toBe(false)
     expect(paytechCheckoutAvailability({ ...env, PAYTECH_ALLOW_PRODUCTION: 'true' }).available).toBe(true)
     expect(paytechProcessingAvailability(env).available).toBe(true)

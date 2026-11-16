@@ -380,6 +380,7 @@ describe('AUTH-02 · 7. scope guard: nothing unrelated moved', () => {
     // provider selection. 062 itself is still byte-identical (asserted above),
     // which is what "payment work stayed paused" was really protecting.
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
+      'checkout-audience.ts',   // XP-PAYTECH-P2: who may open a checkout (pilot or public)
       'paydunya-client.ts',
       'paydunya-config.ts',
       'payment-completion.ts',

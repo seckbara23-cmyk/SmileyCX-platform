@@ -692,80 +692,89 @@ const reviewedForm = (e: { id: string; evidence_version?: number; evidence_finge
 })
 
 // ── lifecycle ──────────────────────────────────────────────────────────────
+/** A fresh engine: schema, Supabase default ACLs, migrations 063, 064 and 065 WHOLE. */
+async function bootEngine() {
+  db = new PGlite({
+    parsers: { [types.NUMERIC]: (v: string) => Number(v), [types.TIMESTAMPTZ]: (v: string) => v },
+  })
+  await db.exec(SCHEMA)
+  // What Supabase does to every new object in public, so 063's and 064's REVOKEs
+  // must do the work they claim.
+  await db.exec(`alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
+    alter default privileges in schema public grant all on functions to anon, authenticated, service_role;`)
+  // Migration 063, WHOLE: preflight, objects, self-test, assertions.
+  await db.exec(M063)
+  // Migration 064, WHOLE, on top of it.
+  await db.exec(M064)
+  // XP-LAUNCH-FINAL-08: migration 065, WHOLE, on top of that. Every test below runs
+  // against its complete_payment(): six months, packs, rollover.
+  await seedCatalogueCodes()
+  await db.exec(M065)
+  await db.exec(`create function public.harness_fail() returns trigger language plpgsql as $$ begin raise exception 'simulated storage failure'; end $$`)
+}
+
+/** Every test starts from the same world: users, courses, a sandbox marker, a fake PayTech, a test-mode env. */
+async function resetWorld() {
+  await asSuper(`drop trigger if exists harness_fault on public.entitlements`)
+  await asSuper(`truncate public.audit_log, public.entitlements, public.enrollments, public.payments, public.courses, public.profiles, auth.users cascade`)
+  // The suite runs PayTech TEST mode, so its database is a declared sandbox.
+  // `live` is exercised explicitly below.
+  await setEnvironment('sandbox')
+  await asSuper(`insert into auth.users (id, email, email_confirmed_at) values
+    ($1, 'l1@example.test', now()), ($2, 'l2@example.test', now()), ($3, 'owner@example.test', now())`, [L1, L2, ADM])
+  await asSuper(`insert into public.profiles (id, email, platform_role) values
+    ($1, 'l1@example.test', 'user'), ($2, 'l2@example.test', 'user'), ($3, 'owner@example.test', 'super_admin')`, [L1, L2, ADM])
+  await asSuper(`insert into public.courses (id, slug, title, price, currency, is_published) values
+    ($1, 'c1', 'Fondamentaux', 45000, 'XOF', true),
+    ($2, 'c2', 'Avancé', 30000, 'XOF', true),
+    ($3, 'c3', 'Brouillon', 20000, 'XOF', false)`, [C1, C2, C3])
+
+  H.user = null; H.logs = []; H.rpcFault = null; H.contract = FIXTURE_CONTRACT
+  H.rpcFaultFor = null; H.denyAdmin = false; H.emails = []; H.emailMode = 'ok'; H.emailDuring = null
+  H.confirmations = []; H.confirmationMode = 'ok'
+  P.next = 0; P.requests = []; P.statusCalls = []; P.refs = new Map(); P.status = new Map(); P.during = null; P.duringStatus = null
+
+  vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
+    const u = String(url)
+    if (u === 'https://paytech.sn/api/payment/request-payment') {
+      const body = JSON.parse(String(init?.body))
+      P.requests.push(body)
+      if (P.during) { const d = P.during; P.during = null; await d() }
+      const token = `tokready01x${String(++P.next).padStart(4, '0')}`
+      P.refs.set(token, String(body.ref_command))
+      const redirect = `https://paytech.sn/payment/checkout/${token}`
+      return json({ success: 1, token, redirect_url: redirect, redirectUrl: redirect })
+    }
+    if (u.startsWith('https://paytech.sn/api/payment/get-status')) {
+      const token = new URL(u).searchParams.get('token_payment') ?? ''
+      P.statusCalls.push(token)
+      if (P.duringStatus) { const d = P.duringStatus; P.duringStatus = null; await d() }
+      const s = P.status.get(token)
+      if (s === undefined) throw new TypeError('fetch failed')
+      return json(s)
+    }
+    throw new Error(`harness: unexpected outbound request to ${u}`)
+  }))
+  vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', 'true')
+  vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', 'public')  // XP-PAYTECH-P2: no audience = nobody may buy
+  vi.stubEnv('PAYTECH_PILOT_USER_IDS', '')            // XP-PAYTECH-P2: reset, so no test inherits a list
+  vi.stubEnv('PAYTECH_ALLOW_PRODUCTION', '')
+  vi.stubEnv('PAYTECH_MODE', 'test')
+  vi.stubEnv('PAYTECH_TEST_API_KEY', API_KEY)
+  vi.stubEnv('PAYTECH_TEST_API_SECRET', API_SECRET)
+  vi.stubEnv('VERCEL_ENV', 'preview')
+  vi.stubEnv('VERCEL_URL', 'xp-preview.vercel.app')
+  vi.stubEnv('PAYTECH_CALLBACK_BASE_URL', '')
+  vi.stubEnv('CRON_SECRET', CRON)
+  vi.stubEnv('ADMIN_OWNER_EMAILS', OWNERS.join(','))
+}
+
 describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => {
-  beforeAll(async () => {
-    db = new PGlite({
-      parsers: { [types.NUMERIC]: (v: string) => Number(v), [types.TIMESTAMPTZ]: (v: string) => v },
-    })
-    await db.exec(SCHEMA)
-    // What Supabase does to every new object in public, so 063's and 064's REVOKEs
-    // must do the work they claim.
-    await db.exec(`alter default privileges in schema public grant all on tables to anon, authenticated, service_role;
-      alter default privileges in schema public grant all on functions to anon, authenticated, service_role;`)
-    // Migration 063, WHOLE: preflight, objects, self-test, assertions.
-    await db.exec(M063)
-    // Migration 064, WHOLE, on top of it.
-    await db.exec(M064)
-    // XP-LAUNCH-FINAL-08: migration 065, WHOLE, on top of that. Every test below runs
-    // against its complete_payment(): six months, packs, rollover.
-    await seedCatalogueCodes()
-    await db.exec(M065)
-    await db.exec(`create function public.harness_fail() returns trigger language plpgsql as $$ begin raise exception 'simulated storage failure'; end $$`)
-  }, 120_000)
+  beforeAll(bootEngine, 120_000)
 
   afterAll(async () => { await db?.close() })
 
-  beforeEach(async () => {
-    await asSuper(`drop trigger if exists harness_fault on public.entitlements`)
-    await asSuper(`truncate public.audit_log, public.entitlements, public.enrollments, public.payments, public.courses, public.profiles, auth.users cascade`)
-    // The suite runs PayTech TEST mode, so its database is a declared sandbox.
-    // `live` is exercised explicitly below.
-    await setEnvironment('sandbox')
-    await asSuper(`insert into auth.users (id, email, email_confirmed_at) values
-      ($1, 'l1@example.test', now()), ($2, 'l2@example.test', now()), ($3, 'owner@example.test', now())`, [L1, L2, ADM])
-    await asSuper(`insert into public.profiles (id, email, platform_role) values
-      ($1, 'l1@example.test', 'user'), ($2, 'l2@example.test', 'user'), ($3, 'owner@example.test', 'super_admin')`, [L1, L2, ADM])
-    await asSuper(`insert into public.courses (id, slug, title, price, currency, is_published) values
-      ($1, 'c1', 'Fondamentaux', 45000, 'XOF', true),
-      ($2, 'c2', 'Avancé', 30000, 'XOF', true),
-      ($3, 'c3', 'Brouillon', 20000, 'XOF', false)`, [C1, C2, C3])
-
-    H.user = null; H.logs = []; H.rpcFault = null; H.contract = FIXTURE_CONTRACT
-    H.rpcFaultFor = null; H.denyAdmin = false; H.emails = []; H.emailMode = 'ok'; H.emailDuring = null
-    H.confirmations = []; H.confirmationMode = 'ok'
-    P.next = 0; P.requests = []; P.statusCalls = []; P.refs = new Map(); P.status = new Map(); P.during = null; P.duringStatus = null
-
-    vi.stubGlobal('fetch', vi.fn(async (url: unknown, init?: RequestInit) => {
-      const u = String(url)
-      if (u === 'https://paytech.sn/api/payment/request-payment') {
-        const body = JSON.parse(String(init?.body))
-        P.requests.push(body)
-        if (P.during) { const d = P.during; P.during = null; await d() }
-        const token = `tokready01x${String(++P.next).padStart(4, '0')}`
-        P.refs.set(token, String(body.ref_command))
-        const redirect = `https://paytech.sn/payment/checkout/${token}`
-        return json({ success: 1, token, redirect_url: redirect, redirectUrl: redirect })
-      }
-      if (u.startsWith('https://paytech.sn/api/payment/get-status')) {
-        const token = new URL(u).searchParams.get('token_payment') ?? ''
-        P.statusCalls.push(token)
-        if (P.duringStatus) { const d = P.duringStatus; P.duringStatus = null; await d() }
-        const s = P.status.get(token)
-        if (s === undefined) throw new TypeError('fetch failed')
-        return json(s)
-      }
-      throw new Error(`harness: unexpected outbound request to ${u}`)
-    }))
-    vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', 'true')
-    vi.stubEnv('PAYTECH_MODE', 'test')
-    vi.stubEnv('PAYTECH_TEST_API_KEY', API_KEY)
-    vi.stubEnv('PAYTECH_TEST_API_SECRET', API_SECRET)
-    vi.stubEnv('VERCEL_ENV', 'preview')
-    vi.stubEnv('VERCEL_URL', 'xp-preview.vercel.app')
-    vi.stubEnv('PAYTECH_CALLBACK_BASE_URL', '')
-    vi.stubEnv('CRON_SECRET', CRON)
-    vi.stubEnv('ADMIN_OWNER_EMAILS', OWNERS.join(','))
-  })
+  beforeEach(resetWorld)
 
   // ═══ migration 063 itself ═══════════════════════════════════════════════
   describe('M063 the state machine migration', () => {
@@ -10302,6 +10311,215 @@ describe('XP-PAYTECH-04 — PayTech journey on a real PostgreSQL engine', () => 
         expect(await dbHasAccess(L1, ids['C1-F1'])).toBe(true)
         expect(H.logs.some(l => l.module === 'payments/confirmation' && l.level === 'error')).toBe(true)
       })
+    })
+  })
+})
+
+// ═══ XP-PAYTECH-P2 — the restricted pilot checkout ══════════════════════
+// The audience decides WHO may open a checkout. It is read from the server
+// environment, compared with the SESSION user only, and checked before any
+// read, write or PayTech request. Every other safeguard still applies after it.
+describe('XP-PAYTECH-P2 — a pilot audience admits only the listed users', () => {
+  // Its own engine. One PGlite instance runs out of memory near 750 tests (Postgres
+  // reports « out of memory » at shutdown), so these journeys do not share the main one.
+  beforeAll(bootEngine, 120_000)
+  afterAll(async () => { await db?.close() })
+  beforeEach(resetWorld)
+
+  const UNAVAILABLE = "Ce moyen de paiement n'est pas disponible actuellement."
+  const pilot = (...ids: string[]) => {
+    vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', 'pilot')
+    vi.stubEnv('PAYTECH_PILOT_USER_IDS', ids.join(','))
+  }
+  const nothingHappened = async () => {
+    expect(P.requests, 'a PayTech checkout was requested').toHaveLength(0)
+    expect(P.statusCalls, 'PayTech was asked about a payment').toHaveLength(0)
+    expect((await counts()).payments, 'a payment attempt was written').toBe(0)
+  }
+  const PACKS = [
+    ['PACK-CONSEILLER', 'C1-F1', 1], ['PACK-CONSEILLER', 'C1-F2', 2], ['PACK-CONSEILLER', 'C1-F3', 3],
+    ['PACK-CONSEILLER', 'C2-F4', 4],
+  ] as const
+  async function packCheckout(u: U | null, packCode: string, extra: Record<string, unknown> = {}) {
+    H.user = u
+    const { startPaytechPackCheckout } = await import('@/app/actions/paytech-checkout')
+    return startPaytechPackCheckout({ packCode, acknowledgedCourseIds: [], consent: tickedCheckoutConsent(), ...extra } as Parameters<typeof startPaytechPackCheckout>[0])
+  }
+
+  it('a LISTED pilot learner opens exactly one checkout, at the database price', async () => {
+    pilot(L1)
+    const r = await checkout(user(L1), C1)
+    expect(r.error).toBeUndefined()
+    expect(r.redirectUrl).toMatch(/^https:\/\/paytech\.sn\/payment\/checkout\//)
+    expect(P.requests).toHaveLength(1)
+    expect(P.requests[0]).toMatchObject({ item_price: PRICE_C1, currency: 'XOF' })
+    expect((await counts()).payments).toBe(1)
+    // Being listed grants nothing: no access until PayTech confirms the payment.
+    expect(await dbHasAccess(L1, C1)).toBe(false)
+    expect((await counts()).entitlements).toBe(0)
+  })
+
+  it('an UNLISTED signed-in learner is refused before any read, write or PayTech request', async () => {
+    pilot(L1)
+    expect(await checkout(user(L2), C1)).toEqual({ error: UNAVAILABLE })
+    await nothingHappened()
+    expect(H.logs.some(l => l.args.some(a => /not admitted by the checkout audience/.test(String(a))))).toBe(true)
+    // The refusal names no list and no id.
+    expect(JSON.stringify(H.logs)).not.toContain(L1)
+  })
+
+  it('an ANONYMOUS caller is refused', async () => {
+    pilot(L1)
+    expect(await checkout(null, C1)).toEqual({ error: 'Vous devez être connecté pour effectuer un achat.' })
+    await nothingHappened()
+  })
+
+  it('a DIRECT action call cannot pick the audience, the list or the buyer', async () => {
+    pilot(L1)
+    const forged = { audience: 'public', PAYTECH_CHECKOUT_AUDIENCE: 'public', pilotUserIds: [L2], userId: L1, user_id: L1 }
+    expect(await checkout(user(L2), C1, forged)).toEqual({ error: UNAVAILABLE })
+    expect(await packCheckout(user(L2), 'PACK-CONSEILLER', forged)).toEqual({ error: UNAVAILABLE })
+    await nothingHappened()
+  })
+
+  it('missing, blank or invalid audience: nobody may buy, listed or not', async () => {
+    // Truly ABSENT: vi.stubEnv(name, undefined) would store the word "undefined".
+    vi.stubEnv('PAYTECH_PILOT_USER_IDS', L1)
+    delete process.env.PAYTECH_CHECKOUT_AUDIENCE
+    expect(process.env.PAYTECH_CHECKOUT_AUDIENCE).toBeUndefined()
+    expect(await checkout(user(L1), C1), 'absent').toEqual({ error: UNAVAILABLE })
+    for (const audience of ['', '   ', 'PILOT', 'Public', 'everyone', 'pilot,public']) {
+      vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', audience)
+      vi.stubEnv('PAYTECH_PILOT_USER_IDS', audience === 'Public' ? '' : L1)
+      expect(await checkout(user(L1), C1), audience).toEqual({ error: UNAVAILABLE })
+    }
+    await nothingHappened()
+  })
+
+  it('pilot with an EMPTY list, or a list that is malformed, duplicated or longer than five: nobody may buy', async () => {
+    const six = [L1, L2, ADM, '30000000-0000-4000-8000-000000000004', '30000000-0000-4000-8000-000000000005',
+      '30000000-0000-4000-8000-000000000006']
+    for (const list of ['', ' , ', `${L1},`, `${L1},not-a-uuid`, `${L1},${L1}`, `${L1},${L1.toUpperCase()}`, six.join(',')]) {
+      vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', 'pilot')
+      vi.stubEnv('PAYTECH_PILOT_USER_IDS', list)
+      expect(await checkout(user(L1), C1), list).toEqual({ error: UNAVAILABLE })
+    }
+    await nothingHappened()
+    // Five distinct ids is the limit, and is accepted.
+    pilot(...six.slice(0, 5))
+    expect((await checkout(user(L1), C1)).error).toBeUndefined()
+  })
+
+  it('a list is matched without regard to case, and public with a list still set is refused', async () => {
+    pilot(L1.toUpperCase())
+    expect((await checkout(user(L1), C1)).error).toBeUndefined()
+    vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', 'public')
+    vi.stubEnv('PAYTECH_PILOT_USER_IDS', L1)
+    expect(await checkout(user(L2), C2)).toEqual({ error: UNAVAILABLE })
+  })
+
+  it('a listed user cannot bypass PAYTECH_CHECKOUT_ENABLED', async () => {
+    pilot(L1)
+    for (const v of ['', 'false', 'TRUE']) {
+      vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', v)
+      expect(await checkout(user(L1), C1), v).toEqual({ error: UNAVAILABLE })
+      expect(await packCheckout(user(L1), 'PACK-CONSEILLER'), v).toEqual({ error: UNAVAILABLE })
+    }
+    await nothingHappened()
+  })
+
+  it('a listed user cannot bypass PAYTECH_ALLOW_PRODUCTION (policy) nor, in the action, the test/live separation', async () => {
+    const { paytechCheckoutAvailabilityFor } = await import('@/lib/payments/providers')
+    const live = { VERCEL_ENV: 'production', PAYTECH_MODE: 'prod', PAYTECH_PROD_API_KEY: 'k', PAYTECH_PROD_API_SECRET: 's',
+      PAYTECH_CHECKOUT_ENABLED: 'true', PAYTECH_CHECKOUT_AUDIENCE: 'pilot', PAYTECH_PILOT_USER_IDS: L1 }
+    expect(paytechCheckoutAvailabilityFor(L1, live).available).toBe(false)
+    expect(paytechCheckoutAvailabilityFor(L1, { ...live, PAYTECH_ALLOW_PRODUCTION: 'true' }).available).toBe(true)
+    expect(paytechCheckoutAvailabilityFor(L2, { ...live, PAYTECH_ALLOW_PRODUCTION: 'true' }).available).toBe(false)
+    // Production credentials in a preview stay refused, listed or not.
+    expect(paytechCheckoutAvailabilityFor(L1, { ...live, VERCEL_ENV: 'preview', PAYTECH_ALLOW_PRODUCTION: 'true' }).available).toBe(false)
+    // And in the action itself: production with test mode refuses the listed user.
+    pilot(L1)
+    vi.stubEnv('VERCEL_ENV', 'production')
+    vi.stubEnv('PAYTECH_ALLOW_PRODUCTION', 'true')
+    expect(await checkout(user(L1), C1)).toEqual({ error: UNAVAILABLE })
+    await nothingHappened()
+  })
+
+  it('a listed user still meets every existing safeguard: unpublished, unverified, already owned, one attempt at a time', async () => {
+    pilot(L1)
+    expect(await checkout(user(L1), C3)).toEqual({ error: 'Formation introuvable.' })
+    expect((await checkout(user(L1, false), C1)).error).toMatch(/Confirmez votre adresse email/)
+    expect((await checkout(user(L1), C1, { consent: null })).error).toMatch(/Cochez les trois cases/)
+    expect(P.requests).toHaveLength(0)
+
+    const first = await checkout(user(L1), C1)
+    const token = first.redirectUrl!.split('/').pop()!
+    says(token, 'pending')
+    const again = await checkout(user(L1), C1)
+    expect(again).toMatchObject({ redirectUrl: first.redirectUrl, resumed: true })
+    expect(P.requests, 'a second chargeable checkout was opened').toHaveLength(1)
+
+    says(token, 'completed')
+    expect((await ipn(token)).status).toBe(200)
+    expect(await checkout(user(L1), C1)).toEqual({ error: 'Vous avez déjà accès à cette formation.' })
+    expect(P.requests).toHaveLength(1)
+    expect((await counts()).entitlements).toBe(1)
+  })
+
+  it('settlement keeps working when checkout closes or the buyer leaves the list', async () => {
+    pilot(L1)
+    const token = await startAndToken(user(L1), C1)
+    // The pilot ends before PayTech reports: no audience at all, and the switch off.
+    vi.stubEnv('PAYTECH_CHECKOUT_AUDIENCE', '')
+    vi.stubEnv('PAYTECH_PILOT_USER_IDS', '')
+    vi.stubEnv('PAYTECH_CHECKOUT_ENABLED', '')
+    says(token, 'completed')
+    await age(token, 20)
+    expect((await sweep()).body).toMatchObject({ checked: 1, completed: 1 })
+    expect((await rowFor(token)).status).toBe('completed')
+    expect(await dbHasAccess(L1, C1)).toBe(true)
+    // A repeat notification afterwards is still recognised, and grants nothing twice.
+    expect((await ipn(token)).body).toMatchObject({ received: true })
+    expect((await counts()).entitlements).toBe(1)
+  })
+
+  it('a buyer REMOVED from the list while the pilot runs: their open payment still settles on its notification', async () => {
+    pilot(L1, L2)
+    const token = await startAndToken(user(L2), C1)
+    pilot(L1)                                   // L2 delisted; the audience stays 'pilot'
+    expect(await checkout(user(L2), C2)).toEqual({ error: UNAVAILABLE })
+    says(token, 'completed')
+    expect(await ipn(token)).toEqual({ status: 200, body: { received: true, detail: 'completed' } })
+    expect(await dbHasAccess(L2, C1)).toBe(true)
+    expect(P.requests).toHaveLength(1)
+  })
+
+  describe('a course pack follows the same policy', () => {
+    let ids: Record<string, string>
+    beforeEach(async () => {
+      await seedCatalogueCodes()
+      for (const [pack, code, position] of PACKS) {
+        await asSuper(`insert into public.course_pack_courses (pack_id, course_id, position)
+          select p.id, c.id, $3 from public.course_packs p, public.courses c where p.code = $1 and c.code = $2
+          on conflict do nothing`, [pack, code, position])
+      }
+      ids = Object.fromEntries((await asSuper(`select code, id from public.courses where code is not null`)).map(r => [r.code, r.id]))
+    })
+
+    it('listed: one pack checkout at the pack price; unlisted and anonymous: refused before anything', async () => {
+      pilot(L1)
+      expect(await packCheckout(user(L2), 'PACK-CONSEILLER')).toEqual({ error: UNAVAILABLE })
+      expect((await packCheckout(null, 'PACK-CONSEILLER')).error).toMatch(/connecté/)
+      await nothingHappened()
+
+      const r = await packCheckout(user(L1), 'PACK-CONSEILLER')
+      expect(r.error).toBeUndefined()
+      expect(P.requests).toHaveLength(1)
+      expect(P.requests[0]).toMatchObject({ item_price: 37900, currency: 'XOF' })
+      // One attempt per learner and course still holds across packs and courses.
+      says(r.redirectUrl!.split('/').pop()!, 'pending', 37900)
+      expect((await checkout(user(L1), ids['C1-F1'])).error).toMatch(/pack contenant cette formation/)
+      expect(P.requests).toHaveLength(1)
     })
   })
 })

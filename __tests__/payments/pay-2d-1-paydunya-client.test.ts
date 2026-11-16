@@ -665,7 +665,7 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
     expect(existsSync(join(ROOT, 'app/api/payments/paytech/ipn/route.ts'))).toBe(true)
     expect(readdirSync(join(ROOT, 'app/api/payments')).sort()).toEqual(['paytech'])
     expect(readdirSync(join(ROOT, 'lib/payments')).sort()).toEqual([
-      'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-confirmation.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-resume.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
+      'checkout-audience.ts', 'paydunya-client.ts', 'paydunya-config.ts', 'payment-completion.ts', 'payment-confirmation.ts', 'payment-database-guard.ts', 'payment-exceptions.ts', 'paytech-callbacks.ts', 'paytech-client.ts', 'paytech-config.ts', 'paytech-ipn.ts', 'paytech-reconcile.ts', 'paytech-resume.ts', 'paytech-settlement-contract.ts', 'providers.ts', 'purchase-eligibility.ts'
     ])
   })
 
@@ -696,7 +696,8 @@ describe('PAY-2D-1 · 8. the boundary: this module cannot grant anything', () =>
     // pay-2d-0). Re-aimed at the invariant it was standing in for.
     expect(page, 'checkout redirects into /learn again').not.toContain('redirect(`/learn/')
     // XP-PAYTECH-04: the gate is server-side PayTech availability.
-    expect(page).toMatch(/if \(!paytechCheckoutAvailability\(\)\.available\)/)
+    // XP-PAYTECH-P2: asked for the session user, so a pilot audience applies here too.
+    expect(page).toMatch(/if \(!paytechCheckoutAvailabilityFor\(user\.id\)\.available\)/)
     expect(page, 'checkout started using the PayDunya client').not.toMatch(/paydunya/i)
   })
 

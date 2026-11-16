@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 import { CheckCircle, AlertTriangle } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { formatPrice } from '@/lib/utils/cn'
-import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailabilityFor } from '@/lib/payments/providers'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 import { getPublishedPack, individualTotal, packCheckoutHref } from '@/lib/commerce/packs'
 
@@ -37,10 +37,10 @@ export default async function PackPage({ params }: Props) {
 
   const total = individualTotal(pack)
   const saving = total - pack.price
-  const purchasable = paytechCheckoutAvailability().available
-
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
+  // XP-PAYTECH-P2: asked for THIS visitor, as on the course page.
+  const purchasable = paytechCheckoutAvailabilityFor(user?.id ?? null).available
   const owned: string[] = []
   if (user) {
     for (const c of pack.courses) {
