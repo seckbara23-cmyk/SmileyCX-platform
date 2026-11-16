@@ -272,7 +272,10 @@ if (existsSync('.env.local')) {
 //   always:
 //     * no NEXT_PUBLIC_ variable names PayTech or the cron secret;
 //     * the selected mode has both of its credentials;
-//     * PAYTECH_CHECKOUT_ENABLED=true only with a mode set.
+//     * PAYTECH_CHECKOUT_ENABLED=true only with a mode set, and with a usable
+//       PAYTECH_CHECKOUT_AUDIENCE: 'pilot' with 1 to 5 distinct user ids in
+//       PAYTECH_PILOT_USER_IDS, or 'public' with no pilot list (XP-PAYTECH-P2);
+//     * a pilot list, whenever set, is well formed and at most five ids.
 //   retired, reported but not blocking:
 //     * PAYTECH_ENABLED (replaced by PAYTECH_CHECKOUT_ENABLED) and
 //       NEXT_PUBLIC_PAYMENTS_ENABLED (no longer read by anything).
@@ -365,8 +368,55 @@ if (existsSync('.env.local')) {
     }
   }
 
-  if ((env.PAYTECH_CHECKOUT_ENABLED ?? '').trim() === 'true' && !configured) {
+  const checkoutEnabled = (env.PAYTECH_CHECKOUT_ENABLED ?? '').trim() === 'true'
+  if (checkoutEnabled && !configured) {
     failures.push("PAYTECH_CHECKOUT_ENABLED='true' but PAYTECH_MODE is not set: checkout would offer a provider that cannot work.")
+  }
+
+  // ── XP-PAYTECH-P2: who may buy (same rules as lib/payments/checkout-audience.ts) ──
+  // The audience narrows checkout; it never widens it. Absent or wrong = nobody
+  // may buy at runtime, and a deployment that ENABLES checkout without a usable
+  // audience is refused here. Pilot ids are counted, never printed.
+  // Deliberately STRICTER than the runtime while checkout is off: a malformed list,
+  // a wrong audience word, or 'public' with a list still set blocks the build even
+  // then, so the configuration is correct before anyone switches checkout on.
+  // Clear or fix the two variables to unblock an unrelated deployment.
+  const AUDIENCES = ['pilot', 'public']
+  const PILOT_MAX = 5
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  const audience = (env.PAYTECH_CHECKOUT_AUDIENCE ?? '').trim()
+  let pilotCount = 0
+  let pilotValid = true
+  if (present('PAYTECH_PILOT_USER_IDS')) {
+    const parts = env.PAYTECH_PILOT_USER_IDS.split(',').map(p => p.trim().toLowerCase())
+    const malformed = parts.filter(p => !UUID.test(p)).length
+    if (parts.some(p => p.length === 0)) {
+      failures.push('PAYTECH_PILOT_USER_IDS contains an empty entry.'); pilotValid = false
+    } else if (malformed > 0) {
+      failures.push(`PAYTECH_PILOT_USER_IDS contains ${malformed} entr${malformed === 1 ? 'y' : 'ies'} that is not a user id.`); pilotValid = false
+    } else if (new Set(parts).size !== parts.length) {
+      failures.push('PAYTECH_PILOT_USER_IDS lists the same user twice.'); pilotValid = false
+    } else if (parts.length > PILOT_MAX) {
+      failures.push(`PAYTECH_PILOT_USER_IDS names ${parts.length} users; at most ${PILOT_MAX} are allowed.`); pilotValid = false
+    } else {
+      pilotCount = parts.length
+    }
+  }
+  if (audience.length > 0 && !AUDIENCES.includes(audience)) {
+    failures.push("PAYTECH_CHECKOUT_AUDIENCE must be exactly 'pilot' or 'public'.")
+  }
+  if (audience === 'public' && present('PAYTECH_PILOT_USER_IDS')) {
+    failures.push("PAYTECH_CHECKOUT_AUDIENCE='public' while PAYTECH_PILOT_USER_IDS is still set. Clear the pilot list to open sales.")
+  }
+  if (checkoutEnabled && audience.length === 0) {
+    failures.push(
+      "PAYTECH_CHECKOUT_ENABLED='true' but PAYTECH_CHECKOUT_AUDIENCE is not set. There is no default:\n" +
+      "    set it to 'pilot' (with PAYTECH_PILOT_USER_IDS) or, to open sales to everyone, 'public'.",
+    )
+  }
+  if (audience === 'pilot' && pilotValid && pilotCount === 0) {
+    const msg = "PAYTECH_CHECKOUT_AUDIENCE='pilot' but PAYTECH_PILOT_USER_IDS names nobody: nobody can buy."
+    if (checkoutEnabled) failures.push(msg); else notes.push(msg)
   }
 
   if (present('PAYTECH_ENABLED')) {
@@ -392,7 +442,9 @@ if (existsSync('.env.local')) {
   } else {
     process.stdout.write(
       `✓ PayTech configuration verified: mode='${mode}' for ${isProduction ? 'production' : 'a non-production deployment'}, ` +
-      `checkout ${(env.PAYTECH_CHECKOUT_ENABLED ?? '').trim() === 'true' ? 'enabled' : 'disabled'}.\n`,
+      `checkout ${!checkoutEnabled ? 'disabled'
+        : audience === 'pilot' ? `enabled for the pilot (${pilotCount} user${pilotCount === 1 ? '' : 's'})`
+        : 'enabled for the public'}.\n`,
     )
   }
 }

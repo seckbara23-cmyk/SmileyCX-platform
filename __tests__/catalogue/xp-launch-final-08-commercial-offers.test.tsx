@@ -93,7 +93,7 @@ vi.mock('@/lib/supabase/admin', () => ({
 vi.mock('@/lib/auth/course-access', () => ({
   resolveCourseAccessById: async (id: string) => (S.owned.has(id) ? { allowed: true } : { allowed: false, reason: 'not_entitled' }),
 }))
-vi.mock('@/lib/payments/providers', () => ({ paytechCheckoutAvailability: () => ({ available: S.available }) }))
+vi.mock('@/lib/payments/providers', () => ({ paytechCheckoutAvailability: () => ({ available: S.available }), paytechCheckoutAvailabilityFor: () => ({ available: S.available }) }))
 vi.mock('@/app/actions/paytech-checkout', () => ({
   startPaytechCheckout: vi.fn(),
   startPaytechPackCheckout: (...a: unknown[]) => startPaytechPackCheckout(...(a as [])),

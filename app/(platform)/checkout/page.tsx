@@ -3,7 +3,7 @@ import { redirect, notFound } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import CourseCheckoutPanel from '@/components/payment/CourseCheckoutPanel'
 import { formatPrice } from '@/lib/utils/cn'
-import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailabilityFor } from '@/lib/payments/providers'
 import { inflightPaytechAttempt } from '@/lib/payments/paytech-resume'
 import { resolveCourseAccessById } from '@/lib/auth/course-access'
 import PackCheckout from './PackCheckout'
@@ -187,7 +187,9 @@ export default async function CheckoutPage({ searchParams }: Props) {
   // The replacement states the commercial fact from the course ROW, using the
   // same derivation and the same wording as the public detail page, and sends
   // the learner somewhere that works.
-  if (!paytechCheckoutAvailability().available) {
+  // XP-PAYTECH-P2: for THIS signed-in user; an unlisted pilot user sees the same
+  // « bientôt disponible » page as when checkout is closed.
+  if (!paytechCheckoutAvailabilityFor(user.id).available) {
     const price    = Number(course.price)
     const currency = String(course.currency)
     const isFree   = course.is_free === true

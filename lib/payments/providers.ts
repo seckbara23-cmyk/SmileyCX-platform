@@ -2,6 +2,12 @@ import 'server-only'
 import { paytechConfigError } from '@/lib/payments/paytech-config'
 import { paydunyaConfigError } from '@/lib/payments/paydunya-config'
 import type { EnvLike } from '@/lib/payments/paytech-config'
+import {
+  AUDIENCE_ENV,
+  PILOT_USERS_ENV,
+  audienceAdmits,
+  checkoutAudienceConfig,
+} from '@/lib/payments/checkout-audience'
 
 /**
  * Which payment work this deployment may do — XP-PAYTECH-01, split by XP-PAYTECH-04.
@@ -21,7 +27,13 @@ import type { EnvLike } from '@/lib/payments/paytech-config'
  *
  *   * `paytechCheckoutAvailability()` — may this deployment open NEW
  *     checkouts? Everything processing needs, PLUS `PAYTECH_CHECKOUT_ENABLED`,
- *     PLUS (in production) `PAYTECH_ALLOW_PRODUCTION`.
+ *     PLUS (in production) `PAYTECH_ALLOW_PRODUCTION`, PLUS a usable
+ *     `PAYTECH_CHECKOUT_AUDIENCE` (XP-PAYTECH-P2, `checkout-audience.ts`).
+ *
+ *   * `paytechCheckoutAvailabilityFor(userId)` — may THIS signed-in user open
+ *     one? All of the above, PLUS membership of the pilot list when the
+ *     audience is 'pilot'. Every purchase surface and both checkout actions ask
+ *     this one, with the id of the server session.
  *
  * ── TEST AND LIVE BELONG TO DIFFERENT ENVIRONMENTS ────────────────────────
  *
@@ -46,7 +58,7 @@ export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number]
 
 /** Every provider-selection variable this application recognises. */
 export function providerFlagNames(): string[] {
-  return ['PAYTECH_CHECKOUT_ENABLED', 'PAYTECH_ALLOW_PRODUCTION']
+  return ['PAYTECH_CHECKOUT_ENABLED', 'PAYTECH_ALLOW_PRODUCTION', AUDIENCE_ENV, PILOT_USERS_ENV]
 }
 
 /** Exactly 'true', trimmed. Nothing else enables anything. */
@@ -104,6 +116,34 @@ export function paytechCheckoutAvailability(env: EnvLike = process.env): Provide
     return {
       available: false,
       blockedBy: "this is production and PAYTECH_ALLOW_PRODUCTION is not 'true'",
+    }
+  }
+  // XP-PAYTECH-P2: no audience, or an unusable one, means nobody may buy.
+  const audience = checkoutAudienceConfig(env)
+  if (audience.error !== null) return { available: false, blockedBy: audience.error }
+  return OK
+}
+
+/**
+ * May THIS user open a NEW PayTech checkout here? — XP-PAYTECH-P2.
+ *
+ * `userId` is the id of the authenticated server session, or null when there is
+ * none. Never a value from the request. Everything `paytechCheckoutAvailability`
+ * requires is required first; the audience then decides. A pilot audience admits
+ * only listed users and never a visitor without a session.
+ */
+export function paytechCheckoutAvailabilityFor(
+  userId: string | null,
+  env: EnvLike = process.env,
+): ProviderAvailability {
+  const deployment = paytechCheckoutAvailability(env)
+  if (!deployment.available) return deployment
+  if (!audienceAdmits(checkoutAudienceConfig(env), userId)) {
+    return {
+      available: false,
+      blockedBy: userId === null
+        ? 'pilot checkout: no signed-in user'
+        : 'pilot checkout: this user is not on the pilot list',
     }
   }
   return OK

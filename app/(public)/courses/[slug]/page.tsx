@@ -13,7 +13,7 @@ import { COURSE_MODULES, COURSE_COPY } from '@/data/seed'
 // untouched -- `lib/pilot.ts` still exports it and checkout, checkout/confirm
 // and `app/actions/enrollment.ts` still read it.
 import { PLATFORM_MODE } from '@/lib/pilot'
-import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailabilityFor } from '@/lib/payments/providers'
 import { getPublicPathsForCourse, pathHref } from '@/lib/queries/catalogue'
 import { PUBLIC_PATHWAYS_VISIBLE } from '@/lib/catalogue/visibility'
 import FreeCourseStartForm from '@/components/learn/FreeCourseStartForm'
@@ -285,7 +285,9 @@ export default async function CourseDetailPage({ params }: Props) {
   // NEXT_PUBLIC flag, so the two can never disagree. Until PayTech checkout is
   // available here, a paid course shows its price and says so rather than
   // offering a checkout that cannot complete.
-  const paidPurchaseAvailable = paytechCheckoutAvailability().available && !isFree
+  // XP-PAYTECH-P2: asked for THIS visitor — a pilot audience shows the purchase to
+  // listed users only. The checkout action applies the same policy again.
+  const paidPurchaseAvailable = paytechCheckoutAvailabilityFor(user?.id ?? null).available && !isFree
   // CAT-02 — no seed fallback for displayed fields either. The `notFound()`
   // above proves `dbCourse` exists, so these could never fire; but they are the
   // same shape that produced the phantom course page, and leaving them would

@@ -227,7 +227,8 @@ describe('CAT-02 · 5. the CTA cannot promise what the gate refuses', () => {
     // /checkout under PILOT_MODE redirects into /learn, which the gate then
     // refuses — the dead end CAT-01 found.
     // XP-PAYTECH-04: the server-side PayTech checkout availability, not a NEXT_PUBLIC flag.
-    expect(code).toMatch(/paidPurchaseAvailable\s*=\s*paytechCheckoutAvailability\(\)\.available && !isFree/)
+    // XP-PAYTECH-P2: asked for THIS visitor, so a pilot audience applies here too.
+    expect(code).toMatch(/paidPurchaseAvailable\s*=\s*paytechCheckoutAvailabilityFor\(user\?\.id \?\? null\)\.available && !isFree/)
     expect(code).toMatch(/paidPurchaseAvailable[\s\S]{0,160}\/checkout\?course=/)
     expect(code).toMatch(/Inscription bient[oô]t disponible/)
   })

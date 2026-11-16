@@ -3,7 +3,7 @@ import Link from 'next/link'
 import { Info, CheckCircle2, RotateCcw } from 'lucide-react'
 import { createClient } from '@/lib/supabase/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { paytechCheckoutAvailability } from '@/lib/payments/providers'
+import { paytechCheckoutAvailabilityFor } from '@/lib/payments/providers'
 import { inflightPaytechAttempts, type InflightPaytechAttempt } from '@/lib/payments/paytech-resume'
 
 /**
@@ -66,7 +66,7 @@ export default async function PaymentCancelPage() {
   // then the plain message, never a claim that there is nothing to resume.
   const inflight = await inflightPaytechAttempts(user.id)
   if (inflight && inflight.length > 0) {
-    return <Resume attempts={inflight} canResume={paytechCheckoutAvailability().available} />
+    return <Resume attempts={inflight} canResume={paytechCheckoutAvailabilityFor(user.id).available} />
   }
 
   // Only to decide which honest message to show — never to change anything.
