@@ -4,9 +4,15 @@
  *
  * Sent once, to the learner, when a payment is completed. It states what was
  * bought, the amount, the order reference, until when the access runs, and the
- * versions of the conditions accepted at checkout. It is a confirmation, not an
- * invoice: the CGV say a facture or reçu is sent on request.
+ * versions of the conditions accepted at checkout.
+ *
+ * P6: it is also the RECEIPT of CGV art. 11 (« XP émet une facture ou un reçu pour
+ * chaque vente, avec ses références légales (RCCM, NINEA) »): it carries the payment
+ * date and the seller's legal identity. A formal invoice stays available on request
+ * (CGV art. 4). It is not an invoice and states no tax.
  */
+
+import { SELLER_IDENTITY } from '@/lib/brand'
 
 export interface PaymentConfirmationEmailData {
   fullName: string
@@ -16,6 +22,8 @@ export interface PaymentConfirmationEmailData {
   packCourses: readonly { title: string; preexisting: boolean }[]
   amount: string
   reference: string
+  /** « 18 novembre 2026 »: the day the payment was confirmed, or null if it could not be read. */
+  paidOn: string | null
   /** « 9 mai 2027 », or null if it could not be read (the e-mail then says where to see it). */
   accessEndsOn: string | null
   /** e.g. « CGU 1.0 et CGV 1.0 », or null when the order carries no acceptance. */
@@ -32,6 +40,13 @@ function accessLine(d: PaymentConfirmationEmailData): string {
   return d.accessEndsOn
     ? `Votre accès est ouvert pour six mois, jusqu’au ${d.accessEndsOn}.`
     : 'Votre accès est ouvert pour six mois ; sa date de fin figure dans votre espace.'
+}
+
+const RECEIPT_NOTE = 'Ce message vaut reçu de paiement.'
+
+export function sellerLine(): string {
+  const s = SELLER_IDENTITY
+  return `Vendeur : ${s.legalName} (${s.tradeName}), ${s.address} — RCCM : ${s.rccm} — NINEA : ${s.ninea}`
 }
 
 const PREEXISTING_NOTE =
@@ -53,15 +68,19 @@ export function paymentConfirmationEmailText(d: PaymentConfirmationEmailData): s
     '',
     `Montant : ${d.amount}`,
     `Référence de commande : ${d.reference}`,
-    accessLine(d),
   )
+  if (d.paidOn) lines.push(`Date du paiement : ${d.paidOn}`)
+  lines.push(accessLine(d))
   if (d.packCourses.some(c => c.preexisting)) lines.push(PREEXISTING_NOTE)
   if (d.acceptedTerms) lines.push(`Conditions acceptées lors de la commande : ${d.acceptedTerms}.`)
   lines.push(
     '',
     `Commencer : ${d.dashboardUrl}`,
     '',
-    `Une question, une facture ou un reçu : ${d.contactEmail}, en indiquant votre référence de commande.`,
+    RECEIPT_NOTE,
+    sellerLine(),
+    '',
+    `Une question ou une facture : ${d.contactEmail}, en indiquant votre référence de commande.`,
     '',
     'XP Client Academy',
   )
@@ -95,6 +114,7 @@ export function paymentConfirmationEmailHtml(d: PaymentConfirmationEmailData): s
       <table style="border-collapse:collapse;margin:16px 0;font-size:14px">
         <tr><td style="padding:4px 16px 4px 0;color:#888">Montant</td><td style="padding:4px 0">${esc(d.amount)}</td></tr>
         <tr><td style="padding:4px 16px 4px 0;color:#888">Référence</td><td style="padding:4px 0;font-family:monospace">${esc(d.reference)}</td></tr>
+        ${d.paidOn ? `<tr><td style="padding:4px 16px 4px 0;color:#888">Date du paiement</td><td style="padding:4px 0">${esc(d.paidOn)}</td></tr>` : ''}
       </table>
       <p>${esc(accessLine(d))}</p>
       ${preexisting}
@@ -102,7 +122,8 @@ export function paymentConfirmationEmailHtml(d: PaymentConfirmationEmailData): s
         <a href="${esc(d.dashboardUrl)}" style="display:inline-block;background:#E8741E;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600">Commencer ma formation</a>
       </p>
       ${terms}
-      <p style="font-size:13px;color:#666">Une question, une facture ou un reçu : écrivez à ${esc(d.contactEmail)} en indiquant votre référence de commande.</p>
+      <p style="font-size:13px;color:#666">${esc(RECEIPT_NOTE)}<br />${esc(sellerLine())}</p>
+      <p style="font-size:13px;color:#666">Une question ou une facture : écrivez à ${esc(d.contactEmail)} en indiquant votre référence de commande.</p>
     </div>
   </div>
 </body>

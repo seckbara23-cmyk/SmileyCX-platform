@@ -58,7 +58,7 @@ export type ParcoursConfig = {
 // ── Hero ──────────────────────────────────────────────────────────────────────
 
 export const HERO_CHIPS: { Icon: LucideIcon; label: string }[] = [
-  { Icon: Laptop,     label: 'En ligne et en présentiel' },
+  { Icon: Laptop,     label: 'Formation en ligne' },
   { Icon: BadgeCheck, label: 'Certificats de réussite' },
 ]
 
@@ -174,89 +174,13 @@ export function parcoursAvailability(
 // ───────────────────────────────────────────────────────
 
 // ── Pricing ───────────────────────────────────────────────────────────────────
-
-export type PricingPlan = {
-  id: ParcoursId
-  name: string
-  tagline: string
-  monthlyPrice: number | null   // null → 'Sur devis'
-  features: string[]
-  featured: boolean
-  ctaLabel: string
-  ctaHref: string
-  // Static Tailwind classes
-  nameClass: string
-  priceClass: string
-  checkClass: string
-  ctaClass: string
-  cardClass: string
-}
-
-export const PRICING_PLANS: PricingPlan[] = [
-  {
-    id:           'debutant',
-    name:         'Parcours Fondations',
-    tagline:      'La base pour bien commencer',
-    monthlyPrice: 29000,
-    features: [
-      'Accès à toutes les formations Fondations',
-      'Certificat de réussite',
-      'Ressources téléchargeables',
-      'Support par email',
-      'Mises à jour régulières',
-    ],
-    featured:   false,
-    ctaLabel:   'Commencer maintenant',
-    ctaHref:    '/signup',
-    nameClass:  'text-success',
-    priceClass: 'text-dark',
-    checkClass: 'text-success',
-    ctaClass:   'bg-success text-white hover:bg-success/90',
-    cardClass:  'border border-black/[0.08]',
-  },
-  {
-    id:           'intermediaire',
-    name:         'Parcours Intermédiaire',
-    tagline:      'Progressez avec méthode',
-    monthlyPrice: 59000,
-    features: [
-      'Accès à toutes les formations intermédiaires',
-      'Certificat de réussite',
-      'Ressources avancées',
-      'Support prioritaire',
-      "Accès aux conseils d'experts",
-    ],
-    featured:   true,
-    ctaLabel:   'Commencer maintenant',
-    ctaHref:    '/signup',
-    nameClass:  'text-primary',
-    priceClass: 'text-primary',
-    checkClass: 'text-primary',
-    ctaClass:   'bg-primary text-white hover:bg-primary-dark',
-    cardClass:  'border-2 border-primary',
-  },
-  {
-    id:           'avance',
-    name:         'Parcours Avancé',
-    tagline:      'Maîtrisez la transformation client',
-    monthlyPrice: null,
-    features: [
-      'Formations avancées',
-      'Accompagnement personnalisé',
-      'Ateliers exclusifs',
-      'Rapports et audits avancés',
-      "Certificat d'excellence",
-    ],
-    featured:   false,
-    ctaLabel:   'Demander un devis',
-    ctaHref:    '/contact?service=devis',
-    nameClass:  'text-violet-600',
-    priceClass: 'text-violet-600',
-    checkClass: 'text-violet-600',
-    ctaClass:   'bg-violet-600 text-white hover:bg-violet-700',
-    cardClass:  'border border-black/[0.08]',
-  },
-]
+//
+// The subscription plans that stood here (« Parcours Fondations 29 000 FCFA/mois »,
+// « Intermédiaire 59 000 FCFA/mois », a monthly/annual toggle) were never sold:
+// the platform sells single courses for six months and two packs, at the prices
+// in the database and in CGV art. 2 and 3. They were removed so /courses no
+// longer advertises an offer that does not exist. Prices are shown per course
+// and per pack, from the database.
 
 // ── Benefits strip ────────────────────────────────────────────────────────────
 
@@ -268,12 +192,12 @@ export const BENEFITS: { Icon: LucideIcon; title: string; desc: string }[] = [
   },
   {
     Icon:  MonitorSmartphone,
-    title: 'En ligne & présentiel',
-    desc:  'Apprenez à votre rythme, en ligne ou lors de nos sessions.',
+    title: 'En ligne, à votre rythme',
+    desc:  'Apprenez quand vous voulez, où que vous soyez.',
   },
   {
     Icon:  Award,
-    title: 'Certificat reconnu',
+    title: 'Certificat de réussite',
     desc:  'Valorisez vos compétences avec un certificat.',
   },
   {
@@ -292,9 +216,4 @@ export function levelLabel(level: string): string {
   if (level === 'intermediate' || level === 'Intermédiaire') return 'Intermédiaire'
   if (level === 'advanced'     || level === 'Avancé')        return 'Avancé'
   return level
-}
-
-/** Format a FCFA amount with thin non-breaking spaces: 29000 → "29 000" */
-export function formatFcfa(amount: number): string {
-  return amount.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 }

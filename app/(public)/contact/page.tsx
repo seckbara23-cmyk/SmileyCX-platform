@@ -23,7 +23,7 @@ export default async function ContactPage({ searchParams }: Props) {
           <h1>Contactez-nous</h1>
           <p>
             Une question sur une formation ? Une demande particulière ?
-            Remplissez le formulaire — nous vous répondons sous 24h.
+            Remplissez le formulaire — nous vous répondons sous 48 heures ouvrées.
           </p>
         </div>
 

@@ -290,7 +290,7 @@ export default function HomePage() {
               <h2>Contactez-nous</h2>
               <p>
                 Une question sur une formation&nbsp;? Une demande particuli&egrave;re&nbsp;?
-                Remplissez le formulaire &mdash; nous vous r&eacute;pondons sous 24h.
+                Remplissez le formulaire &mdash; nous vous r&eacute;pondons sous 48&nbsp;heures ouvr&eacute;es.
               </p>
             </div>
 

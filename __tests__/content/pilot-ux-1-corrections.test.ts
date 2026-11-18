@@ -25,7 +25,7 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import {
-  PARCOURS, PRICING_PLANS, levelLabel, type ParcoursId,
+  PARCOURS, levelLabel, type ParcoursId,
 } from '@/app/(public)/courses/content'
 import { LEVEL_LABELS } from '@/lib/utils/cn'
 
@@ -56,7 +56,6 @@ describe('PILOT-UX-1 — journey terminology', () => {
       expect(p.label).not.toBe('Débutant')
       expect(p.badge).not.toContain('Débutant')
     }
-    for (const plan of PRICING_PLANS) expect(plan.name).not.toContain('Débutant')
 
     // CAT-02 deleted STATIC_CATALOG, the pilot-era hardcoded course list this
     // line used to sweep. Courses now come from the database, so the only way
@@ -70,15 +69,13 @@ describe('PILOT-UX-1 — journey terminology', () => {
       .not.toMatch(/STATIC_CATALOG|CourseItem\[\]\s*=\s*\[/)
   })
 
-  it('the first journey badge and pricing plan both say Fondations', () => {
+  it('the first journey badge says Fondations', () => {
     expect(PARCOURS[0].badge).toBe('Parcours Fondations')
-    expect(PRICING_PLANS[0].name).toBe('Parcours Fondations')
   })
 
   it('INTERNAL ids are untouched — presentation must not become schema', () => {
     const ids: ParcoursId[] = ['debutant', 'intermediaire', 'avance']
     expect(PARCOURS.map(p => p.id)).toEqual(ids)
-    expect(PRICING_PLANS.map(p => p.id)).toEqual(ids)
     // The catalogue mapping still keys off the internal ids.
     expect(stripJs(read(COURSES))).toMatch(/C1:\s*'debutant'/)
   })
@@ -214,23 +211,10 @@ describe('PILOT-UX-1 — nothing adjacent regressed', () => {
     }
   })
 
-  it('every pricing CTA points somewhere real', () => {
-    for (const plan of PRICING_PLANS) {
-      const path = plan.ctaHref.split('?')[0]
-      const seg = path.slice(1)
-      const candidates = [
-        `app/(public)/${seg}/page.tsx`,
-        `app/(auth)/${seg}/page.tsx`,
-        `app/(platform)/${seg}/page.tsx`,
-      ]
-      expect(candidates.some(c => existsSync(join(ROOT, c))), `dead CTA: ${plan.ctaHref}`).toBe(true)
-    }
-  })
-
-  it('pricing remains visible on the courses page', () => {
+  it('the courses page advertises no subscription plan (P6: never sold, CGV art. 2 and 3)', () => {
     const view = stripJs(read('app/(public)/courses/CoursesView.tsx'))
-    expect(view).toContain('<PricingSection />')
-    expect(stripJs(read('app/(public)/courses/_components/PricingSection.tsx'))).toContain('PRICING_PLANS')
+    expect(view).not.toContain('PricingSection')
+    expect(existsSync(join(ROOT, 'app/(public)/courses/_components/PricingSection.tsx'))).toBe(false)
   })
 
   it('course filtering by selected journey still works off the internal id', () => {

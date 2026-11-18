@@ -135,7 +135,7 @@ function Resume({ attempts, canResume }: { attempts: InflightPaytechAttempt[]; c
           </ul>
 
           <p className="text-sm text-cx-gray mt-6">
-            Une question&nbsp;? Notre équipe répond sous 24&nbsp;h.
+            Une question&nbsp;? Notre équipe répond sous 48&nbsp;heures ouvrées.
           </p>
           <div className="mt-6 flex flex-col sm:flex-row gap-3 justify-center">
             <Link href="/courses" className={SECONDARY}>
@@ -188,9 +188,10 @@ function Cancelled({ signedIn }: { signedIn: boolean }) {
           <Info className="w-14 h-14 text-primary mx-auto mb-4" aria-hidden="true" />
           <h1 className="text-2xl font-extrabold text-primary mb-3">Paiement annulé</h1>
           <p className="text-cx-gray">
-            Votre paiement a été annulé et <strong className="text-dark">aucun montant
-            n&apos;a été débité</strong>. Vous pouvez reprendre votre inscription à tout moment
-            depuis le catalogue.
+            Votre paiement n&apos;a pas été finalisé. <strong className="text-dark">Aucun montant n&apos;est
+            débité tant que le paiement n&apos;est pas validé sur la page de PayTech.</strong> Si vous
+            l&apos;avez validé, votre accès s&apos;ouvrira dès sa confirmation. Vous pouvez reprendre
+            votre inscription à tout moment depuis le catalogue.
           </p>
           {!signedIn && (
             <p className="text-sm text-cx-gray mt-4">
@@ -202,7 +203,7 @@ function Cancelled({ signedIn }: { signedIn: boolean }) {
             </p>
           )}
           <p className="text-sm text-cx-gray mt-4">
-            Une question&nbsp;? Notre équipe répond sous 24&nbsp;h.
+            Une question&nbsp;? Notre équipe répond sous 48&nbsp;heures ouvrées.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-3 justify-center">
             <Link href="/courses" className={PRIMARY}>

@@ -38,7 +38,6 @@ const CONTENT   = 'app/(public)/courses/content.ts'
 const CAT_PAGE  = 'app/(public)/courses/page.tsx'
 const CARD      = 'app/(public)/courses/_components/CourseCard.tsx'
 const DETAIL    = 'app/(public)/courses/[slug]/page.tsx'
-const PRICING   = 'app/(public)/courses/_components/PricingSection.tsx'
 const DEAD_CARD = 'components/courses/CourseCard.tsx'
 
 /** Comments blanked, so prose explaining a removal cannot trip a removal check. */
@@ -47,7 +46,7 @@ const strip = (s: string) =>
    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
    .replace(/\/\/[^\n]*/g, m => ' '.repeat(m.length))
 
-const PUBLIC_SURFACES = [CARD, DETAIL, CAT_PAGE, PRICING, CONTENT] as const
+const PUBLIC_SURFACES = [CARD, DETAIL, CAT_PAGE, CONTENT] as const
 
 // ═══════════════════════════════════════════════════════════════════════════
 describe('CAT-02 · 1. the query layer reads the pricing columns', () => {
@@ -208,9 +207,10 @@ describe('CAT-02 · 4. obsolete pilot and manual-access copy is gone', () => {
     }
   })
 
-  it('the subscription plans keep their legitimate "Sur devis"', () => {
-    // Enterprise pricing genuinely is quote-based — this is not pilot copy.
-    expect(read(PRICING)).toMatch(/Sur devis/)
+  it('no subscription plan is advertised: the platform sells courses and packs only', () => {
+    // P6: « 29 000 FCFA/mois » plans stood on /courses and were never sold (CGV art. 2, 3).
+    expect(existsSync(join(process.cwd(), 'app/(public)/courses/_components/PricingSection.tsx'))).toBe(false)
+    for (const f of PUBLIC_SURFACES) expect(strip(read(f)), f).not.toMatch(/monthlyPrice|\/mois|PRICING_PLANS/)
   })
 })
 

@@ -33,14 +33,13 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import {
-  PARCOURS, PRICING_PLANS, parcoursAvailability,
+  PARCOURS, parcoursAvailability,
   type CourseItem, type ParcoursId,
 } from '@/app/(public)/courses/content'
 import ParcoursCard from '@/app/(public)/courses/_components/ParcoursCard'
 import CoursesView from '@/app/(public)/courses/CoursesView'
 
 vi.mock('@/app/(public)/courses/_components/CoursesHero', () => ({ default: () => null }))
-vi.mock('@/app/(public)/courses/_components/PricingSection', () => ({ default: () => null }))
 vi.mock('@/app/(public)/courses/_components/BenefitsStrip', () => ({ default: () => null }))
 vi.mock('@/app/(public)/courses/_components/CourseCard', async () => {
   const { createElement: h } = await import('react')
@@ -61,7 +60,6 @@ const strip = (s: string) =>
 const VIEW = 'app/(public)/courses/CoursesView.tsx'
 const CARD = 'app/(public)/courses/_components/ParcoursCard.tsx'
 const PAGE = 'app/(public)/courses/page.tsx'
-const PRICING = 'app/(public)/courses/_components/PricingSection.tsx'
 
 const byId = (id: ParcoursId) => PARCOURS.find(p => p.id === id)!
 
@@ -285,13 +283,7 @@ describe('UAT-FU-3 — invariants', () => {
     expect(strip(read(VIEW))).not.toMatch(/STATIC_CATALOG/)
   })
 
-  it('pricing is out of scope and untouched by FU-3', () => {
-    const pricing = strip(read(PRICING))
-    expect(pricing).not.toMatch(/parcoursAvailability|availability|Bientôt/)
-    expect(PRICING_PLANS.map(p => [p.ctaLabel, p.ctaHref])).toEqual([
-      ['Commencer maintenant', '/signup'],
-      ['Commencer maintenant', '/signup'],
-      ['Demander un devis', '/contact?service=devis'],
-    ])
+  it('the courses view renders no subscription plans', () => {
+    expect(strip(read(VIEW))).not.toMatch(/PricingSection|PRICING_PLANS/)
   })
 })
