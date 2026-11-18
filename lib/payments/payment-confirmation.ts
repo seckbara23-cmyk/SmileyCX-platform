@@ -27,13 +27,14 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<'sent'
 
     const { data: payment, error: paymentError } = await admin
       .from('payments')
-      .select('id, user_id, course_id, pack_id, amount, currency, reference, status, metadata')
+      .select('id, user_id, course_id, pack_id, amount, currency, reference, status, completed_at, metadata')
       .eq('id', paymentId)
       .maybeSingle()
     if (paymentError || !payment) return failed(paymentId, 'payment_unreadable')
     const p = payment as {
       user_id: string | null; course_id: string | null; pack_id: string | null
       amount: number | string; currency: string; reference: string; status: string
+      completed_at: string | null
       metadata: { legal?: { cgu?: unknown; cgv?: unknown } } | null
     }
     if (p.status !== 'completed' || !p.user_id) return skipped(paymentId, 'not_completed')
@@ -79,6 +80,7 @@ export async function sendPaymentConfirmation(paymentId: string): Promise<'sent'
       packCourses,
       amount: formatPrice(Number(p.amount), p.currency),
       reference: p.reference,
+      paidOn: typeof p.completed_at === 'string' ? dayOf(p.completed_at) : null,
       accessEndsOn,
       acceptedTerms,
       dashboardUrl: `${paytechCallbackBaseUrl().replace(/\/+$/, '')}/dashboard`,

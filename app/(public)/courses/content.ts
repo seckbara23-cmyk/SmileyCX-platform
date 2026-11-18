@@ -58,7 +58,7 @@ export type ParcoursConfig = {
 // ── Hero ──────────────────────────────────────────────────────────────────────
 
 export const HERO_CHIPS: { Icon: LucideIcon; label: string }[] = [
-  { Icon: Laptop,     label: 'En ligne et en présentiel' },
+  { Icon: Laptop,     label: 'Formation en ligne' },
   { Icon: BadgeCheck, label: 'Certificats de réussite' },
 ]
 
@@ -192,8 +192,8 @@ export const BENEFITS: { Icon: LucideIcon; title: string; desc: string }[] = [
   },
   {
     Icon:  MonitorSmartphone,
-    title: 'En ligne & présentiel',
-    desc:  'Apprenez à votre rythme, en ligne ou lors de nos sessions.',
+    title: 'En ligne, à votre rythme',
+    desc:  'Apprenez quand vous voulez, où que vous soyez.',
   },
   {
     Icon:  Award,

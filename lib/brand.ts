@@ -78,6 +78,19 @@ export const CONTACT_PHONE_HREF = 'tel:+221786857878'
 /** Official public location. */
 export const CONTACT_LOCATION = 'Dakar, Sénégal'
 
+/**
+ * The seller's legal identity, as published in CGU art. 1 and the mentions légales.
+ * Printed on the purchase receipt (CGV art. 11: a receipt for each sale, with its
+ * RCCM and NINEA). A test keeps these equal to the published legal texts.
+ */
+export const SELLER_IDENTITY = {
+  legalName: 'XP CLIENT SUARL',
+  tradeName: 'XP Client Consulting',
+  address:   'Ngor Cité SOCABEG, villa n° 16, Dakar (Sénégal)',
+  rccm:      'SN.DKR.2026.B.38780',
+  ninea:     '013427788',
+} as const
+
 /** Absolute URL on the canonical public domain. */
 export function publicUrl(path: string): string {
   const base = PUBLIC_SITE_URL.replace(/\/+$/, '')

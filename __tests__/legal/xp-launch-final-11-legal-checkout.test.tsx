@@ -208,7 +208,7 @@ describe('XP-LAUNCH-FINAL-11 · the three boxes at checkout', () => {
 describe('XP-LAUNCH-FINAL-11 · the purchase confirmation e-mail (CGV art. 4.4)', () => {
   const base: PaymentConfirmationEmailData = {
     fullName: 'Awa', productTitle: 'Les fondamentaux de l’expérience client', packCourses: [],
-    amount: '9 900 FCFA', reference: 'SCX-REF-1', accessEndsOn: '9 mai 2027',
+    amount: '9 900 FCFA', reference: 'SCX-REF-1', paidOn: '18 novembre 2026', accessEndsOn: '9 mai 2027',
     acceptedTerms: 'CGU 1.0 et CGV 1.0', dashboardUrl: 'https://example.test/dashboard', contactEmail: 'contact@example.test',
   }
 
