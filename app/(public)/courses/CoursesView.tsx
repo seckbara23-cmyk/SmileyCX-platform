@@ -5,7 +5,6 @@ import { PARCOURS, parcoursAvailability, type CourseItem, type ParcoursId } from
 import CoursesHero from './_components/CoursesHero'
 import ParcoursCard from './_components/ParcoursCard'
 import CourseCard from './_components/CourseCard'
-import PricingSection from './_components/PricingSection'
 import BenefitsStrip from './_components/BenefitsStrip'
 
 type Selection = ParcoursId | 'all'
@@ -120,8 +119,6 @@ export default function CoursesView({ courses }: { courses: CourseItem[] }) {
 
         </div>
       </section>
-
-      <PricingSection />
 
       <BenefitsStrip />
 
