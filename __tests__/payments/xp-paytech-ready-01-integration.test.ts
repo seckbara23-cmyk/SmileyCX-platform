@@ -103,6 +103,12 @@ const H = vi.hoisted(() => ({
 
 vi.mock('@/lib/supabase/admin', () => ({ createAdminClient: () => H.makeClient('service_role') }))
 vi.mock('@/lib/supabase/server', () => ({ createClient: async () => H.makeClient('authenticated') }))
+// XP-PAYTECH-P7: the daily integrity check runs after every sweep and is read-only. It is tested in
+// __tests__/catalogue/p7-commercial-price-app.test.ts; here it would only add queries to every sweep
+// of a file that already sits at PGlite's memory limit.
+vi.mock('@/lib/catalogue/commercial-integrity', () => ({
+  checkCommercialIntegrity: async () => ({ priceChanges: 0, priceChangesOutsideApp: 0, accessLinkMissing: 0, alertsSent: 0 }),
+}))
 vi.mock('@/lib/logger', () => {
   const make = (module: string) => {
     const rec = (level: string) => (...args: unknown[]) => { H.logs.push({ level, module, args }) }

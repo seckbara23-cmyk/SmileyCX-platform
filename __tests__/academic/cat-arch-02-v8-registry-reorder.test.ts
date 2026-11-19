@@ -73,18 +73,26 @@ describe('CAT-ARCH-02 — 057 exists, alone, as one transaction', () => {
     expect(f.filter(x => parseInt(x, 10) > 57))
       .toEqual(['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                 '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql'])
+                '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql','067_commercial_price_audit.sql'])
     for (const later of ['058_payment_provider_foundation.sql', '059_payment_column_select_security.sql',
                          '060_payment_completion_contract.sql', '061_audit_log_privilege_hardening.sql',
-                         '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql']) {
+                         '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql', '065_commercial_offers.sql','067_commercial_price_audit.sql']) {
       const m = read('supabase/migrations/' + later).replace(/--[^\n]*/g, '')
       for (const t of ['course_codes', 'catalogues', 'courses', 'modules', 'lessons']) {
+        // 067's one write to courses is pinned exactly below.
+        if (later === '067_commercial_price_audit.sql' && t === 'courses') continue
         expect(m, `${later} writes public.${t}`)
           .not.toMatch(new RegExp(`(insert into|update|delete from|truncate)\\s+(table\\s+)?public\\.${t}\\b`, 'i'))
       }
     }
+    // XP-PAYTECH-P7: 067 writes public.courses only inside admin_change_commercial_price(), when an
+    // administrator confirms a price, and only the price, the free flag and updated_at. No row is
+    // written when the migration is applied, and no registry column (code, slug, order) is touched.
+    const m067 = read('supabase/migrations/067_commercial_price_audit.sql').replace(/--[^\n]*/g, '')
+    expect(m067.match(/(insert into|update|delete from|truncate)\s+(table\s+)?public\.courses\b[^;]*;/gi))
+      .toEqual(['update public.courses set price = p_new_price, is_free = p_new_is_free, updated_at = now() where id = p_item_id;'])
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(65)  // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access)
+    expect(Math.max(...nums)).toBe(67)  // XP-PAYTECH-P7 authored 067 (price audit); 066 is the voice slice, authored on its own branch
     expect(new Set(nums).size).toBe(nums.length)
   })
 

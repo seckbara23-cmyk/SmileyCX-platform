@@ -82,7 +82,8 @@ describe('CAT-ARCH-01 — migration 056 exists, alone, as one transaction', () =
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
     expect(files.filter(f => f.startsWith('063'))).toEqual(['063_payment_state_machine.sql'])
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(files).toHaveLength(63)
+    expect(files).toHaveLength(64)  // XP-PAYTECH-P7 authored 067 (commercial price audit), admitted by name
+    expect(files).toContain('067_commercial_price_audit.sql')
     expect(files).toContain('063_payment_state_machine.sql')
     // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
     expect(files).toContain('064_payment_exceptions.sql')

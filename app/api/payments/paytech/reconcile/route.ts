@@ -12,6 +12,7 @@ import {
   type PaytechPaymentRow,
 } from '@/lib/payments/paytech-reconcile'
 import { createLogger } from '@/lib/logger'
+import { checkCommercialIntegrity } from '@/lib/catalogue/commercial-integrity'
 
 /**
  * PayTech reconciliation sweep — XP-PAYTECH-04 (XP-PAYTECH-READY-01 P2).
@@ -259,5 +260,17 @@ export async function GET(req: Request) {
   // A run that left work undone is not a finished sweep. If that keeps happening, the page warns.
   if (!counts.stoppedAtBudget && !counts.escalationFailed && !counts.exception_unrecorded) await recordSweepFinished(counts)
   log.info(counts, 'PayTech reconciliation sweep finished')
-  return NextResponse.json({ ok: true, ...counts })
+
+  // XP-PAYTECH-P7: price changes and access-grant failures, read-only. Never throws and never
+  // changes the sweep's own result, which is already recorded above. Counts only, like the sweep.
+  const integrity = await checkCommercialIntegrity()
+  return NextResponse.json({
+    ok: true,
+    ...counts,
+    integrityPriceChanges:           integrity.priceChanges,
+    integrityPriceChangesOutsideApp: integrity.priceChangesOutsideApp,
+    integrityAccessLinkMissing:      integrity.accessLinkMissing,
+    integrityAlertsSent:             integrity.alertsSent,
+    integrityUnavailable:            integrity.unavailable ? 1 : 0,
+  })
 }

@@ -127,7 +127,7 @@ export default function NewCourseForm({ assignableCodes = [] }: { assignableCode
             type="number"
             name="price"
             min={0}
-            step={500}
+            step={1}
             defaultValue={45000}
             className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none transition-all"
           />

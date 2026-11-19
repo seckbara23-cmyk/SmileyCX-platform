@@ -46,6 +46,16 @@ import {
   paymentConfirmationSubject,
   type PaymentConfirmationEmailData,
 } from './templates/payment-confirmation'
+import {
+  commercialPriceAlertHtml,
+  commercialPriceAlertSubject,
+  commercialPriceAlertText,
+  type CommercialPriceAlertData,
+  commercialIntegrityAlertHtml,
+  commercialIntegrityAlertSubject,
+  commercialIntegrityAlertText,
+  type CommercialIntegrityAlertData,
+} from './templates/price-change'
 
 const log = createLogger('email')
 
@@ -151,6 +161,32 @@ export async function sendPaymentConfirmationEmail(
     subject: paymentConfirmationSubject(data),
     html:    paymentConfirmationEmailHtml(data),
     text:    paymentConfirmationEmailText(data),
+  })
+}
+
+/** XP-PAYTECH-P7 — to an owner (ADMIN_OWNER_EMAILS) when a commercial price changes. No learner data. */
+export async function sendCommercialPriceAlert(
+  to: string,
+  data: CommercialPriceAlertData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: commercialPriceAlertSubject(data),
+    html:    commercialPriceAlertHtml(data),
+    text:    commercialPriceAlertText(data),
+  })
+}
+
+/** XP-PAYTECH-P7 — the daily integrity summary, to an owner, only when something is found. */
+export async function sendCommercialIntegrityAlert(
+  to: string,
+  data: CommercialIntegrityAlertData,
+): Promise<SendResult> {
+  return sendEmail({
+    to,
+    subject: commercialIntegrityAlertSubject(data),
+    html:    commercialIntegrityAlertHtml(data),
+    text:    commercialIntegrityAlertText(data),
   })
 }
 

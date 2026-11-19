@@ -311,7 +311,8 @@ describe('CAT-02 · 6. SECURITY: presentation stayed presentation', () => {
   it('no migration was added and 062 is byte-identical', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(63)
+    expect(migs).toHaveLength(64)  // XP-PAYTECH-P7 authored 067 (commercial price audit), admitted by name
+    expect(migs).toContain('067_commercial_price_audit.sql')
     expect(migs).toContain('063_payment_state_machine.sql')
     // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
     expect(migs).toContain('064_payment_exceptions.sql')
