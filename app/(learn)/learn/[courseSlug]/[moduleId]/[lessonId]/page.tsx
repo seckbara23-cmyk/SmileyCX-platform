@@ -190,6 +190,18 @@ export default function LessonPlayerPage() {
     // decision here, so a third definition cannot drift away from the other
     // two. Entitlement semantics are untouched: an ordinary caller without a
     // valid entitlement is refused exactly as before.
+    //
+    // XP-PERF-01: the course outline is requested while the decision is being
+    // made, not after it, so the learner waits for the slower of the two rather
+    // than for both in a row. This grants nothing: RLS (`has_course_access()`)
+    // decides which rows come back, exactly as it did when this read ran second,
+    // and a refused caller is redirected below before anything is rendered.
+    const modsRequest = supabase
+      .from('modules')
+      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_source, video_external_url, subtitle_source, subtitle_external_url, pdf_source, pdf_external_url, duration_minutes, order_index)')
+      .eq('course_id', course.id).order('order_index')
+      .then(r => r, () => ({ data: null }))
+
     const access = await canOpenCourse(course.id)
 
     if (!access.allowed) { router.push(`/courses/${courseSlug}`); return }
@@ -200,10 +212,7 @@ export default function LessonPlayerPage() {
     // reference an enrollment.
     void ensureAcademicEnrollment(course.id)
 
-    const { data: mods } = await supabase
-      .from('modules')
-      .select('id, slug, title, order_index, lessons(id, slug, title, content, video_source, video_external_url, subtitle_source, subtitle_external_url, pdf_source, pdf_external_url, duration_minutes, order_index)')
-      .eq('course_id', course.id).order('order_index')
+    const { data: mods } = await modsRequest
     if (!mods) return
 
     resolveLesson(mods.map(m => ({

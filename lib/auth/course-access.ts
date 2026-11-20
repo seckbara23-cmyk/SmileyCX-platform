@@ -80,11 +80,45 @@ export async function resolveCourseAccessById(courseId: string): Promise<CourseA
     return { allowed: false, reason: 'email_unverified', courseId, userId: user.id }
   }
 
-  const { data: profile } = await supabase
-    .from('profiles')
-    .select('platform_role, account_status')
-    .eq('id', user.id)
-    .maybeSingle()
+  // ── XP-PERF-01: the two reads travel together ─────────────────────────
+  //
+  // The profile and the access row do not depend on each other: the view is
+  // scoped by the caller's JWT, not by anything read from the profile. Asking
+  // for them one after the other cost a full network round trip to the
+  // database on every lesson open, every media request and every completion.
+  // Both are now requested at once; the DECISION below reads them in exactly
+  // the order it always did (admin arm, then account status, then access), so
+  // no answer changes. Only the waiting does.
+  //
+  // `getUser()` stays first and alone on purpose. It verifies the session with
+  // the Auth server and holds the client's session lock for that whole round
+  // trip, so a query started beside it would simply queue behind it.
+  const [{ data: profile }, { data }] = await Promise.all([
+    supabase
+      .from('profiles')
+      .select('platform_role, account_status')
+      .eq('id', user.id)
+      .maybeSingle(),
+    // ── XPA-6B: ENTITLEMENTS, via the learner-safe view ─────────────────
+    //
+    // Two things changed here and both are deliberate.
+    //
+    // 1. Q-L: an enrollment is an academic transcript and must not authorize
+    //    access on its own. The SQL seam dropped its enrollments arm in
+    //    migration 037; this mirror drops it in the same commit, so the two
+    //    cannot drift into disagreeing about who may read a course.
+    //
+    // 2. This reads `my_course_access`, NOT `entitlements`. The base table
+    //    holds provenance, timing and revocation detail and is revoked from
+    //    every app role — a learner session querying it gets 42501, by design.
+    //    The view answers only "may I open this, and did an access of mine
+    //    end?".
+    supabase
+      .from('my_course_access')
+      .select('has_access, access_ended')
+      .eq('course_id', courseId)
+      .maybeSingle(),
+  ])
 
   // Platform admins reach all material — the same arm the SQL function has, and
   // the reason content administration keeps working after the lockdown.
@@ -95,25 +129,6 @@ export async function resolveCourseAccessById(courseId: string): Promise<CourseA
   if (profile && profile.account_status !== 'active') {
     return { allowed: false, reason: 'account_inactive', courseId, userId: user.id }
   }
-
-  // ── XPA-6B: ENTITLEMENTS, via the learner-safe view ───────────────────
-  //
-  // Two things changed here and both are deliberate.
-  //
-  // 1. Q-L: an enrollment is an academic transcript and must not authorize
-  //    access on its own. The SQL seam dropped its enrollments arm in migration
-  //    037; this mirror drops it in the same commit, so the two cannot drift
-  //    into disagreeing about who may read a course.
-  //
-  // 2. This reads `my_course_access`, NOT `entitlements`. The base table holds
-  //    provenance, timing and revocation detail and is revoked from every app
-  //    role — a learner session querying it gets 42501, by design. The view
-  //    answers only "may I open this, and did an access of mine end?".
-  const { data } = await supabase
-    .from('my_course_access')
-    .select('has_access, access_ended')
-    .eq('course_id', courseId)
-    .maybeSingle()
 
   if (!data?.has_access) {
     // The distinction the learner needs is "you never had this" versus "yours
