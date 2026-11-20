@@ -4,6 +4,7 @@ import { requirePlatformAdmin } from '@/lib/auth/session'
 import { recordPublicationTransition } from '@/lib/admin/publication-audit'
 import { createLogger } from '@/lib/logger'
 import { resolveCourseCodeAssignment } from '@/lib/admin/course-codes'
+import { changeCommercialPrice, decidePriceChange } from '@/lib/catalogue/commercial-price'
 import { redirect } from 'next/navigation'
 import { revalidatePath } from 'next/cache'
 
@@ -104,15 +105,52 @@ export async function updateCourse(formData: FormData) {
     throw new Error(codeAssignment.error)
   }
 
+  // ── P7: the commercial price (migration 067) ─────────────────────────
+  //
+  // Read separately, like the code above, so the pinned F-5.2 select stays as it
+  // is. Fail closed: without the current price there is no honest way to tell a
+  // change from no change. A change of price or free flag never rides on the
+  // generic UPDATE below: it goes through the one confirmed database path, with
+  // the administrator from the server session, and is recorded and alerted there.
+  const { data: priceRow, error: priceReadError } = await supabase
+    .from('courses')
+    .select('price, is_free')
+    .eq('id', id)
+    .maybeSingle()
+
+  if (priceReadError || !priceRow) {
+    log.error({ courseId: id, error: priceReadError?.message },
+      'P7 — refusing course update: current price unreadable')
+    throw new Error(
+      'Impossible de lire le prix actuel de ce cours. Aucune modification enregistrée. Réessayez.',
+    )
+  }
+
+  const currentPrice = Number(priceRow.price)
+  const nextPrice    = is_free ? 0 : price
+  const pricing = decidePriceChange(
+    { price: currentPrice, isFree: priceRow.is_free === true, isPublished: prior.is_published === true },
+    { price: nextPrice,    isFree: is_free,                   isPublished: is_published },
+    { confirm: formData.get('price_confirm'), reason: formData.get('price_reason') },
+  )
+  if (pricing.kind === 'refuse') throw new Error(pricing.message)
+  if (pricing.kind === 'change') {
+    const changed = await changeCommercialPrice({
+      kind: 'course', id, code: codeRow.code as string | null, title,
+      expectedPrice: currentPrice, newPrice: nextPrice, newIsFree: is_free,
+      reason: pricing.reason,
+      actor: { id: admin.id, email: admin.email ?? null },
+    })
+    if (!changed.ok) throw new Error(changed.message)
+  }
+
   const { error } = await supabase
     .from('courses')
     .update({
       title,
       description,
-      price:          is_free ? 0 : price,
       level,
       duration_hours: duration,
-      is_free,
       is_published,
       intro_video_url,
       // Present only on a genuine first assignment. An unchanged or absent

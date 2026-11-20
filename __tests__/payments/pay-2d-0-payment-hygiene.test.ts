@@ -398,7 +398,8 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
   it('this slice added no migration, and 062 is untouched', () => {
     const migs = readdirSync(join(ROOT, 'supabase/migrations')).filter(f => f.endsWith('.sql'))
     // XP-PAYTECH-04 authored 063 (the payment state machine); it is admitted by name.
-    expect(migs).toHaveLength(63)
+    expect(migs).toHaveLength(64)  // XP-PAYTECH-P7 authored 067 (commercial price audit), admitted by name below
+    expect(migs).toContain('067_commercial_price_audit.sql')
     expect(migs).toContain('063_payment_state_machine.sql')
     // XP-PAYTECH-05 authored 064 (payment exceptions); it is admitted by name.
     expect(migs).toContain('064_payment_exceptions.sql')
@@ -406,7 +407,7 @@ describe('PAY-2D-0 · 6. the fail-closed boundaries this slice must not have mov
     expect(migs).toContain('065_commercial_offers.sql')
     expect(migs.filter(f => /^06[3-9]|^0[7-9]\d|^[1-9]\d\d/.test(f)
       && f !== '063_payment_state_machine.sql' && f !== '064_payment_exceptions.sql'
-      && f !== '065_commercial_offers.sql'),
+      && f !== '065_commercial_offers.sql' && f !== '067_commercial_price_audit.sql'),
       'a migration was added').toEqual([])
     // 062's byte identity, as released.
     const { createHash } = require('crypto') as typeof import('crypto')

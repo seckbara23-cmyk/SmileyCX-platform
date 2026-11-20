@@ -122,9 +122,9 @@ describe('PAY-1B(a) · 9-10. compatibility with 058, 059 and every later migrati
       .toEqual(['059_payment_column_select_security.sql', '060_payment_completion_contract.sql',
                 '061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql',
                 '063_payment_state_machine.sql', '064_payment_exceptions.sql',
-                '065_commercial_offers.sql'])
+                '065_commercial_offers.sql','067_commercial_price_audit.sql'])
     const nums = files.map(f => /^(\d{3})_/.exec(f)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(65)
+    expect(Math.max(...nums)).toBe(67)  // XP-PAYTECH-P7 authored 067 (price audit); 066 is the voice slice, authored on its own branch
 
     const strip = (p: string) => read(p).replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     const m059 = strip('supabase/migrations/059_payment_column_select_security.sql')
@@ -232,6 +232,9 @@ describe('PAY-1B(a) · every payment reader, and which client it uses', () => {
         // XP-LAUNCH-FINAL-11: the purchase confirmation e-mail. Service-role, reads one
         // completed payment by id after its completion; logs the id and nothing else.
         'lib/payments/payment-confirmation.ts',
+        // XP-PAYTECH-P7: the daily integrity check. Service-role, reads id and reference of
+        // completed payments to find one with no recorded access; e-mails references only.
+        'lib/catalogue/commercial-integrity.ts',
       ], `${r.file} is an unreviewed payment reader`).toContain(r.file)
     }
   })

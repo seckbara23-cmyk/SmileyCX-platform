@@ -318,7 +318,7 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     // privilege slice on audit_log, which must not become a completion path.
     expect(f.filter(x => parseInt(x, 10) > 60))
       .toEqual(['061_audit_log_privilege_hardening.sql', '062_atomic_payment_completion.sql', '063_payment_state_machine.sql', '064_payment_exceptions.sql',
-                '065_commercial_offers.sql'])
+                '065_commercial_offers.sql', '067_commercial_price_audit.sql'])
     const m061 = read('supabase/migrations/061_audit_log_privilege_hardening.sql')
       .replace(/--[^\n]*/g, m => ' '.repeat(m.length))
     expect(m061, '061 writes a payment').not.toMatch(/public\.payments[\s\S]{0,120}completed/i)
@@ -331,7 +331,7 @@ describe('PAY-2C-0 — repository-wide: no unauthorized payment-completion write
     expect(m062).toMatch(/revoke all on function public\.complete_payment/)
     expect(m062).toMatch(/to service_role;/)
     const nums = f.map(x => /^(\d{3})_/.exec(x)?.[1]).filter(Boolean).map(Number)
-    expect(Math.max(...nums)).toBe(65)  // XP-LAUNCH-FINAL-08 authored 065 (packs, six-month access)
+    expect(Math.max(...nums)).toBe(67)  // XP-PAYTECH-P7 authored 067 (price audit); 066 is the voice slice, authored on its own branch
   })
 })
 

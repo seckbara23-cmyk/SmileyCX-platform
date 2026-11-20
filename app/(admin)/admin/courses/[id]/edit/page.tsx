@@ -218,12 +218,46 @@ export default async function AdminEditCoursePage({ params }: Props) {
               type="number"
               name="price"
               min={0}
-              step={500}
+              step={1}
               defaultValue={Number(course.price)}
               className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none"
             />
           </div>
         </div>
+
+        {/* P7 — a published price changes only with this confirmation (migration 067). */}
+        <fieldset className="rounded-xl border border-amber-200 bg-amber-50/60 p-4 space-y-3">
+          <legend className="px-1 text-sm font-semibold text-amber-800">Changer le prix d&apos;une formation publiée</legend>
+          <p className="text-xs text-amber-900">
+            Prix actuel : <strong>{Number(course.price).toLocaleString('fr-FR')} FCFA</strong>. Laissez ces deux champs
+            vides si vous ne changez pas le prix. Pour le changer, retapez le nouveau prix et indiquez un motif : le
+            changement est enregistré à votre nom et signalé par e-mail.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="course-price-confirm" className="text-xs font-semibold text-gray-700">Confirmer le nouveau prix (FCFA)</label>
+              <input
+                id="course-price-confirm"
+                type="text"
+                inputMode="numeric"
+                name="price_confirm"
+                autoComplete="off"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label htmlFor="course-price-reason" className="text-xs font-semibold text-gray-700">Motif du changement</label>
+              <input
+                id="course-price-reason"
+                type="text"
+                name="price_reason"
+                maxLength={300}
+                autoComplete="off"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-gray-200 text-sm focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none"
+              />
+            </div>
+          </div>
+        </fieldset>
 
         <div className="flex flex-col gap-3 pt-2 border-t border-gray-100">
           <label className="flex items-center gap-3 cursor-pointer">
