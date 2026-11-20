@@ -1,5 +1,5 @@
 'use client'
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import Link from 'next/link'
 import { Eye, EyeOff, Loader2 } from 'lucide-react'
 import { createClient } from '@/lib/supabase/client'
@@ -55,6 +55,15 @@ export default function LoginForm({ next, error: callbackErrorProp, adminPortal 
   const [error,    setError]    = useState('')
   const [loading,  setLoading]  = useState(false)
 
+  // The button stays busy through the redirect (see handleSubmit). A page the
+  // browser restores from its back-forward cache would come back still busy,
+  // so release it then.
+  useEffect(() => {
+    const release = (e: PageTransitionEvent) => { if (e.persisted) setLoading(false) }
+    window.addEventListener('pageshow', release)
+    return () => window.removeEventListener('pageshow', release)
+  }, [])
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
@@ -70,15 +79,17 @@ export default function LoginForm({ next, error: callbackErrorProp, adminPortal 
         timeout,
       ])
 
-      setLoading(false)
-
       const { data, error: authError } = result as Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>
 
       if (authError) {
+        setLoading(false)
         setError(SIGN_IN_FAILED)
         return
       }
 
+      // XP-PERF-01: keep the button busy until the next page replaces this one.
+      // Resetting it here left an idle form on screen for the whole dashboard
+      // load, which reads as "nothing happened" and invites a second submit.
       window.location.href = nextUrl
 
     } catch (err) {

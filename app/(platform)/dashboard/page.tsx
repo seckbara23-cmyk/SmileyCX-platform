@@ -14,6 +14,23 @@ interface CourseAccessRow {
   access_ended: boolean
 }
 
+/** The course embedded in an enrollment row, with only what progress needs. */
+interface DashboardCourse {
+  id:         string
+  slug:       string
+  title:      string
+  cover_url?: string
+  modules:    { id: string; lessons: { id: string }[] }[]
+}
+
+/** One `enrollments` row as the dashboard reads it. */
+interface DashboardEnrollment {
+  id:          string
+  course_id:   string
+  enrolled_at: string
+  courses:     DashboardCourse | null
+}
+
 export const metadata: Metadata = { title: 'Mon Espace' }
 
 function formatDateFR(dateStr: string) {
@@ -46,7 +63,26 @@ export default async function DashboardPage() {
   // which is precisely the confusion the separation exists to prevent. The
   // enrollment is still what carries their progress; it is simply not what
   // decides whether the course appears.
-  const [{ data: profile }, { data: accessRows }, { data: enrollments }] = await Promise.all([
+  //
+  // ── XP-PERF-01: one round trip after the identity check ──────────────
+  //
+  // This page used to wait five times in a row: the session, these reads, the
+  // access end dates, then one progress query per course, then the
+  // certificates. Each wait is a full trip to the database and back, and those
+  // trips, not the queries themselves, dominated the page. None of the reads
+  // below depends on another, so they now leave together and the page waits
+  // once. Progress is computed per course in memory from the learner's own
+  // completed lessons — the same rows the per-course queries returned, filtered
+  // here instead of in the URL. Nothing is read that was not read before.
+  const [
+    { data: profile },
+    { data: accessRows },
+    { data: enrollments },
+    accessEnds,
+    { data: certs },
+    { data: completedRows },
+    passedAttempts,
+  ] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
     // The learner-safe view, NOT the entitlements table — that one is revoked
     // from every app role and would return 42501. The view carries no
@@ -58,13 +94,27 @@ export default async function DashboardPage() {
       .select('*, courses(*, modules(id, lessons(id)))')
       .eq('user_id', user.id)
       .order('enrolled_at', { ascending: false }),
+    // XP-LAUNCH-FINAL-18 — when each open course closes (six months for a
+    // purchase). Display only, the learner's own rows, read on the server.
+    learnerAccessEndDates(user.id),
+    supabase
+      .from('certificates')
+      .select('id, certificate_number, issued_at, pdf_url, courses(title, slug)')
+      .eq('user_id', user.id)
+      .order('issued_at', { ascending: false }),
+    supabase
+      .from('lesson_progress')
+      .select('lesson_id')
+      .eq('user_id', user.id)
+      .eq('is_completed', true),
+    // Quiz results count toward progress only outside the pilot, exactly as
+    // before. Skipped entirely in pilot mode, so that mode makes no extra call.
+    PILOT_MODE
+      ? Promise.resolve(null)
+      : supabase.from('quiz_attempts').select('quiz_id').eq('user_id', user.id).eq('passed', true),
   ])
 
   if (!profile) redirect('/login')
-
-  // XP-LAUNCH-FINAL-18 — when each open course closes (six months for a
-  // purchase). Display only, the learner's own rows, read on the server.
-  const accessEnds = await learnerAccessEndDates(user.id)
 
   const access = (accessRows ?? []) as CourseAccessRow[]
   const accessibleCourseIds = new Set(access.filter(a => a.has_access).map(a => a.course_id))
@@ -73,98 +123,102 @@ export default async function DashboardPage() {
   const lapsed = access.filter(a => !a.has_access && a.access_ended)
 
   // Progress is computed only for courses the learner may currently open.
-  const activeEnrollments = (enrollments ?? []).filter(
-    (e: { course_id: string }) => accessibleCourseIds.has(e.course_id),
+  const activeEnrollments = ((enrollments ?? []) as DashboardEnrollment[]).filter(
+    e => accessibleCourseIds.has(e.course_id),
   )
 
-  const progressData = await Promise.all(
-    activeEnrollments.map(async (e: {
-      id: string
-      course_id: string
-      enrolled_at: string
-      courses: { id: string; slug: string; title: string; cover_url?: string; modules: { id: string; lessons: { id: string }[] }[] } | null
-    }) => {
-      if (!e.courses) {
-        return { enrollment: e, total: 0, completed: 0, percentage: 0, continueUrl: '/courses', nextStep: 'lesson' as NextStep }
-      }
+  const completedLessonIds = new Set((completedRows ?? []).map(r => r.lesson_id as string))
 
-      const lessonIds = (e.courses.modules ?? []).flatMap(m =>
-        (m.lessons ?? []).map(l => ({ lessonId: l.id, moduleId: m.id }))
-      )
-      const lessonIdList = lessonIds.map(x => x.lessonId)
+  // ── Quizzes: outside the pilot only, one round trip for every course ──
+  // Previously three sequential queries PER COURSE. Module quizzes are found by
+  // the modules of the courses that have lessons, final exams by course, and
+  // each course then picks its own rows in memory.
+  const coursesWithLessons = activeEnrollments
+    .map(e => e.courses)
+    .filter((c): c is DashboardCourse => !!c && (c.modules ?? []).some(m => (m.lessons ?? []).length > 0))
+  let moduleQuizzes: { id: string; module_id: string }[] = []
+  const finalExamByCourse = new Map<string, string>()
+  if (!PILOT_MODE && coursesWithLessons.length > 0) {
+    const modIds    = coursesWithLessons.flatMap(c => (c.modules ?? []).map(m => m.id))
+    const courseIds = coursesWithLessons.map(c => c.id)
+    const [{ data: modQuizData }, { data: finalExamData }] = await Promise.all([
+      modIds.length > 0
+        ? supabase.from('quizzes').select('id, module_id').in('module_id', modIds)
+        : Promise.resolve({ data: [] as { id: string; module_id: string }[] }),
+      supabase.from('quizzes').select('id, course_id').in('course_id', courseIds).is('module_id', null),
+    ])
+    moduleQuizzes = (modQuizData ?? []) as { id: string; module_id: string }[]
+    // At most one final exam per course; keep the first, as `limit(1)` did.
+    for (const q of (finalExamData ?? []) as { id: string; course_id: string }[]) {
+      if (!finalExamByCourse.has(q.course_id)) finalExamByCourse.set(q.course_id, q.id)
+    }
+  }
+  const passedQuizIds = new Set(
+    ((passedAttempts?.data ?? []) as { quiz_id: string }[]).map(a => a.quiz_id),
+  )
 
-      const { data: completedRows } = await supabase
-        .from('lesson_progress')
-        .select('lesson_id')
-        .eq('user_id', user.id)
-        .eq('is_completed', true)
-        .in('lesson_id', lessonIdList.length > 0 ? lessonIdList : ['__none__'])
+  const progressData = activeEnrollments.map(e => {
+    if (!e.courses) {
+      return { enrollment: e, total: 0, completed: 0, percentage: 0, continueUrl: '/courses', nextStep: 'lesson' as NextStep }
+    }
 
-      const completedSet = new Set((completedRows ?? []).map(r => r.lesson_id))
-      let total     = lessonIdList.length
-      let completed = completedSet.size
-      let smartContinueUrl: string | null = null
-      let nextStep: NextStep = 'lesson'
+    const lessonIds = (e.courses.modules ?? []).flatMap(m =>
+      (m.lessons ?? []).map(l => ({ lessonId: l.id, moduleId: m.id }))
+    )
+    const lessonIdList = lessonIds.map(x => x.lessonId)
 
-      if (!PILOT_MODE && total > 0) {
-        const modIds = (e.courses.modules ?? []).map((m: { id: string }) => m.id)
-        const modQuizData = modIds.length > 0
-          ? (await supabase.from('quizzes').select('id, module_id').in('module_id', modIds)).data
-          : []
-        const { data: finalExamData } = await supabase
-          .from('quizzes').select('id').eq('course_id', e.courses.id).is('module_id', null).limit(1).maybeSingle()
+    // This course's completed lessons: the learner's completions, restricted
+    // to the lessons of this course, exactly as the per-course `in` filter did.
+    const completedSet = new Set(lessonIdList.filter(id => completedLessonIds.has(id)))
+    let total     = lessonIdList.length
+    let completed = completedSet.size
+    let smartContinueUrl: string | null = null
+    let nextStep: NextStep = 'lesson'
 
-        const modQuizzes = (modQuizData ?? []) as { id: string; module_id: string }[]
-        const allQuizIds = [
-          ...modQuizzes.map(q => q.id),
-          ...(finalExamData ? [finalExamData.id] : []),
-        ]
+    if (!PILOT_MODE && total > 0) {
+      const modIds      = new Set((e.courses.modules ?? []).map(m => m.id))
+      const modQuizzes  = moduleQuizzes.filter(q => modIds.has(q.module_id))
+      const finalExamId = finalExamByCourse.get(e.courses.id) ?? null
+      const allQuizIds = [
+        ...modQuizzes.map(q => q.id),
+        ...(finalExamId ? [finalExamId] : []),
+      ]
 
-        if (allQuizIds.length > 0) {
-          const { data: passedAttempts } = await supabase
-            .from('quiz_attempts').select('quiz_id').eq('user_id', user.id).eq('passed', true).in('quiz_id', allQuizIds)
-          const passedIds = new Set((passedAttempts ?? []).map((a: { quiz_id: string }) => a.quiz_id))
-          total     += allQuizIds.length
-          completed += allQuizIds.filter(id => passedIds.has(id)).length
+      if (allQuizIds.length > 0) {
+        total     += allQuizIds.length
+        completed += allQuizIds.filter(id => passedQuizIds.has(id)).length
 
-          if (lessonIdList.every(id => completedSet.has(id))) {
-            const pendingModQuiz = modQuizzes.find(q => !passedIds.has(q.id))
-            if (pendingModQuiz) {
-              smartContinueUrl = `/learn/${e.courses.slug}/${pendingModQuiz.module_id}/quiz`
-              nextStep = 'quiz'
-            } else if (finalExamData && !passedIds.has(finalExamData.id)) {
-              smartContinueUrl = `/learn/${e.courses.slug}/final-exam`
-              nextStep = 'final-exam'
-            } else {
-              smartContinueUrl = `/certificate/${e.courses.slug}`
-              nextStep = 'certificate'
-            }
+        if (lessonIdList.every(id => completedSet.has(id))) {
+          const pendingModQuiz = modQuizzes.find(q => !passedQuizIds.has(q.id))
+          if (pendingModQuiz) {
+            smartContinueUrl = `/learn/${e.courses.slug}/${pendingModQuiz.module_id}/quiz`
+            nextStep = 'quiz'
+          } else if (finalExamId && !passedQuizIds.has(finalExamId)) {
+            smartContinueUrl = `/learn/${e.courses.slug}/final-exam`
+            nextStep = 'final-exam'
+          } else {
+            smartContinueUrl = `/certificate/${e.courses.slug}`
+            nextStep = 'certificate'
           }
         }
       }
+    }
 
-      const firstIncomplete = lessonIds.find(x => !completedSet.has(x.lessonId))
-      const targetLesson    = firstIncomplete ?? lessonIds[0]
-      const continueUrl = smartContinueUrl ?? (targetLesson
-        ? `/learn/${e.courses.slug}/${targetLesson.moduleId}/${targetLesson.lessonId}`
-        : `/courses/${e.courses.slug}`)
+    const firstIncomplete = lessonIds.find(x => !completedSet.has(x.lessonId))
+    const targetLesson    = firstIncomplete ?? lessonIds[0]
+    const continueUrl = smartContinueUrl ?? (targetLesson
+      ? `/learn/${e.courses.slug}/${targetLesson.moduleId}/${targetLesson.lessonId}`
+      : `/courses/${e.courses.slug}`)
 
-      return {
-        enrollment: e,
-        total,
-        completed,
-        percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
-        continueUrl,
-        nextStep,
-      }
-    })
-  )
-
-  const { data: certs } = await supabase
-    .from('certificates')
-    .select('id, certificate_number, issued_at, pdf_url, courses(title, slug)')
-    .eq('user_id', user.id)
-    .order('issued_at', { ascending: false })
+    return {
+      enrollment: e,
+      total,
+      completed,
+      percentage: total > 0 ? Math.round((completed / total) * 100) : 0,
+      continueUrl,
+      nextStep,
+    }
+  })
 
   const courseSlugById = new Map(
     (enrollments ?? [])
